@@ -1,0 +1,11 @@
+{
+  "id": "usage-reset-sidebar",
+  "name": "Usage & Resets",
+  "version": "1.2.3",
+  "entry": "index.js",
+  "docs": "README.md",
+  "description": "View-only compact sidebar usage and reset-credit status panel.",
+  "viewOnly": true,
+  "dynamicLoadable": true,
+  "dynamicUnloadable": true
+}

@@ -1,0 +1,1882 @@
+/**
+ * Explodex SDK v1.0.0
+ *
+ * DOM-zone plugin runtime for the Codex Electron renderer.
+ * Mirrors Codex design tokens and exposes injection, components, storage, and bridge APIs.
+ *
+ * @see docs/codex-architecture.md
+ */
+(function initExplodex(global) {
+  if (global.Explodex?.destroy) {
+    console.info("[Explodex] reloading", global.Explodex.version);
+    try {
+      global.Explodex.destroy({ reason: "reload" });
+    } catch (err) {
+      console.warn("[Explodex] previous runtime destroy failed", err);
+    }
+  } else if (global.Explodex?.version) {
+    delete global.Explodex;
+  }
+
+  // Capture Codex in-renderer AppServer router (Ut/Dr.sendRequest) when React mounts.
+  // Plugins must NOT use electronBridge.sendMessageFromView alone — that IPC path does not
+  // update the renderer manager that collaborationMode reads at submit time.
+  (function installAppServerRouterCapture() {
+    if (global.__explodexAppServerRouterCaptureInstalled || global.__bcAppServerRouterCaptureInstalled) {
+      if (!global.__explodexAppServerSend && global.__bcAppServerSend) {
+        global.__explodexAppServerSend = global.__bcAppServerSend;
+      }
+      return;
+    }
+    global.__explodexAppServerRouterCaptureInstalled = true;
+
+    const bindRouter = (router) => {
+      if (!router?.sendRequest || global.__explodexAppServerSend) return;
+      global.__explodexAppServerSend = (type, payload) => router.sendRequest(type, payload);
+      global.__bcAppServerSend = global.__explodexAppServerSend;
+    };
+
+    const isAppServerRouter = (obj) =>
+      obj &&
+      typeof obj.sendRequest === "function" &&
+      typeof obj.setMessageHandler === "function";
+
+    const maybeBindRouterCall = (thisArg, args) => {
+      if (!isAppServerRouter(thisArg) || !args.length || typeof args[0] !== "string") {
+        return false;
+      }
+      bindRouter(thisArg);
+      return true;
+    };
+
+    const maybeBindRouterSetHandler = (thisArg, args) => {
+      if (
+        !isAppServerRouter(thisArg) ||
+        args.length !== 1 ||
+        typeof args[0] !== "function"
+      ) {
+        return false;
+      }
+      return true;
+    };
+
+    Function.prototype.call = function captureAppServerCall(thisArg, ...args) {
+      try {
+        if (maybeBindRouterSetHandler(thisArg, args)) {
+          const result = Reflect.apply(this, thisArg, args);
+          bindRouter(thisArg);
+          return result;
+        }
+        maybeBindRouterCall(thisArg, args);
+      } catch {
+        // fall through
+      }
+      return Reflect.apply(this, thisArg, args);
+    };
+
+    Function.prototype.apply = function captureAppServerApply(thisArg, args) {
+      const argv = args ?? [];
+      try {
+        if (maybeBindRouterSetHandler(thisArg, argv)) {
+          const result = Reflect.apply(this, thisArg, argv);
+          bindRouter(thisArg);
+          return result;
+        }
+        maybeBindRouterCall(thisArg, argv);
+      } catch {
+        // fall through
+      }
+      return Reflect.apply(this, thisArg, argv);
+    };
+  })();
+
+  const VERSION = "1.1.0";
+  const PLUGIN_ENABLED_KEY = "explodex-plugin-enabled";
+  const LEGACY_PLUGIN_ENABLED_KEY = "bettercodex-plugin-enabled";
+  const PLUGIN_RESTART_KEY = "explodex-plugin-restart-pending";
+  const STYLE_ID = "explodex-sdk-style";
+  const MOUNT_ATTR = "data-explodex-mount";
+  const PLUGIN_ATTR = "data-explodex-plugin";
+  const PERSISTED_PREFIX = "codex:persisted-atom:";
+  const RUNTIME_DOM_SELECTOR = [
+    ".ex-pill",
+    ".bc-pill",
+    ".ex-status-fixed",
+    ".bc-status-fixed",
+    ".ex-dialog-backdrop",
+    ".bc-dialog-backdrop",
+    ".ex-popover-backdrop",
+    ".bc-popover-backdrop",
+    ".ex-nav-row",
+    ".bc-nav-row",
+  ].join(",");
+
+  const mounted = new Map();
+  const observers = new Set();
+  const plugins = new Map();
+  const pluginCatalog = new Map();
+  const pluginTeardowns = new Map();
+  const pluginSources = new Map();
+  const navMounts = new Map();
+  let activePopover = null;
+  const messageHandlers = new Map();
+
+  // ─── Logging ──────────────────────────────────────────────────────────────
+
+  const LOG_MAX = 500;
+  const logEntries = [];
+  const logSubscribers = new Set();
+
+  function serializeDetail(detail) {
+    if (detail == null) return null;
+    if (detail instanceof Error) {
+      return { name: detail.name, message: detail.message, stack: detail.stack };
+    }
+    if (typeof detail === "object") {
+      try {
+        return JSON.parse(JSON.stringify(detail));
+      } catch {
+        return String(detail);
+      }
+    }
+    return detail;
+  }
+
+  function emitLog(level, scope, message, detail) {
+    const entry = {
+      ts: Date.now(),
+      level,
+      scope: scope ?? "sdk",
+      message,
+      detail: serializeDetail(detail),
+    };
+    logEntries.push(entry);
+    if (logEntries.length > LOG_MAX) logEntries.shift();
+
+    const tag = scope ? `[Explodex:${scope}]` : "[Explodex]";
+    const line = detail != null ? [message, detail] : [message];
+    if (level === "error") console.error(tag, ...line);
+    else if (level === "warn") console.warn(tag, ...line);
+    else if (level === "debug") console.debug(tag, ...line);
+    else console.info(tag, ...line);
+
+    for (const fn of logSubscribers) {
+      try {
+        fn(entry);
+      } catch (_) {
+        /* ignore subscriber errors */
+      }
+    }
+    return entry;
+  }
+
+  function pluginLogger(pluginId) {
+    return {
+      debug: (message, detail) => emitLog("debug", pluginId, message, detail),
+      info: (message, detail) => emitLog("info", pluginId, message, detail),
+      warn: (message, detail) => emitLog("warn", pluginId, message, detail),
+      error: (message, detail) => emitLog("error", pluginId, message, detail),
+    };
+  }
+
+  const log = {
+    debug: (message, detail) => emitLog("debug", "sdk", message, detail),
+    info: (message, detail) => emitLog("info", "sdk", message, detail),
+    warn: (message, detail) => emitLog("warn", "sdk", message, detail),
+    error: (message, detail) => emitLog("error", "sdk", message, detail),
+    plugin: pluginLogger,
+    entries: () => [...logEntries],
+    subscribe: (fn) => {
+      logSubscribers.add(fn);
+      return () => logSubscribers.delete(fn);
+    },
+    clear: () => {
+      logEntries.length = 0;
+    },
+  };
+
+  // ─── Design tokens (mirrors Codex button-DO-oxX3-.js) ─────────────────────
+
+  const BUTTON_RADIUS = {
+    default: "rounded-full",
+    large: "rounded-full",
+    medium: "rounded-lg",
+    icon: "rounded-full",
+    iconSm: "rounded-md",
+    composer: "rounded-full",
+    composerSm: "rounded-full",
+    toolbar: "rounded-lg",
+  };
+
+  const BUTTON_COLOR = {
+    primary:
+      "background:var(--color-foreground,#fff);color:var(--color-dropdown-background,#111);border-color:transparent",
+    secondary:
+      "background:color-mix(in srgb,var(--color-foreground,currentColor) 5%,transparent);color:var(--color-foreground,inherit);border-color:transparent",
+    outline:
+      "background:var(--color-bg-fog,transparent);color:inherit;border:1px solid var(--color-border,currentColor)",
+    outlineActive:
+      "background:color-mix(in srgb,var(--color-foreground,currentColor) 10%,transparent);color:inherit;border:1px solid var(--color-border,currentColor)",
+    ghost:
+      "background:transparent;color:var(--color-text-tertiary,inherit);border-color:transparent",
+    ghostActive:
+      "background:var(--color-list-hover-background,color-mix(in srgb,currentColor 8%,transparent));color:inherit;border-color:transparent",
+    ghostMuted:
+      "background:transparent;color:var(--color-muted-foreground,inherit);border-color:transparent",
+    ghostTertiary:
+      "background:transparent;color:var(--color-text-tertiary,inherit);border-color:transparent",
+    danger:
+      "background:color-mix(in srgb,#ef4444 10%,transparent);color:#ef4444;border-color:transparent",
+  };
+
+  const BUTTON_SIZE = {
+    default: "padding:2px 8px;font-size:14px;line-height:18px",
+    large: "padding:8px 20px;font-size:16px;line-height:18px",
+    medium: "padding:6px 16px;font-size:16px;line-height:18px",
+    icon: "padding:2px;display:inline-flex;align-items:center;justify-content:center",
+    iconSm: "padding:2px;width:16px;height:16px;display:inline-flex;align-items:center;justify-content:center",
+    composer: "padding:0 8px;font-size:14px;line-height:18px;height:var(--button-composer-height,28px)",
+    composerSm: "padding:0 6px;font-size:14px;line-height:18px;height:var(--button-composer-sm-height,24px)",
+    toolbar: "padding:0 8px;font-size:16px;line-height:18px;height:var(--button-composer-height,28px)",
+  };
+
+  // ─── Zone registry ────────────────────────────────────────────────────────
+
+  const ZONE_DEFINITIONS = {
+    aboveComposer: {
+      id: "aboveComposer",
+      description: "Official portal above the composer input",
+      selectors: [
+        "[data-above-composer-portal]",
+        "#above-composer-portal",
+      ],
+      mount: "append",
+      priority: 1,
+    },
+    aboveComposerQueue: {
+      id: "aboveComposerQueue",
+      description: "Queued message UI portal above composer",
+      selectors: [
+        "[data-above-composer-queue-portal]",
+        "#above-composer-queue-portal",
+      ],
+      mount: "append",
+      priority: 2,
+    },
+    mcpAppPortal: {
+      id: "mcpAppPortal",
+      description: "MCP app iframe portal in thread scroll",
+      selectors: ['[data-mcp-app-portal-target="true"]'],
+      mount: "append",
+      priority: 3,
+    },
+    threadFooter: {
+      id: "threadFooter",
+      description: "Sticky thread scroll footer (composer region)",
+      selectors: ['[data-thread-scroll-footer="true"]'],
+      mount: "prepend",
+      priority: 4,
+    },
+    browserSidebarBanner: {
+      id: "browserSidebarBanner",
+      description: "Browser sidebar top banner portal",
+      selectors: ['[data-testid="browser-sidebar-top-banner-portal"]'],
+      mount: "append",
+      priority: 5,
+    },
+    homeAmbient: {
+      id: "homeAmbient",
+      description: "Home page ambient suggestions strip",
+      selectors: ["[data-home-ambient-suggestions]"],
+      mount: "append",
+      priority: 6,
+    },
+    sidebar: {
+      id: "sidebar",
+      description: "Left sidebar / floating panel",
+      selectors: [
+        '[data-testid="app-shell-floating-left-panel"]',
+        "[data-explodex-sidebar]",
+        '[data-testid*="sidebar" i]',
+        "aside",
+        '[aria-label*="sidebar" i]',
+        '[aria-label*="Sidebar" i]',
+        '[class*="sidebar" i]',
+        '[class*="SideBar" i]',
+      ],
+      mount: "append",
+      priority: 10,
+    },
+    composerActions: {
+      id: "composerActions",
+      description: "Near the ProseMirror composer input",
+      selectors: [
+        "[data-explodex-composer-actions]",
+        ".ProseMirror",
+      ],
+      mount: "after-input",
+      priority: 11,
+    },
+    statusOverlay: {
+      id: "statusOverlay",
+      description: "Fixed overlay on document body",
+      selectors: ["body"],
+      mount: "fixed",
+      priority: 99,
+    },
+  };
+
+  // ─── Utilities ────────────────────────────────────────────────────────────
+
+  function firstExisting(selectors, root = document) {
+    for (const selector of selectors) {
+      const node = root.querySelector(selector);
+      if (node) return node;
+    }
+    return null;
+  }
+
+  function closestComposerShell(input) {
+    if (!input) return null;
+    return (
+      input.closest("form") ||
+      input.closest('[class*="composer" i]') ||
+      input.closest('[data-above-composer-portal]')?.parentElement ||
+      input.parentElement?.parentElement ||
+      input.parentElement
+    );
+  }
+
+  function resolveZoneAnchor(zoneId) {
+    const def = ZONE_DEFINITIONS[zoneId];
+    if (!def) return null;
+
+    if (zoneId === "composerActions") {
+      const explicit = firstExisting(["[data-explodex-composer-actions]"]);
+      if (explicit) return explicit;
+      const pm = document.querySelector(".ProseMirror");
+      if (pm) return closestComposerShell(pm);
+      return firstExisting(def.selectors.slice(1));
+    }
+
+    if (zoneId === "statusOverlay") return document.body;
+    return firstExisting(def.selectors);
+  }
+
+  function applyButtonStyles(el, { color = "primary", size = "default", uniform = false } = {}) {
+    const base =
+      "box-sizing:border-box;display:inline-flex;align-items:center;gap:4px;" +
+      "border:1px solid transparent;white-space:nowrap;cursor:pointer;" +
+      "font:inherit;outline:none;-webkit-app-region:no-drag";
+    const disabled = "cursor:not-allowed;opacity:0.4";
+    el.style.cssText = `${base};${BUTTON_SIZE[size] || BUTTON_SIZE.default};${BUTTON_COLOR[color] || BUTTON_COLOR.primary}`;
+    if (uniform) {
+      el.style.aspectRatio = "1";
+      el.style.justifyContent = "center";
+      el.style.padding = "0";
+    }
+    el.addEventListener("mouseenter", () => {
+      if (!el.disabled) el.style.filter = "brightness(1.08)";
+    });
+    el.addEventListener("mouseleave", () => {
+      el.style.filter = "";
+    });
+    Object.defineProperty(el, "_bcSetDisabled", {
+      value(disabled) {
+        el.disabled = disabled;
+        el.style.cssText = disabled
+          ? `${el.style.cssText};${disabled}`
+          : el.style.cssText.replace(disabled, "");
+      },
+    });
+  }
+
+  function installStyles() {
+    if (document.getElementById(STYLE_ID)) return;
+    const style = document.createElement("style");
+    style.id = STYLE_ID;
+    style.textContent = `
+      [${MOUNT_ATTR}] { box-sizing: border-box; }
+      .ex-mount-above-composer { width: 100%; }
+      .ex-mount-composer-actions { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+      .ex-sidebar-item {
+        display: flex; align-items: center; gap: 8px;
+        width: calc(100% - 12px); margin: 6px; padding: 7px 9px;
+        border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+        border-radius: 10px;
+        background: color-mix(in srgb, currentColor 6%, transparent);
+        color: inherit; font: inherit; cursor: pointer;
+        -webkit-app-region: no-drag;
+      }
+      .ex-sidebar-item:hover { background: color-mix(in srgb, currentColor 10%, transparent); }
+      .ex-panel {
+        border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+        border-radius: 12px;
+        background: color-mix(in srgb, currentColor 4%, transparent);
+        padding: 10px 12px;
+        color: inherit;
+        font: 13px/1.4 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      .ex-badge {
+        display: inline-flex; align-items: center;
+        padding: 1px 6px; border-radius: 999px;
+        font-size: 11px; font-weight: 600; line-height: 16px;
+        background: color-mix(in srgb, currentColor 12%, transparent);
+        color: inherit;
+      }
+      .ex-pill {
+        position: fixed; right: 12px; bottom: 12px; z-index: 2147483647;
+        padding: 6px 10px; border-radius: 999px;
+        border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+        background: color-mix(in srgb, var(--color-bg-primary,#1a1a1a) 92%, transparent);
+        color: inherit;
+        font: 12px/1.2 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        pointer-events: none;
+        backdrop-filter: blur(8px);
+      }
+      .ex-status-fixed {
+        position: fixed; right: 12px; bottom: 48px; z-index: 2147483646;
+        padding: 6px 10px; border-radius: 8px;
+        background: color-mix(in srgb, #111 88%, transparent);
+        color: #fff; font: 12px/1.3 system-ui, sans-serif;
+        pointer-events: none;
+      }
+      .ex-nav-row { width: 100%; -webkit-app-region: no-drag; }
+      .ex-nav-row-above-footer { padding: 0 8px 4px; box-sizing: border-box; }
+      .ex-nav-btn {
+        box-sizing: border-box; display: flex; align-items: center; gap: 8px;
+        width: 100%; padding: 6px 8px; border: 0; border-radius: 8px;
+        background: transparent; color: inherit; font: 14px/18px system-ui, -apple-system, sans-serif;
+        text-align: left; cursor: pointer; -webkit-app-region: no-drag;
+      }
+      .ex-nav-btn:hover { background: color-mix(in srgb, currentColor 8%, transparent); }
+      .ex-nav-btn[aria-current="page"] { background: color-mix(in srgb, currentColor 10%, transparent); }
+      .ex-nav-btn-compact {
+        font: 11px/15px ui-monospace, SFMono-Regular, Menlo, monospace;
+        letter-spacing: -0.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      }
+      .ex-nav-icon { width: 16px; text-align: center; flex-shrink: 0; opacity: 0.85; }
+      .ex-popover-backdrop {
+        position: fixed; inset: 0; z-index: 2147483645; background: transparent;
+      }
+      .ex-popover {
+        position: fixed; z-index: 2147483646;
+        width: min(380px, calc(100vw - 24px)); max-height: min(70vh, 560px);
+        overflow: auto; border-radius: 12px;
+        border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+        background: var(--color-bg-primary, #111);
+        color: inherit;
+        box-shadow: 0 12px 40px color-mix(in srgb, #000 45%, transparent);
+        font: 13px/1.4 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      .ex-popover-header {
+        display: flex; align-items: center; justify-content: space-between; gap: 8px;
+        padding: 12px 14px; border-bottom: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+        position: sticky; top: 0; background: inherit; z-index: 1;
+      }
+      .ex-popover-title { font-weight: 600; font-size: 14px; }
+      .ex-popover-body { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 10px; }
+      .ex-dialog-backdrop {
+        position: fixed; inset: 0; z-index: 2147483647;
+        background: color-mix(in srgb, #000 55%, transparent);
+        display: flex; align-items: center; justify-content: center; padding: 16px;
+      }
+      .ex-dialog {
+        width: min(420px, 100%); border-radius: 12px; padding: 16px;
+        border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+        background: var(--color-bg-primary, #111); color: inherit;
+        box-shadow: 0 16px 48px color-mix(in srgb, #000 50%, transparent);
+        font: 13px/1.45 system-ui, -apple-system, sans-serif;
+      }
+      .ex-plugin-row {
+        display: flex; align-items: flex-start; gap: 10px; padding: 8px 0;
+        border-bottom: 1px solid color-mix(in srgb, currentColor 8%, transparent);
+      }
+      .ex-plugin-row:last-child { border-bottom: 0; }
+    `;
+    document.head.appendChild(style);
+  }
+
+  // ─── Bridge ───────────────────────────────────────────────────────────────
+
+  function postMessageToCodex(message) {
+    const electron = global.electronBridge;
+    let forwarded = false;
+    if (electron?.sendMessageFromView) {
+      electron.sendMessageFromView(message).catch((err) => {
+        if (message.type !== "log-message") {
+          console.warn("[Explodex] sendMessageFromView failed for", message.type, err);
+        }
+      });
+      forwarded = true;
+    }
+    const event = new CustomEvent("codex-message-from-view", { detail: message });
+    if (forwarded) event.__codexForwardedViaBridge = true;
+    global.dispatchEvent(event);
+  }
+
+  const bridge = {
+    isAvailable() {
+      return Boolean(
+        global.__explodexAppServerSend ||
+          global.__bcAppServerSend ||
+          global.electronBridge?.sendMessageFromView,
+      );
+    },
+
+    async send(type, payload = {}) {
+      const appServerSend = global.__explodexAppServerSend || global.__bcAppServerSend;
+      if (appServerSend) {
+        try {
+          return await appServerSend(type, payload);
+        } catch (err) {
+          console.warn("[Explodex] AppServer send failed for", type, err);
+          return null;
+        }
+      }
+
+      const electron = global.electronBridge;
+      if (!electron?.sendMessageFromView) {
+        console.warn("[Explodex] electronBridge unavailable for", type);
+        return null;
+      }
+      postMessageToCodex({ type, ...payload });
+      return undefined;
+    },
+
+    async rpc(method, params = {}) {
+      const bridge = global.electronBridge;
+      if (!bridge?.sendMessageFromView) return null;
+      try {
+        return await bridge.sendMessageFromView({ type: method, params });
+      } catch (err) {
+        console.warn("[Explodex] RPC failed:", method, err);
+        return null;
+      }
+    },
+
+    navigate(path) {
+      return bridge.send("navigate-to-route", { path });
+    },
+
+    theme() {
+      return global.electronBridge?.getSystemThemeVariant?.() ?? "dark";
+    },
+
+    onThemeChange(callback) {
+      return global.electronBridge?.subscribeToSystemThemeVariant?.(callback) ?? (() => {});
+    },
+
+    on(type, handler) {
+      const set = messageHandlers.get(type) ?? new Set();
+      set.add(handler);
+      messageHandlers.set(type, set);
+
+      if (!bridge._messageListenerInstalled) {
+        bridge._messageListenerInstalled = true;
+        global.addEventListener("message", (event) => {
+          const data = event.data;
+          if (!data?.type) return;
+          const handlers = messageHandlers.get(data.type);
+          if (handlers) handlers.forEach((h) => h(data));
+        });
+      }
+
+      return () => {
+        const s = messageHandlers.get(type);
+        if (s) {
+          s.delete(handler);
+          if (s.size === 0) messageHandlers.delete(type);
+        }
+      };
+    },
+
+    buildFlavor() {
+      return global.electronBridge?.getBuildFlavor?.() ?? "unknown";
+    },
+
+    usesOwlShell() {
+      return global.electronBridge?.usesOwlAppShell?.() ?? false;
+    },
+  };
+
+  // ─── HTTP (authenticated Codex backend proxy) ─────────────────────────────
+
+  const httpPending = new Map();
+  let httpListenerInstalled = false;
+
+  function ensureHttpListener() {
+    if (httpListenerInstalled) return;
+    httpListenerInstalled = true;
+    global.addEventListener("message", (event) => {
+      const data = event.data;
+      if (!data || data.type !== "fetch-response") return;
+      const pending = httpPending.get(data.requestId);
+      if (!pending) return;
+      httpPending.delete(data.requestId);
+      pending.cleanup?.();
+      if (data.responseType === "success") {
+        if (data.status >= 200 && data.status < 300) {
+          try {
+            pending.resolve({
+              status: data.status,
+              headers: data.headers,
+              body: data.bodyJsonString ? JSON.parse(data.bodyJsonString) : null,
+            });
+          } catch (err) {
+            pending.reject(err);
+          }
+        } else {
+          pending.reject(new Error(data.bodyJsonString || `HTTP ${data.status}`));
+        }
+      } else {
+        pending.reject(new Error(data.errorMessage || data.bodyJsonString || "fetch failed"));
+      }
+    });
+  }
+
+  const http = {
+    isAvailable() {
+      return bridge.isAvailable();
+    },
+
+    async request(method, url, options = {}) {
+      if (!bridge.isAvailable()) {
+        throw new Error("electronBridge unavailable");
+      }
+      ensureHttpListener();
+      const requestId = crypto.randomUUID();
+      const headers = {
+        "OAI-Language": "en",
+        originator: "Codex Desktop",
+        ...options.headers,
+      };
+      const controller = new AbortController();
+      const payload = {
+        requestId,
+        method,
+        url,
+        headers,
+        body: options.body == null ? undefined : JSON.stringify(options.body),
+      };
+
+      return new Promise((resolve, reject) => {
+        const onAbort = () => {
+          httpPending.delete(requestId);
+          bridge.send("cancel-fetch", { requestId }).catch(() => {});
+          reject(new DOMException("Aborted", "AbortError"));
+        };
+        if (options.signal) {
+          if (options.signal.aborted) {
+            onAbort();
+            return;
+          }
+          options.signal.addEventListener("abort", onAbort, { once: true });
+        }
+        httpPending.set(requestId, {
+          resolve,
+          reject,
+          cleanup: () => options.signal?.removeEventListener("abort", onAbort),
+        });
+        bridge.send("fetch", payload).catch((err) => {
+          httpPending.delete(requestId);
+          reject(err);
+        });
+      });
+    },
+
+    get(url, options) {
+      return this.request("GET", url, options).then((r) => r.body);
+    },
+
+    post(url, body, options = {}) {
+      return this.request("POST", url, { ...options, body }).then((r) => r.body);
+    },
+  };
+
+  // ─── Storage ──────────────────────────────────────────────────────────────
+
+  const storage = {
+    persisted: {
+      _fullKey(key) {
+        return key.startsWith(PERSISTED_PREFIX) ? key : `${PERSISTED_PREFIX}${key}`;
+      },
+
+      get(key, fallback) {
+        const raw = global.localStorage?.getItem(this._fullKey(key));
+        if (raw == null) return fallback;
+        try {
+          return JSON.parse(raw);
+        } catch {
+          return raw;
+        }
+      },
+
+      set(key, value) {
+        if (value === undefined) {
+          global.localStorage?.removeItem(this._fullKey(key));
+          return;
+        }
+        global.localStorage?.setItem(this._fullKey(key), JSON.stringify(value));
+      },
+
+      remove(key) {
+        global.localStorage?.removeItem(this._fullKey(key));
+      },
+
+      keys() {
+        const result = [];
+        for (let i = 0; i < (global.localStorage?.length ?? 0); i++) {
+          const k = global.localStorage.key(i);
+          if (k?.startsWith(PERSISTED_PREFIX)) {
+            result.push(k.slice(PERSISTED_PREFIX.length));
+          }
+        }
+        return result;
+      },
+
+      subscribe(key, callback) {
+        const fullKey = this._fullKey(key);
+        const handler = (event) => {
+          if (event.key === fullKey) {
+            callback(this.get(key));
+          }
+        };
+        global.addEventListener("storage", handler);
+        return () => global.removeEventListener("storage", handler);
+      },
+    },
+
+    settings: {
+      async get(key, fallback) {
+        const res = await bridge.rpc("get-setting", { params: { key } });
+        return res?.value ?? fallback;
+      },
+
+      async set(key, value) {
+        await bridge.rpc("set-setting", { params: { key, value } });
+      },
+    },
+
+    globalState: {
+      async get(key) {
+        const res = await bridge.rpc("get-global-state", { params: { key } });
+        return res?.value;
+      },
+
+      async set(key, value) {
+        await bridge.rpc("set-global-state", { params: { key, value } });
+      },
+    },
+  };
+
+  // ─── Components ───────────────────────────────────────────────────────────
+
+  const components = {
+    button({
+      label,
+      children,
+      color = "primary",
+      size = "default",
+      uniform = false,
+      loading = false,
+      disabled = false,
+      type = "button",
+      className = "",
+      onClick,
+      icon,
+      ...rest
+    } = {}) {
+      const el = document.createElement("button");
+      el.type = type;
+      el.className = ["ex-button", className].filter(Boolean).join(" ");
+      applyButtonStyles(el, { color, size, uniform });
+      if (disabled || loading) el.disabled = true;
+
+      if (loading) {
+        const spinner = document.createElement("span");
+        spinner.textContent = "…";
+        spinner.style.marginRight = "4px";
+        el.appendChild(spinner);
+      }
+      if (icon) {
+        const iconEl = typeof icon === "string" ? document.createTextNode(icon) : icon;
+        el.appendChild(iconEl);
+      }
+      const text = children ?? label ?? "";
+      if (text) {
+        const span = document.createElement("span");
+        span.textContent = text;
+        el.appendChild(span);
+      }
+      if (onClick) el.addEventListener("click", onClick);
+      Object.assign(el, rest);
+      return el;
+    },
+
+    sidebarItem({ label, icon, onClick, active = false } = {}) {
+      const el = document.createElement("button");
+      el.type = "button";
+      el.className = "ex-sidebar-item";
+      if (active) el.style.background = "color-mix(in srgb, currentColor 12%, transparent)";
+      if (icon) {
+        const i = document.createElement("span");
+        i.textContent = icon;
+        i.setAttribute("aria-hidden", "true");
+        el.appendChild(i);
+      }
+      const text = document.createElement("span");
+      text.textContent = label ?? "Item";
+      el.appendChild(text);
+      if (onClick) el.addEventListener("click", onClick);
+      return el;
+    },
+
+    pill({ label, position = "bottom-right" } = {}) {
+      const el = document.createElement("div");
+      el.className = "ex-pill";
+      el.textContent = label ?? "";
+      if (position === "top-right") {
+        el.style.top = "12px";
+        el.style.bottom = "auto";
+      }
+      return el;
+    },
+
+    badge({ label, count } = {}) {
+      const el = document.createElement("span");
+      el.className = "ex-badge";
+      el.textContent = count != null ? String(count) : (label ?? "");
+      return el;
+    },
+
+    panel({ title, children, className = "" } = {}) {
+      const el = document.createElement("div");
+      el.className = ["ex-panel", className].filter(Boolean).join(" ");
+      if (title) {
+        const h = document.createElement("div");
+        h.style.cssText = "font-weight:600;margin-bottom:6px";
+        h.textContent = title;
+        el.appendChild(h);
+      }
+      if (children) {
+        if (typeof children === "function") el.appendChild(children());
+        else if (children instanceof Node) el.appendChild(children);
+        else el.appendChild(document.createTextNode(String(children)));
+      }
+      return el;
+    },
+
+    statusToast(message, { duration = 2800 } = {}) {
+      let toast = document.querySelector(".ex-status-fixed");
+      if (!toast) {
+        toast = document.createElement("div");
+        toast.className = "ex-status-fixed";
+        document.body.appendChild(toast);
+      }
+      toast.textContent = message;
+      clearTimeout(components.statusToast._timer);
+      components.statusToast._timer = setTimeout(() => toast.remove(), duration);
+    },
+  };
+
+  // ─── Composer ───────────────────────────────────────────────────────────────
+
+  const composer = {
+    getInput() {
+      return (
+        document.querySelector(".ProseMirror") ||
+        firstExisting(["textarea", '[contenteditable="true"]', '[role="textbox"]'])
+      );
+    },
+
+    focus() {
+      const input = this.getInput();
+      if (!input) return false;
+      input.focus();
+      return true;
+    },
+
+    getText() {
+      const input = this.getInput();
+      if (!input) return "";
+      if (input instanceof HTMLTextAreaElement || input instanceof HTMLInputElement) {
+        return input.value;
+      }
+      return input.textContent ?? "";
+    },
+
+    insertText(text) {
+      const input = this.getInput();
+      if (!input) return false;
+
+      const dialogOpen = document.querySelector('[role="dialog"][data-state="open"]');
+      const terminalActive = document.querySelector("[data-codex-terminal]:focus-within");
+      if (dialogOpen || terminalActive) return false;
+
+      input.focus();
+
+      if (input instanceof HTMLTextAreaElement || input instanceof HTMLInputElement) {
+        const start = input.selectionStart ?? input.value.length;
+        const end = input.selectionEnd ?? input.value.length;
+        input.value = `${input.value.slice(0, start)}${text}${input.value.slice(end)}`;
+        input.selectionStart = input.selectionEnd = start + text.length;
+        input.dispatchEvent(
+          new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }),
+        );
+        return true;
+      }
+
+      // ProseMirror contenteditable
+      const inserted = document.execCommand("insertText", false, text);
+      input.dispatchEvent(
+        new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }),
+      );
+      return inserted || true;
+    },
+  };
+
+  // ─── Query ────────────────────────────────────────────────────────────────
+
+  const query = {
+    testId(id) {
+      return document.querySelector(`[data-testid="${id}"]`);
+    },
+
+    portal(name) {
+      const map = {
+        aboveComposer: "[data-above-composer-portal]",
+        aboveComposerQueue: "[data-above-composer-queue-portal]",
+        mcpApp: '[data-mcp-app-portal-target="true"]',
+        threadFooter: '[data-thread-scroll-footer="true"]',
+        browserBanner: '[data-testid="browser-sidebar-top-banner-portal"]',
+      };
+      return document.querySelector(map[name] ?? `[data-${name}]`);
+    },
+
+    one(selector) {
+      return document.querySelector(selector);
+    },
+
+    all(selector) {
+      return [...document.querySelectorAll(selector)];
+    },
+  };
+
+  // ─── Injection ────────────────────────────────────────────────────────────
+
+  function placeMount(anchor, mount, zoneId, position) {
+    const def = ZONE_DEFINITIONS[zoneId];
+    const strategy = position ?? def?.mount ?? "append";
+
+    if (strategy === "prepend") {
+      anchor.insertBefore(mount, anchor.firstChild);
+    } else if (strategy === "after-input" && anchor.classList?.contains("ProseMirror")) {
+      const shell = closestComposerShell(anchor) ?? anchor.parentElement;
+      mount.className = "ex-mount-composer-actions";
+      shell?.appendChild(mount);
+    } else if (strategy === "fixed") {
+      mount.style.cssText = "position:fixed;inset:0;pointer-events:none;z-index:2147483640";
+      mount.querySelectorAll("*").forEach((c) => (c.style.pointerEvents = "auto"));
+      anchor.appendChild(mount);
+    } else {
+      if (zoneId === "aboveComposer") mount.className = "ex-mount-above-composer";
+      anchor.appendChild(mount);
+    }
+  }
+
+  function ensureMount(zoneId, pluginId, position) {
+    const key = `${zoneId}:${pluginId}`;
+    const existing = mounted.get(key);
+    if (existing?.isConnected) return existing;
+
+    const anchor = resolveZoneAnchor(zoneId);
+    if (!anchor) return null;
+
+    const mount = document.createElement("div");
+    mount.setAttribute(MOUNT_ATTR, zoneId);
+    mount.setAttribute(PLUGIN_ATTR, pluginId);
+    placeMount(anchor, mount, zoneId, position);
+    mounted.set(key, mount);
+    return mount;
+  }
+
+  const inject = {
+    mount(zoneId, nodeOrFactory, options = {}) {
+      const pluginId = options.pluginId ?? "anonymous";
+      const mountPoint = ensureMount(zoneId, pluginId, options.position);
+      if (!mountPoint) return false;
+      if (mountPoint.childElementCount > 0 && !options.replace) return true;
+
+      const ctx = { api, mountPoint, zoneId, pluginId };
+      const node =
+        typeof nodeOrFactory === "function" ? nodeOrFactory(ctx) : nodeOrFactory;
+      mountPoint.replaceChildren(node);
+      return true;
+    },
+
+    waitFor(zoneId, callback) {
+      const anchor = resolveZoneAnchor(zoneId);
+      if (anchor) {
+        callback(anchor);
+        return () => {};
+      }
+      const observer = new MutationObserver(() => {
+        const node = resolveZoneAnchor(zoneId);
+        if (node) callback(node);
+      });
+      observer.observe(document.documentElement, { childList: true, subtree: true });
+      observers.add(observer);
+      return () => {
+        observer.disconnect();
+        observers.delete(observer);
+      };
+    },
+
+    unmount(pluginId) {
+      for (const [key, node] of mounted) {
+        if (key.endsWith(`:${pluginId}`)) {
+          node.remove();
+          mounted.delete(key);
+        }
+      }
+    },
+  };
+
+  // ─── Sidebar navigation helpers ───────────────────────────────────────────
+
+  function sidebarRoot() {
+    return resolveZoneAnchor("sidebar");
+  }
+
+  function elementLabel(el) {
+    return (el?.textContent ?? "").replace(/\s+/g, " ").trim();
+  }
+
+  function labelMatchesNav(text, label, { exact = false } = {}) {
+    if (!text || !label) return false;
+    if (exact) return text === label || text.startsWith(`${label} `);
+    return text === label || text.startsWith(`${label} `) || text.includes(label);
+  }
+
+  function findNavByLabels(labels, { exact = false, fromEnd = false } = {}) {
+    const root = sidebarRoot();
+    if (!root) return null;
+    const wanted = labels.map((l) => l.toLowerCase());
+    const nodes = Array.from(
+      root.querySelectorAll("button, a, [role='button'], [role='menuitem']"),
+    );
+    const ordered = fromEnd ? nodes.reverse() : nodes;
+    for (const node of ordered) {
+      const text = elementLabel(node).toLowerCase();
+      if (!text) continue;
+      for (const label of wanted) {
+        if (labelMatchesNav(text, label, { exact })) return node;
+      }
+    }
+    return null;
+  }
+
+  function navRowFor(node) {
+    if (!node) return null;
+    return (
+      node.closest("[data-explodex-nav]") ||
+      node.closest("li") ||
+      node.parentElement?.closest("div") ||
+      node.parentElement
+    );
+  }
+
+  function footerRowFor(node) {
+    if (!node) return null;
+    const footerRow =
+      node.closest("div.flex.items-center.gap-2") ||
+      node.closest("div.flex.items-center.gap-px") ||
+      node.closest("[class*='profile-footer' i]") ||
+      node.closest("[class*='ProfileFooter' i]");
+    if (footerRow?.parentElement) return footerRow;
+    return navRowFor(node);
+  }
+
+  function ensureNavMount(key) {
+    let mount = navMounts.get(key);
+    if (mount?.isConnected) return mount;
+    mount = document.createElement("div");
+    mount.className = "ex-nav-row";
+    mount.setAttribute("data-explodex-nav", key);
+    navMounts.set(key, mount);
+    return mount;
+  }
+
+  const sidebarNav = {
+    find: findNavByLabels,
+
+    insertAfter(referenceLabels, elementOrFactory, key = "nav-after") {
+      const ref = findNavByLabels(referenceLabels);
+      const row = navRowFor(ref);
+      if (!row?.parentElement) return false;
+      const mount = ensureNavMount(key);
+      const node =
+        typeof elementOrFactory === "function" ? elementOrFactory({ mount }) : elementOrFactory;
+      mount.replaceChildren(node);
+      row.parentElement.insertBefore(mount, row.nextSibling);
+      return true;
+    },
+
+    insertBefore(referenceLabels, elementOrFactory, key = "nav-before") {
+      const labels = Array.isArray(referenceLabels) ? referenceLabels : [referenceLabels];
+      const footerTarget = labels.some((l) => String(l).toLowerCase() === "settings");
+      const ref = findNavByLabels(labels, { exact: footerTarget, fromEnd: footerTarget });
+      const row = footerTarget ? footerRowFor(ref) : navRowFor(ref);
+      if (!row?.parentElement) return false;
+      const mount = ensureNavMount(key);
+      if (footerTarget) {
+        mount.classList.add("ex-nav-row-above-footer");
+      } else {
+        mount.classList.remove("ex-nav-row-above-footer");
+      }
+      const node =
+        typeof elementOrFactory === "function" ? elementOrFactory({ mount }) : elementOrFactory;
+      mount.replaceChildren(node);
+      row.parentElement.insertBefore(mount, row);
+      return true;
+    },
+
+    remove(key) {
+      const mount = navMounts.get(key);
+      if (mount) {
+        mount.remove();
+        navMounts.delete(key);
+      }
+    },
+  };
+
+  // ─── UI overlays (popover / dialog) ───────────────────────────────────────
+
+  function resolvePopoverAnchorRect(anchor, anchorRect) {
+    if (anchorRect && typeof anchorRect === "object") {
+      const left = Number(anchorRect.left ?? anchorRect.x ?? 0);
+      const top = Number(anchorRect.top ?? anchorRect.y ?? 0);
+      const width = Number(anchorRect.width ?? 0);
+      const height = Number(anchorRect.height ?? 0);
+      const right = Number(anchorRect.right ?? left + width);
+      const bottom = Number(anchorRect.bottom ?? top + height);
+      return { left, top, right, bottom, width, height };
+    }
+    return anchor?.getBoundingClientRect?.() ?? null;
+  }
+
+  function positionPopoverPanel(panel, { width, side, anchor, anchorRect } = {}) {
+    const margin = 8;
+    const offset = 6;
+    const rect = resolvePopoverAnchorRect(anchor, anchorRect);
+    if (!rect) {
+      panel.style.left = "12px";
+      panel.style.top = "12px";
+      return;
+    }
+
+    const panelHeight = Math.min(panel.offsetHeight || 360, window.innerHeight - margin * 2);
+    let left;
+    let top;
+    if (side === "left") {
+      left = rect.left - width - offset;
+      top = rect.top;
+    } else if (side === "bottom") {
+      left = rect.left;
+      top = rect.bottom + offset;
+    } else {
+      left = rect.right + offset;
+      top = rect.top;
+    }
+    left = Math.min(Math.max(margin, left), window.innerWidth - width - margin);
+    top = Math.min(Math.max(margin, top), window.innerHeight - panelHeight - margin);
+    panel.style.left = `${left}px`;
+    panel.style.top = `${top}px`;
+    panel.style.maxHeight = `${Math.max(160, window.innerHeight - top - margin)}px`;
+  }
+
+  const ui = {
+    navItem({
+      label,
+      icon,
+      subtitle,
+      compact = false,
+      active = false,
+      onClick,
+      className = "",
+    } = {}) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = ["ex-nav-btn", compact ? "ex-nav-btn-compact" : "", className]
+        .filter(Boolean)
+        .join(" ");
+      if (active) btn.setAttribute("aria-current", "page");
+      if (icon) {
+        const i = document.createElement("span");
+        i.className = "ex-nav-icon";
+        i.textContent = icon;
+        i.setAttribute("aria-hidden", "true");
+        btn.appendChild(i);
+      }
+      const text = document.createElement("span");
+      text.style.flex = "1";
+      text.textContent = subtitle ?? label ?? "";
+      if (subtitle && label) {
+        text.title = label;
+      }
+      btn.appendChild(text);
+      if (onClick) btn.addEventListener("click", onClick);
+      return btn;
+    },
+
+    closePopover() {
+      activePopover?.remove();
+      activePopover = null;
+    },
+
+    repositionPopover({ anchor, anchorRect, width, side } = {}) {
+      const backdrop = activePopover;
+      const state = backdrop?.__explodexPopover;
+      if (!state) return false;
+
+      if (anchor !== undefined) state.anchor = anchor;
+      if (anchorRect !== undefined) state.anchorRect = anchorRect;
+      if (width !== undefined) {
+        state.width = width;
+        state.panel.style.width = `${width}px`;
+      }
+      if (side !== undefined) state.side = side;
+      positionPopoverPanel(state.panel, state);
+      return true;
+    },
+
+    popover({
+      anchor,
+      anchorRect,
+      title,
+      content,
+      width = 380,
+      side = "right",
+      onClose,
+    } = {}) {
+      ui.closePopover();
+      const backdrop = document.createElement("div");
+      backdrop.className = "ex-popover-backdrop";
+      const panel = document.createElement("div");
+      panel.className = "ex-popover";
+      panel.style.width = `${width}px`;
+      panel.setAttribute("role", "dialog");
+      panel.setAttribute("aria-label", title ?? "Panel");
+
+      const header = document.createElement("div");
+      header.className = "ex-popover-header";
+      const h = document.createElement("div");
+      h.className = "ex-popover-title";
+      h.textContent = title ?? "";
+      const close = components.button({
+        label: "✕",
+        color: "ghost",
+        size: "iconSm",
+        onClick: () => {
+          ui.closePopover();
+          onClose?.();
+        },
+      });
+      header.appendChild(h);
+      header.appendChild(close);
+
+      const body = document.createElement("div");
+      body.className = "ex-popover-body";
+      if (typeof content === "function") body.appendChild(content());
+      else if (content instanceof Node) body.appendChild(content);
+      else if (content != null) body.textContent = String(content);
+
+      panel.appendChild(header);
+      panel.appendChild(body);
+      backdrop.appendChild(panel);
+      document.body.appendChild(backdrop);
+      activePopover = backdrop;
+
+      const state = { panel, width, side, anchor, anchorRect };
+      backdrop.__explodexPopover = state;
+      positionPopoverPanel(panel, state);
+
+      const onBackdrop = (event) => {
+        if (event.target === backdrop) {
+          ui.closePopover();
+          onClose?.();
+        }
+      };
+      const onKey = (event) => {
+        if (event.key === "Escape") {
+          ui.closePopover();
+          onClose?.();
+        }
+      };
+      backdrop.addEventListener("click", onBackdrop);
+      global.addEventListener("keydown", onKey, { once: true });
+      return backdrop;
+    },
+
+    confirm({
+      title,
+      message,
+      confirmLabel = "Confirm",
+      cancelLabel = "Cancel",
+      onConfirm,
+      onCancel,
+    } = {}) {
+      const backdrop = document.createElement("div");
+      backdrop.className = "ex-dialog-backdrop";
+      const dialog = document.createElement("div");
+      dialog.className = "ex-dialog";
+      dialog.setAttribute("role", "alertdialog");
+
+      const h = document.createElement("div");
+      h.style.cssText = "font-weight:600;font-size:15px;margin-bottom:8px";
+      h.textContent = title ?? "Confirm";
+      const p = document.createElement("div");
+      p.style.cssText = "color:var(--color-text-tertiary,color-mix(in srgb,currentColor 65%,transparent))";
+      p.textContent = message ?? "";
+
+      const actions = document.createElement("div");
+      actions.style.cssText = "display:flex;justify-content:flex-end;gap:8px;margin-top:14px";
+      actions.appendChild(
+        components.button({
+          label: cancelLabel,
+          color: "ghost",
+          onClick: () => {
+            backdrop.remove();
+            onCancel?.();
+          },
+        }),
+      );
+      actions.appendChild(
+        components.button({
+          label: confirmLabel,
+          color: "primary",
+          onClick: () => {
+            backdrop.remove();
+            onConfirm?.();
+          },
+        }),
+      );
+
+      dialog.appendChild(h);
+      dialog.appendChild(p);
+      dialog.appendChild(actions);
+      backdrop.appendChild(dialog);
+      document.body.appendChild(backdrop);
+      return backdrop;
+    },
+  };
+
+  // ─── Plugin lifecycle ─────────────────────────────────────────────────────
+
+  function defaultEnabledState() {
+    return {
+      "usage-reset-sidebar": true,
+      "reasoning-effort-prefix": true,
+      "pin-scope-menu": true,
+      "explodex-demo": false,
+    };
+  }
+
+  function readEnabledMap() {
+    const stored =
+      storage.persisted.get(PLUGIN_ENABLED_KEY, null) ??
+      storage.persisted.get(LEGACY_PLUGIN_ENABLED_KEY, null);
+    return { ...defaultEnabledState(), ...(stored ?? {}) };
+  }
+
+  function writeEnabledMap(map) {
+    storage.persisted.set(PLUGIN_ENABLED_KEY, map);
+  }
+
+  function isPluginEnabled(id) {
+    const map = readEnabledMap();
+    return map[id] !== false;
+  }
+
+  function setPluginEnabled(id, enabled) {
+    const map = readEnabledMap();
+    map[id] = enabled;
+    writeEnabledMap(map);
+  }
+
+  function normalizeManifest(manifest = {}) {
+    return {
+      dynamicLoadable: true,
+      dynamicUnloadable: true,
+      builtin: false,
+      ...manifest,
+    };
+  }
+
+  function registerPlugin(manifest, setup) {
+    const normalized = normalizeManifest(manifest);
+    const id = normalized.id ?? `plugin-${Math.random().toString(36).slice(2, 9)}`;
+    normalized.id = id;
+    installStyles();
+
+    if (pluginCatalog.has(id) && !plugins.has(id)) {
+      pluginCatalog.set(id, { ...pluginCatalog.get(id), ...normalized });
+    } else if (!pluginCatalog.has(id)) {
+      pluginCatalog.set(id, normalized);
+    }
+
+    const pluginApi = {
+      ...api,
+      pluginId: id,
+      log: log.plugin(id),
+      waitFor: inject.waitFor,
+      mount: (zoneId, nodeOrFactory, opts = {}) =>
+        inject.mount(zoneId, nodeOrFactory, { ...opts, pluginId: id }),
+    };
+
+    const pluginLog = log.plugin(id);
+    pluginLog.info("registering", { name: normalized.name, version: normalized.version });
+
+    let teardown;
+    try {
+      teardown = typeof setup === "function" ? setup(pluginApi) : undefined;
+    } catch (err) {
+      pluginLog.error("setup failed", err);
+      return { id, ok: false, error: err };
+    }
+
+    if (typeof teardown === "function") {
+      pluginTeardowns.set(id, teardown);
+    }
+
+    plugins.set(id, { manifest: normalized, api: pluginApi });
+    pluginLog.info("registered");
+    return { id };
+  }
+
+  function unregisterPlugin(id, { runTeardown = true } = {}) {
+    const pluginLog = log.plugin(id);
+    pluginLog.info("unregistering");
+    if (runTeardown) {
+      const teardown = pluginTeardowns.get(id);
+      if (teardown) {
+        try {
+          teardown();
+          pluginLog.info("teardown complete");
+        } catch (err) {
+          pluginLog.error("teardown failed", err);
+        }
+      }
+      pluginTeardowns.delete(id);
+    }
+    inject.unmount(id);
+    sidebarNav.remove(`plugin-${id}`);
+    plugins.delete(id);
+  }
+
+  function declarePlugin(manifest, source) {
+    const normalized = normalizeManifest(manifest);
+    if (!normalized.id) return null;
+    pluginCatalog.set(normalized.id, normalized);
+    if (source) pluginSources.set(normalized.id, source);
+    return normalized.id;
+  }
+
+  function loadPluginSource(id) {
+    const pluginLog = log.plugin(id);
+    const source = pluginSources.get(id);
+    if (!source) {
+      pluginLog.warn("no source in catalog");
+      return false;
+    }
+    if (plugins.has(id)) {
+      pluginLog.debug("already loaded");
+      return true;
+    }
+    pluginLog.info("loading source");
+    try {
+      // eslint-disable-next-line no-new-func
+      const runner = new Function(source);
+      runner();
+      const ok = plugins.has(id);
+      if (ok) pluginLog.info("loaded");
+      else pluginLog.warn("source ran but plugin did not register");
+      return ok;
+    } catch (err) {
+      pluginLog.error("load failed", err);
+      return false;
+    }
+  }
+
+  function unloadPlugin(id) {
+    const entry = pluginCatalog.get(id);
+    if (!entry) return false;
+    if (entry.builtin) return false;
+    if (entry.dynamicUnloadable === false) return false;
+    unregisterPlugin(id);
+    return true;
+  }
+
+  async function restartWrapped({ reason } = {}) {
+    storage.persisted.set(PLUGIN_RESTART_KEY, {
+      at: Date.now(),
+      reason: reason ?? "plugin-change",
+    });
+    const metaPaths = global.__EXPLODEX_PATHS__ ?? {};
+    const relaunch = metaPaths.relaunchScript;
+    if (relaunch && bridge.isAvailable()) {
+      try {
+        await bridge.send("open-external", { url: relaunch });
+      } catch (err) {
+        console.warn("[Explodex] open-external relaunch failed", err);
+      }
+      global.setTimeout(() => {
+        bridge.send("quit-app").catch(() => {});
+      }, 350);
+      return true;
+    }
+    components.statusToast("Quit Codex (Cmd+Q), then relaunch via Explodex.app");
+    return false;
+  }
+
+  function requestPluginToggle(id, enabled) {
+    const entry = pluginCatalog.get(id) ?? plugins.get(id)?.manifest;
+    if (!entry) return;
+
+    const needsRestart =
+      (enabled && entry.dynamicLoadable === false) ||
+      (!enabled && entry.dynamicUnloadable === false);
+
+    if (needsRestart) {
+      ui.confirm({
+        title: "Restart required",
+        message: `${entry.name ?? id} requires a restart to ${enabled ? "enable" : "disable"}. Relaunch via Explodex?`,
+        confirmLabel: "Restart Explodex",
+        onConfirm: () => {
+          setPluginEnabled(id, enabled);
+          restartWrapped({ reason: `${enabled ? "enable" : "disable"}:${id}` });
+        },
+      });
+      return;
+    }
+
+    setPluginEnabled(id, enabled);
+    if (enabled) {
+      loadPluginSource(id);
+    } else {
+      unloadPlugin(id);
+    }
+  }
+
+  function initFromCatalog() {
+    const catalog = global.__EXPLODEX_PLUGIN_CATALOG__;
+    if (!Array.isArray(catalog)) return;
+    for (const entry of catalog) {
+      if (!entry?.id) continue;
+      declarePlugin(entry, entry.source);
+      if (isPluginEnabled(entry.id)) {
+        loadPluginSource(entry.id);
+      }
+    }
+  }
+
+  const pluginManager = {
+    register: registerPlugin,
+    unregister: unregisterPlugin,
+    declare: declarePlugin,
+    list: () => [...plugins.keys()],
+    listCatalog: () => [...pluginCatalog.keys()],
+    get: (id) => plugins.get(id)?.manifest ?? pluginCatalog.get(id) ?? null,
+    isEnabled: isPluginEnabled,
+    setEnabled: setPluginEnabled,
+    enable: (id) => requestPluginToggle(id, true),
+    disable: (id) => requestPluginToggle(id, false),
+    load: loadPluginSource,
+    unload: unloadPlugin,
+    initFromCatalog,
+    restartWrapped,
+  };
+
+  function destroy() {
+    for (const id of [...plugins.keys()]) {
+      if (!pluginCatalog.get(id)?.builtin) unregisterPlugin(id);
+    }
+    ui.closePopover();
+    for (const node of mounted.values()) node.remove();
+    mounted.clear();
+    for (const mount of navMounts.values()) mount.remove();
+    navMounts.clear();
+    for (const observer of observers) observer.disconnect();
+    observers.clear();
+    plugins.clear();
+    pluginCatalog.clear();
+    pluginTeardowns.clear();
+    pluginSources.clear();
+    messageHandlers.clear();
+    document.getElementById(STYLE_ID)?.remove();
+    removeRuntimeDom();
+    delete global.Explodex;
+    if (global.BetterCodex === api) delete global.BetterCodex;
+  }
+
+  function removeRuntimeDom() {
+    document.querySelectorAll(RUNTIME_DOM_SELECTOR).forEach((n) => n.remove());
+  }
+
+  // ─── Meta reference ───────────────────────────────────────────────────────
+
+  const meta = {
+    codexVersion: null,
+    selectors: Object.fromEntries(
+      Object.values(ZONE_DEFINITIONS).map((z) => [z.id, z.selectors]),
+    ),
+    routes: [
+      "/",
+      "thread/:conversationId",
+      "/remote/:taskId",
+      "/settings/*",
+      "/plugins",
+      "/skills",
+      "/inbox",
+      "/automations",
+      "/mcp-app/:server/:toolName",
+      "/hotkey-window/*",
+      "/global-dictation/*",
+      "/avatar-overlay",
+      "/diff",
+      "/pull-requests/:pullRequestNumber",
+    ],
+    persistedKeys: {
+      sidebarOrganizeMode: "sidebar-organize-mode-v1",
+      sidebarMode: "electron-sidebar-mode-v1",
+      threadSortKey: "thread-sort-key",
+      sidebarCollapsedGroups: "sidebar-collapsed-groups",
+      sidebarSectionOrder: "sidebar-section-order-v1",
+      sidebarCollapsedSections: "sidebar-collapsed-sections-v1",
+    },
+    buttonTokens: { colors: Object.keys(BUTTON_COLOR), sizes: Object.keys(BUTTON_SIZE) },
+  };
+
+  // ─── Public API ───────────────────────────────────────────────────────────
+
+  const api = {
+    version: VERSION,
+    zones: Object.keys(ZONE_DEFINITIONS),
+    zoneDefinitions: ZONE_DEFINITIONS,
+    inject,
+    components,
+    storage,
+    bridge,
+    http,
+    composer,
+    query,
+    sidebarNav,
+    ui,
+    log,
+    plugins: pluginManager,
+    meta,
+    destroy,
+
+    // Legacy aliases (v0.0.1-poc compat)
+    mount: inject.mount,
+    waitFor: inject.waitFor,
+    waitForZone: inject.waitFor,
+    registerPlugin,
+    insertIntoComposer: composer.insertText.bind(composer),
+    showStatus: components.statusToast,
+  };
+
+  installStyles();
+  removeRuntimeDom();
+  global.Explodex = api;
+  Object.defineProperty(global, "BetterCodex", {
+    configurable: true,
+    enumerable: true,
+    writable: true,
+    value: api,
+  });
+
+  // ─── Built-in shell plugin (nav + plugin manager) ─────────────────────────
+
+  registerPlugin(
+    {
+      id: "explodex-shell",
+      name: "Explodex",
+      version: VERSION,
+      builtin: true,
+      dynamicLoadable: false,
+      dynamicUnloadable: false,
+    },
+    (ctx) => {
+      const { waitFor, components: c, plugins: pm, sidebarNav: nav, ui: overlay } = ctx;
+      let shellOpen = false;
+
+      function renderPluginManager(anchor) {
+        const ids = pm.listCatalog();
+        overlay.popover({
+          anchor,
+          title: "Explodex plugins",
+          width: 400,
+          onClose: () => {
+            shellOpen = false;
+          },
+          content: () => {
+            const body = document.createElement("div");
+            if (!ids.length) {
+              body.textContent = "No plugins in catalog.";
+              return body;
+            }
+            for (const id of ids) {
+              if (id === "explodex-shell") continue;
+              const manifest = pm.get(id);
+              if (!manifest) continue;
+              const row = document.createElement("div");
+              row.className = "ex-plugin-row";
+
+              const checkbox = document.createElement("input");
+              checkbox.type = "checkbox";
+              checkbox.checked = pm.isEnabled(id);
+              checkbox.disabled =
+                manifest.dynamicLoadable === false && manifest.dynamicUnloadable === false;
+              checkbox.addEventListener("change", () => {
+                const next = checkbox.checked;
+                const manifest = pm.get(id);
+                const needsRestart =
+                  (next && manifest?.dynamicLoadable === false) ||
+                  (!next && manifest?.dynamicUnloadable === false);
+                if (needsRestart) {
+                  checkbox.checked = pm.isEnabled(id);
+                }
+                if (next) pm.enable(id);
+                else pm.disable(id);
+                if (!needsRestart) {
+                  global.setTimeout(() => {
+                    checkbox.checked = pm.isEnabled(id);
+                  }, 0);
+                }
+              });
+
+              const metaCol = document.createElement("div");
+              metaCol.style.flex = "1";
+              const title = document.createElement("div");
+              title.style.fontWeight = "600";
+              title.textContent = manifest.name ?? id;
+              const detail = document.createElement("div");
+              detail.style.cssText =
+                "font-size:11px;color:var(--color-text-tertiary,color-mix(in srgb,currentColor 55%,transparent))";
+              const flags = [];
+              if (manifest.dynamicLoadable === false) flags.push("load: restart");
+              if (manifest.dynamicUnloadable === false) flags.push("unload: restart");
+              const loaded = pm.list().includes(id);
+              detail.textContent = [
+                `v${manifest.version ?? "?"} · ${loaded ? "loaded" : "not loaded"}`,
+                flags.length ? flags.join(" · ") : null,
+              ]
+                .filter(Boolean)
+                .join(" — ");
+              metaCol.appendChild(title);
+              metaCol.appendChild(detail);
+
+              row.appendChild(checkbox);
+              row.appendChild(metaCol);
+              body.appendChild(row);
+            }
+            return body;
+          },
+        });
+      }
+
+      function mountShellNav() {
+        const btn = overlay.navItem({
+          icon: "💥",
+          label: "Explodex",
+          onClick: (event) => {
+            shellOpen = !shellOpen;
+            if (!shellOpen) {
+              overlay.closePopover();
+              return;
+            }
+            renderPluginManager(event.currentTarget);
+          },
+        });
+        return nav.insertAfter(["Plugins", "Skills"], btn, "explodex-shell");
+      }
+
+      mountShellNav();
+      waitFor("sidebar", mountShellNav);
+    },
+  );
+
+  // ─── Optional demo plugin (disabled by default) ───────────────────────────
+
+  declarePlugin({
+    id: "explodex-demo",
+    name: "Explodex Demo",
+    version: VERSION,
+    builtin: true,
+    dynamicLoadable: false,
+    dynamicUnloadable: true,
+  });
+
+  if (isPluginEnabled("explodex-demo")) {
+    registerPlugin(
+      {
+        id: "explodex-demo",
+        name: "Explodex Demo",
+        version: VERSION,
+        builtin: true,
+        dynamicLoadable: false,
+        dynamicUnloadable: true,
+      },
+      (ctx) => {
+        const { mount, waitFor, components: c, composer: comp, bridge: b } = ctx;
+        const renderAboveComposer = () =>
+          mount("aboveComposer", () =>
+            c.panel({
+              title: "Explodex Demo",
+              children: () => {
+                const row = document.createElement("div");
+                row.style.cssText = "display:flex;gap:6px;flex-wrap:wrap";
+                row.appendChild(
+                  c.button({
+                    label: "Insert greeting",
+                    color: "secondary",
+                    size: "composerSm",
+                    onClick: () => {
+                      if (!comp.insertText("Hello from Explodex! ")) {
+                        c.statusToast("Composer not ready");
+                      }
+                    },
+                  }),
+                );
+                row.appendChild(
+                  c.button({
+                    label: `Theme: ${b.theme()}`,
+                    color: "ghost",
+                    size: "composerSm",
+                    onClick: () =>
+                      c.statusToast(`Build: ${b.buildFlavor()}, Owl: ${b.usesOwlShell()}`),
+                  }),
+                );
+                return row;
+              },
+            }),
+          );
+        renderAboveComposer();
+        waitFor("aboveComposer", renderAboveComposer);
+      },
+    );
+  }
+
+  log.info("initializing", { version: VERSION });
+  initFromCatalog();
+
+  log.info("ready", {
+    zones: api.zones.length,
+    bridge: bridge.isAvailable(),
+    theme: bridge.theme(),
+    catalog: pluginManager.listCatalog().length,
+    loaded: pluginManager.list().length,
+  });
+})(window);

@@ -1,0 +1,10 @@
+{
+  "id": "reasoning-effort-prefix",
+  "name": "Reasoning Effort Prefix",
+  "version": "2.1.0",
+  "entry": "index.js",
+  "documentation": "README.md",
+  "description": "Applies a reasoning effort from composer prefixes like !m or !xh, strips the prefix on send, then restores the previous effort.",
+  "dynamicLoadable": true,
+  "dynamicUnloadable": true
+}

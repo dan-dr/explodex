@@ -1,0 +1,9 @@
+{
+  "id": "pin-scope-menu",
+  "name": "Pin Scope Menu",
+  "version": "1.2.0",
+  "entry": "index.js",
+  "description": "Adds Global vs Project pin choices and keeps project-pinned threads at the top of their project group.",
+  "dynamicLoadable": true,
+  "dynamicUnloadable": true
+}

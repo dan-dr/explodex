@@ -1,0 +1,14 @@
+{
+  "name": "explodex",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A local Codex desktop renderer extension SDK and plugin playground.",
+  "scripts": {
+    "docs:list": "find docs -maxdepth 2 -type f -name '*.md' | sort",
+    "inject": "./scripts/launch.sh --inject-only",
+    "launch": "./scripts/launch.sh",
+    "sync": "./scripts/sync-wrapper.sh",
+    "validate": "./scripts/validate.sh"
+  }
+}
+

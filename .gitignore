@@ -1,0 +1,31 @@
+.DS_Store
+*.log
+*.tmp
+*.bak
+
+# Local app/user data
+.explodex/
+.explodex-user-data/
+.bettercodex-user-data/
+
+# Generated output
+dist/*
+!dist/.gitkeep
+*.app/
+
+# Proprietary / reverse-engineered local artifacts
+vendor/
+extracted/
+tmp_extracted/
+*.asar
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# JavaScript
+node_modules/
+coverage/
+
