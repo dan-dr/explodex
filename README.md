@@ -1,8 +1,6 @@
 # Explodex  💥 💥 💥 Mod the official Codex app
 
-<img width="498" height="326" alt="image" src="https://i.pinimg.com/originals/1a/c6/70/1ac6702bbd0296122a33da8751523125.gif" />
-
-<img width="498" height="326" alt="image" src="https://github.com/dan-dr/explodex/blob/0bd8090158bc8e5b998333eddfb7dd078727c64e/assets/icon/icon-1024.png?raw=true" />
+<img width="400" height="400" alt="image" src="https://github.com/user-attachments/assets/1249ff36-cdaa-4f05-ac98-2dff2bdec38a" />
 
 Explodex is an extension SDK and plugin playground for the [Codex](https://openai.com/codex) desktop app. It injects a small renderer runtime into a Codex Electron window, exposes DOM zones such as the sidebar and composer, and loads plugins from `plugins/<id>/`.
 
