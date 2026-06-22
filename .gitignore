@@ -8,8 +8,7 @@
 .explodex-user-data/
 
 # Generated output
-dist/*
-!dist/.gitkeep
+dist/
 *.app/
 
 # Proprietary / reverse-engineered local artifacts

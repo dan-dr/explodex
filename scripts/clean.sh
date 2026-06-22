@@ -29,7 +29,7 @@ Options:
   -h, --help  Show this help
 
 Default removes:
-  - dist/* (keeps dist/.gitkeep)
+  - dist/ (entire directory)
   - .explodex-user-data/, .perf-traces/
   - repo-root *.app bundles, *.log, *.tmp, *.bak, .DS_Store
   - assets/icon/Explodex.iconset (icon build scratch)
@@ -78,8 +78,7 @@ echo "Explodex clean (root: $ROOT)"
 
 # ── Repo artifacts ────────────────────────────────────────────────────────────
 
-remove_glob "$ROOT/dist/*"
-[[ -f "$ROOT/dist/.gitkeep" ]] || touch "$ROOT/dist/.gitkeep"
+remove_path "$ROOT/dist"
 
 for dir in .explodex-user-data .perf-traces .explodex; do
   remove_path "$ROOT/$dir"
