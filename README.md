@@ -4,6 +4,9 @@ Explodex is an extension SDK and plugin playground for the [Codex](https://opena
 
 > ⚠️ **Warning** — This is extremely hacky, built almost entirely with AI. It works by injecting into the renderer of an app whose internals are reverse-engineered, so **APIs can break between Codex releases** without warning. It runs entirely locally and does not modify your installed `/Applications/Codex.app`. Use at your own risk. Explodex is **not affiliated with, endorsed by, or supported by OpenAI**.
 
+<video src="https://github.com/user-attachments/assets/7cc60fed-cdc1-4083-8800-c493e2aa8025" width="100%" controls autoplay loop muted></video>
+
+
 ## Why make this monstrosity?
 I wanted something like BetterDiscord/Legcord for codex, being able to modify the app in slight ways for UX reasons. But Discord is much easier to hook into than codex.
 
