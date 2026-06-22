@@ -2,8 +2,6 @@
 
 <img width="498" height="326" alt="image" src="https://i.pinimg.com/originals/1a/c6/70/1ac6702bbd0296122a33da8751523125.gif" />
 
-Explore, explit and explode.
-
 Explodex is an extension SDK and plugin playground for the [Codex](https://openai.com/codex) desktop app. It injects a small renderer runtime into a Codex Electron window, exposes DOM zones such as the sidebar and composer, and loads plugins from `plugins/<id>/`.
 
 > ⚠️ **Warning** — This is extremely hacky, built almost entirely with AI. It works by injecting into the renderer of an app whose internals are reverse-engineered, so **APIs can break between Codex releases** without warning. It runs entirely locally and does not modify your installed `/Applications/Codex.app`. Use at your own risk. Explodex is **not affiliated with, endorsed by, or supported by OpenAI**.
