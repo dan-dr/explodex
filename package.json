@@ -2,13 +2,18 @@
   "name": "explodex",
   "version": "0.1.0",
   "private": true,
-  "description": "A local Codex desktop renderer extension SDK and plugin playground.",
+  "description": "A plugin SDK for extending the Codex desktop app.",
+  "types": "sdk/explodex-sdk.d.ts",
   "scripts": {
+    "dev": "bun scripts/dev.ts",
     "docs:list": "find docs -maxdepth 2 -type f -name '*.md' | sort",
     "inject": "./scripts/launch.sh --inject-only",
     "launch": "./scripts/launch.sh",
-    "sync": "./scripts/sync-wrapper.sh",
+    "package": "bun scripts/package-app.ts",
+    "install:app": "bun scripts/install-app.ts",
+    "build:icon": "zsh scripts/build-icon.sh",
+    "clean": "zsh scripts/clean.sh",
+    "sync": "bun scripts/package-app.ts",
     "validate": "./scripts/validate.sh"
   }
 }
-

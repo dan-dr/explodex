@@ -35,12 +35,12 @@
     {
       id: "reasoning-effort-prefix",
       name: "Reasoning Effort Prefix",
-      version: "2.1.0",
+      version: "2.2.0",
       dynamicLoadable: true,
       dynamicUnloadable: true,
     },
     (api) => {
-      const { composer, bridge, ui, components: c, log } = api;
+      const { composer, bridge, codex, ui, components: c, log } = api;
       log.info("setup start (option D)");
 
       let modelCache = { at: 0, model: null, effort: null, levels: [], models: [] };
@@ -197,8 +197,19 @@
 
           const { models, defaultModel } = normalizeModelsPayload(modelsRes);
           const config = configRes?.config ?? configRes ?? {};
+          // Prefer the active thread's live model (from the renderer fiber state)
+          // so effort-only changes never alter the model. The IPC bridge reads
+          // below are unreliable in current builds and only used as fallback.
+          const activeConversationId = getConversationId();
+          const activeModel = activeConversationId
+            ? codex?.getThreadModel?.(activeConversationId)
+            : null;
           const currentModel =
-            config.model ?? defaultModel?.model ?? models.find((m) => m.isDefault)?.model ?? "gpt-5.5";
+            activeModel ??
+            config.model ??
+            defaultModel?.model ??
+            models.find((m) => m.isDefault)?.model ??
+            "gpt-5.5";
           const currentEffort = config.model_reasoning_effort ?? defaultModel?.defaultReasoningEffort ?? "medium";
           const supported = new Set(supportedEffortsForModel(models, currentModel));
           const levels = LEVEL_CATALOG.filter((l) => supported.has(l.effort));
@@ -238,10 +249,9 @@
         if (trimmed === "!") return true;
 
         const partial = trimmed.slice(1);
-        if (/\s/.test(partial)) {
-          const parsed = parsePrefix(text);
-          return parsed != null && parsed.prompt.length === 0;
-        }
+        // Once a space follows the prefix (e.g. "!m "), the user has committed to
+        // the level and is writing their prompt — close the hint popover.
+        if (/\s/.test(partial)) return false;
 
         return PREFIX_ORDER.some((l) => l.prefix.startsWith(partial.toLowerCase()));
       }
@@ -328,12 +338,16 @@
       }
 
       async function pushThreadEffort(effort, model, conversationId) {
-        const result = await bridge.send("update-thread-settings-for-next-turn", {
-          conversationId,
-          threadSettings: { model, effort },
+        // Use the in-renderer callback (via fiber walk) rather than the IPC
+        // bridge: the bridge routes to the main-process AppServer and never
+        // updates the renderer atoms the composer ships at submit time.
+        const currentModel = codex?.getThreadModel?.(conversationId) ?? model;
+        const ok = await codex.applyThreadSettingsForNextTurn(conversationId, {
+          model: currentModel,
+          effort,
         });
-        if (result === null) {
-          throw new Error("update-thread-settings-for-next-turn returned no response");
+        if (!ok) {
+          throw new Error("in-renderer thread settings update failed");
         }
         return { mode: "thread", conversationId };
       }

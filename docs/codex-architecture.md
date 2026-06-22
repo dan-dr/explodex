@@ -20,6 +20,7 @@
 10. [Suggested Explodex injection API](#10-suggested-explodex-injection-api)
 11. [Injection methods](#11-injection-methods)
 12. [Risks & stability](#12-risks--stability)
+    - See also: [sdk-fragility.md](./sdk-fragility.md) — SDK breakage modes, fiber/bridge risks, upgrade checklist
 
 ---
 
@@ -574,10 +575,14 @@ interface Explodex {
 CODEX_ELECTRON_USER_DATA_PATH="$PWD/.explodex-user-data" \
   ./vendor/Codex.app/Contents/MacOS/Codex --remote-debugging-port=9333
 
-python3 scripts/cdp-inject.py
+bun scripts/cdp-inject.ts
 ```
 
-Uses `Page.addScriptToEvaluateOnNewDocument` + `Runtime.evaluate`. No ASAR mutation.
+Uses `Page.addScriptToEvaluateOnNewDocument` + `Runtime.evaluate`. No ASAR mutation. The injector applies the SDK/catalog to all matching renderer page targets found during its startup watch window (`EXPLODEX_TARGET_WATCH_MS`, default `8000`) so secondary startup renderers are not missed.
+
+For how this compares to `--inspect-brk`, what can be patched before React loads, and why massive early hooks still do not enable generic React props injection, see [early-injection-and-inspect-brk.md](./early-injection-and-inspect-brk.md).
+
+Within a renderer, plugins that depend on React-owned DOM should prefer `Explodex.observeZone(zoneId, callback)` over one-shot `waitFor()`. `observeZone` calls immediately when a zone appears and again when React replaces that zone anchor, allowing plugins to reinsert sidebar/nav mounts after resize, display, or route lifecycle remounts. Pass `{ includeMutations: true }` only for idempotent callbacks that also need a debounced signal when React rewrites children under the same anchor.
 
 ### Method 2: ASAR patch (self-contained bundle)
 
@@ -601,7 +606,7 @@ Paste `sdk/explodex-sdk.js` into console (lost on reload unless CDP pre-inject).
 | Chunk hash changes each release | Prefer `data-testid` and `data-*` portal attrs over class names |
 | CSP blocks external scripts | Bundle plugins inline; `style-src 'unsafe-inline'` allows injected CSS |
 | Code signing after ASAR patch | Ad-hoc re-sign or use CDP injection |
-| React internals unstable | Stay DOM-zone based; don't patch React fiber |
+| React internals unstable | Stay DOM-zone based; avoid fiber for production — SDK `codex.*` is a fallback only ([sdk-fragility.md](./sdk-fragility.md) §2) |
 | Official plugin system exists | `plugins-page-*.js`, MCP sandbox — scope unclear for shell extension |
 | ProseMirror controller not exposed | Use DOM `insertText` / `execCommand` |
 | Rate limit data server-side | Use `Explodex.http.get("/wham/usage")`; not in local storage |

@@ -52,14 +52,14 @@ The injector is runtime-only. It does not patch ASAR files.
 
 SDK resolution currently checks:
 
-1. repo-style paths near the script (`sdk/explodex-sdk.js`, legacy `bettercodex-sdk.js`)
-2. bundled Resources paths next to the injector (`explodex-sdk.js`, legacy `bettercodex-sdk.js`)
+1. repo-style paths near the script (`sdk/explodex-sdk.js`)
+2. bundled Resources paths next to the injector (`explodex-sdk.js`)
 3. current working directory SDK paths
-4. `EXPLODEX_SDK_PATH` / `BETTERCODEX_SDK_PATH`
+4. `EXPLODEX_SDK_PATH`
 
 Plugin directory resolution currently checks:
 
-1. `EXPLODEX_PLUGINS_DIR` / `BETTERCODEX_PLUGINS_DIR`
+1. `EXPLODEX_PLUGINS_DIR`
 2. `Contents/Resources/plugins`
 3. a project-ish sibling path
 4. `scripts/../plugins`
@@ -93,7 +93,7 @@ The local ignored wrapper is a shell-script app bundle. Its executable:
 Observed local state:
 
 - `Explodex.app/Contents/Info.plist` declares `com.explodex.app`
-- `codesign -dv` reports an old ad-hoc signature identifier `com.bettercodex.app`
+- `codesign -dv` may report stale ad-hoc signature metadata from prior local builds
 - the signature is not a trustworthy package artifact; packaging should regenerate/sign the bundle
 
 ### `scripts/relaunch-explodex.sh`

@@ -92,7 +92,6 @@
 
   const VERSION = "1.1.0";
   const PLUGIN_ENABLED_KEY = "explodex-plugin-enabled";
-  const LEGACY_PLUGIN_ENABLED_KEY = "bettercodex-plugin-enabled";
   const PLUGIN_RESTART_KEY = "explodex-plugin-restart-pending";
   const STYLE_ID = "explodex-sdk-style";
   const MOUNT_ATTR = "data-explodex-mount";
@@ -100,15 +99,10 @@
   const PERSISTED_PREFIX = "codex:persisted-atom:";
   const RUNTIME_DOM_SELECTOR = [
     ".ex-pill",
-    ".bc-pill",
     ".ex-status-fixed",
-    ".bc-status-fixed",
     ".ex-dialog-backdrop",
-    ".bc-dialog-backdrop",
     ".ex-popover-backdrop",
-    ".bc-popover-backdrop",
     ".ex-nav-row",
-    ".bc-nav-row",
   ].join(",");
 
   const mounted = new Map();
@@ -296,13 +290,8 @@
       description: "Left sidebar / floating panel",
       selectors: [
         '[data-testid="app-shell-floating-left-panel"]',
+        "aside.app-shell-left-panel",
         "[data-explodex-sidebar]",
-        '[data-testid*="sidebar" i]',
-        "aside",
-        '[aria-label*="sidebar" i]',
-        '[aria-label*="Sidebar" i]',
-        '[class*="sidebar" i]',
-        '[class*="SideBar" i]',
       ],
       mount: "append",
       priority: 10,
@@ -545,10 +534,25 @@
     },
 
     async rpc(method, params = {}) {
-      const bridge = global.electronBridge;
-      if (!bridge?.sendMessageFromView) return null;
+      const appServerSend = global.__explodexAppServerSend || global.__bcAppServerSend;
+      if (appServerSend) {
+        try {
+          return await appServerSend(method, params);
+        } catch (err) {
+          console.warn("[Explodex] AppServer RPC failed:", method, err);
+          return null;
+        }
+      }
+
+      if (!http.isAvailable()) return null;
       try {
-        return await bridge.sendMessageFromView({ type: method, params });
+        const flatRpcMethods = new Set(["get-global-state", "set-global-state"]);
+        const body = flatRpcMethods.has(method)
+          ? (params.params ?? params)
+          : params.params != null
+            ? { params: params.params }
+            : params;
+        return await http.post(`vscode://codex/${method}`, body);
       } catch (err) {
         console.warn("[Explodex] RPC failed:", method, err);
         return null;
@@ -696,6 +700,32 @@
 
   // ─── Storage ──────────────────────────────────────────────────────────────
 
+  function reactFiber(node) {
+    if (!node || typeof node !== "object") return null;
+    const key = Object.keys(node).find((name) => name.startsWith("__reactFiber"));
+    return key ? node[key] : null;
+  }
+
+  function getQueryClient() {
+    let fiber = reactFiber(document.querySelector("nav") ?? document.documentElement);
+    for (let depth = 0; depth < 200 && fiber; depth += 1) {
+      const client = fiber.memoizedProps?.value;
+      if (client?.getQueryCache && client?.setQueryData) return client;
+      fiber = fiber.return;
+    }
+    return null;
+  }
+
+  function codexGlobalStateQueryKey(key) {
+    return ["vscode", "get-global-state", JSON.stringify({ key })];
+  }
+
+  function syncGlobalStateQueryCache(key, value) {
+    const queryClient = getQueryClient();
+    if (!queryClient) return;
+    queryClient.setQueryData(codexGlobalStateQueryKey(key), { value });
+  }
+
   const storage = {
     persisted: {
       _fullKey(key) {
@@ -766,6 +796,7 @@
 
       async set(key, value) {
         await bridge.rpc("set-global-state", { params: { key, value } });
+        syncGlobalStateQueryCache(key, value);
       },
     },
   };
@@ -936,6 +967,184 @@
     },
   };
 
+  // ─── Codex internals (React fiber access) ─────────────────────────────────
+  // The in-renderer AppServer router and thread managers live in module scope and
+  // are not reachable via globals. The official `electronBridge.sendMessageFromView`
+  // IPC path routes to the MAIN-process AppServer and does NOT update the renderer
+  // manager / Jotai atoms that the composer reads at submit time, so settings sent
+  // that way never reach the turn. Instead we reach the same in-renderer callbacks
+  // the UI uses (e.g. the intelligence dropdown) by walking the React fiber tree.
+  const FIBER_WALK_MAX = 150_000;
+  const FIBER_HOOK_MAX = 400;
+
+  function reactFiberRoot() {
+    const host = document.querySelector("#root") || document.body;
+    if (!host) return null;
+    const key = Object.keys(host).find(
+      (k) => k.startsWith("__reactContainer$") || k.startsWith("__reactFiber$"),
+    );
+    let fiber = key ? host[key] : null;
+    while (fiber && fiber.return) fiber = fiber.return;
+    return fiber;
+  }
+
+  // DFS the fiber tree, calling visit(fiber) on each node. Stops early when visit
+  // returns true. Returns true if visit matched, false otherwise.
+  function walkFibers(visit, max = FIBER_WALK_MAX) {
+    const root = reactFiberRoot();
+    if (!root) return false;
+    const seen = new Set();
+    const stack = [root];
+    let count = 0;
+    while (stack.length && count < max) {
+      const fiber = stack.pop();
+      if (!fiber || seen.has(fiber)) continue;
+      seen.add(fiber);
+      count += 1;
+      try {
+        if (visit(fiber) === true) return true;
+      } catch {
+        /* ignore per-fiber errors */
+      }
+      if (fiber.child) stack.push(fiber.child);
+      if (fiber.sibling) stack.push(fiber.sibling);
+    }
+    return false;
+  }
+
+  // Collect each hook node's `memoizedState` from a fiber's hook linked-list.
+  function fiberHookStates(fiber) {
+    const states = [];
+    let hook = fiber.memoizedState;
+    let guard = 0;
+    while (hook && typeof hook === "object" && guard++ < FIBER_HOOK_MAX) {
+      states.push(hook.memoizedState);
+      hook = hook.next;
+    }
+    return states;
+  }
+
+  // Find the in-renderer conversation-state object for a thread by scanning fiber
+  // hook states + props for an object whose `id` matches and that carries
+  // `latestThreadSettings`. Used to read the thread's current model / effort.
+  function findThreadConversation(conversationId) {
+    if (!conversationId) return null;
+    let found = null;
+    walkFibers((fiber) => {
+      const seenObj = new WeakSet();
+      const scan = (val, depth) => {
+        if (found || depth > 4 || !val || typeof val !== "object" || seenObj.has(val)) return;
+        seenObj.add(val);
+        if (
+          val.id === conversationId &&
+          val.latestThreadSettings &&
+          typeof val.latestThreadSettings === "object" &&
+          "model" in val.latestThreadSettings
+        ) {
+          found = val;
+          return;
+        }
+        let keys;
+        try {
+          keys = Object.keys(val);
+        } catch {
+          return;
+        }
+        for (const k of keys.slice(0, 50)) {
+          if (found) return;
+          try {
+            scan(val[k], depth + 1);
+          } catch {
+            /* ignore getters that throw */
+          }
+        }
+      };
+      for (const state of fiberHookStates(fiber)) scan(state, 1);
+      const props = fiber.memoizedProps;
+      if (props && typeof props === "object") {
+        try {
+          for (const k of Object.keys(props)) scan(props[k], 1);
+        } catch {
+          /* ignore */
+        }
+      }
+      return found != null;
+    });
+    return found;
+  }
+
+  // Find the `useCallback` setter the intelligence dropdown calls to update model
+  // + reasoning effort for the next turn. Its source contains the literal view
+  // message name, and its dependency array's first entry is the bound
+  // conversationId, so we can match the active thread precisely.
+  function findNextTurnSettingsSetter(conversationId) {
+    if (!conversationId) return null;
+    let setter = null;
+    walkFibers((fiber) => {
+      for (const state of fiberHookStates(fiber)) {
+        if (!Array.isArray(state) || typeof state[0] !== "function") continue;
+        let src = "";
+        try {
+          src = Function.prototype.toString.call(state[0]);
+        } catch {
+          continue;
+        }
+        if (!src.includes("update-thread-settings-for-next-turn")) continue;
+        const deps = state[1];
+        if (Array.isArray(deps) && deps[0] === conversationId) {
+          setter = state[0];
+          return true;
+        }
+      }
+      return false;
+    });
+    return setter;
+  }
+
+  const codex = {
+    reactFiberRoot,
+    walkFibers,
+    getThreadConversation: findThreadConversation,
+
+    getThreadModel(conversationId) {
+      const conv = findThreadConversation(conversationId);
+      return (
+        conv?.latestThreadSettings?.model ??
+        conv?.latestCollaborationMode?.settings?.model ??
+        conv?.latestModel ??
+        null
+      );
+    },
+
+    getThreadEffort(conversationId) {
+      const conv = findThreadConversation(conversationId);
+      return (
+        conv?.latestCollaborationMode?.settings?.reasoning_effort ??
+        conv?.latestThreadSettings?.effort ??
+        conv?.latestReasoningEffort ??
+        null
+      );
+    },
+
+    // Apply model + reasoning effort for the NEXT turn of an existing thread via
+    // the same in-renderer callback the intelligence dropdown uses. This updates
+    // the Jotai atoms the composer ships, unlike the broken IPC bridge path.
+    // Returns true on success, false if the setter could not be found/applied.
+    async applyThreadSettingsForNextTurn(conversationId, { model, effort } = {}) {
+      const setter = findNextTurnSettingsSetter(conversationId);
+      if (typeof setter !== "function") return false;
+      const resolvedModel = model ?? codex.getThreadModel(conversationId);
+      if (!resolvedModel) return false;
+      try {
+        const result = await setter(resolvedModel, effort);
+        return result !== false;
+      } catch (err) {
+        console.warn("[Explodex] applyThreadSettingsForNextTurn failed", err);
+        return false;
+      }
+    },
+  };
+
   // ─── Query ────────────────────────────────────────────────────────────────
 
   const query = {
@@ -1001,6 +1210,52 @@
     return mount;
   }
 
+  function observeZone(zoneId, callback, options = {}) {
+    const { once = false, includeMutations = false } = options;
+    let lastAnchor = null;
+    let frame = null;
+    let stopped = false;
+
+    const stop = () => {
+      stopped = true;
+      if (frame != null) {
+        global.cancelAnimationFrame(frame);
+        frame = null;
+      }
+      observer.disconnect();
+      observers.delete(observer);
+    };
+
+    const check = () => {
+      frame = null;
+      if (stopped) return;
+
+      const anchor = resolveZoneAnchor(zoneId);
+      if (!anchor) {
+        lastAnchor = null;
+        return;
+      }
+
+      if (!includeMutations && anchor === lastAnchor && anchor.isConnected) return;
+      const previousAnchor = lastAnchor;
+      lastAnchor = anchor;
+      callback(anchor, { zoneId, previousAnchor });
+      if (once) stop();
+    };
+
+    const schedule = () => {
+      if (stopped || frame != null) return;
+      frame = global.requestAnimationFrame(check);
+    };
+
+    const observer = new MutationObserver(schedule);
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+    observers.add(observer);
+    schedule();
+
+    return stop;
+  }
+
   const inject = {
     mount(zoneId, nodeOrFactory, options = {}) {
       const pluginId = options.pluginId ?? "anonymous";
@@ -1016,21 +1271,13 @@
     },
 
     waitFor(zoneId, callback) {
-      const anchor = resolveZoneAnchor(zoneId);
-      if (anchor) {
-        callback(anchor);
-        return () => {};
-      }
-      const observer = new MutationObserver(() => {
-        const node = resolveZoneAnchor(zoneId);
-        if (node) callback(node);
-      });
-      observer.observe(document.documentElement, { childList: true, subtree: true });
-      observers.add(observer);
-      return () => {
-        observer.disconnect();
-        observers.delete(observer);
-      };
+      return observeZone(zoneId, callback, { once: true });
+    },
+
+    observeZone,
+
+    observe(zoneId, callback, options = {}) {
+      return observeZone(zoneId, callback, options);
     },
 
     unmount(pluginId) {
@@ -1384,9 +1631,7 @@
   }
 
   function readEnabledMap() {
-    const stored =
-      storage.persisted.get(PLUGIN_ENABLED_KEY, null) ??
-      storage.persisted.get(LEGACY_PLUGIN_ENABLED_KEY, null);
+    const stored = storage.persisted.get(PLUGIN_ENABLED_KEY, null);
     return { ...defaultEnabledState(), ...(stored ?? {}) };
   }
 
@@ -1617,7 +1862,6 @@
     document.getElementById(STYLE_ID)?.remove();
     removeRuntimeDom();
     delete global.Explodex;
-    if (global.BetterCodex === api) delete global.BetterCodex;
   }
 
   function removeRuntimeDom() {
@@ -1670,6 +1914,7 @@
     bridge,
     http,
     composer,
+    codex,
     query,
     sidebarNav,
     ui,
@@ -1682,6 +1927,7 @@
     mount: inject.mount,
     waitFor: inject.waitFor,
     waitForZone: inject.waitFor,
+    observeZone: inject.observeZone,
     registerPlugin,
     insertIntoComposer: composer.insertText.bind(composer),
     showStatus: components.statusToast,
@@ -1690,12 +1936,6 @@
   installStyles();
   removeRuntimeDom();
   global.Explodex = api;
-  Object.defineProperty(global, "BetterCodex", {
-    configurable: true,
-    enumerable: true,
-    writable: true,
-    value: api,
-  });
 
   // ─── Built-in shell plugin (nav + plugin manager) ─────────────────────────
 
@@ -1709,8 +1949,27 @@
       dynamicUnloadable: false,
     },
     (ctx) => {
-      const { waitFor, components: c, plugins: pm, sidebarNav: nav, ui: overlay } = ctx;
+      const { observeZone: observe, components: c, plugins: pm, sidebarNav: nav, ui: overlay } = ctx;
       let shellOpen = false;
+
+      async function openUserPluginsFolder() {
+        const metaPaths = global.__EXPLODEX_PATHS__ ?? {};
+        const dir = metaPaths.userPluginsDir;
+        if (!dir) {
+          c.statusToast("Plugins folder path unavailable");
+          return;
+        }
+        const url = dir.startsWith("file://") ? dir : `file://${encodeURI(dir)}`;
+        if (bridge.isAvailable()) {
+          try {
+            await bridge.send("open-external", { url });
+            return;
+          } catch (err) {
+            console.warn("[Explodex] open-external plugins folder failed", err);
+          }
+        }
+        c.statusToast(dir);
+      }
 
       function renderPluginManager(anchor) {
         const ids = pm.listCatalog();
@@ -1723,12 +1982,13 @@
           },
           content: () => {
             const body = document.createElement("div");
-            if (!ids.length) {
-              body.textContent = "No plugins in catalog.";
-              return body;
+            const pluginIds = ids.filter((id) => id !== "explodex-shell");
+            if (!pluginIds.length) {
+              const empty = document.createElement("div");
+              empty.textContent = "No plugins in catalog.";
+              body.appendChild(empty);
             }
-            for (const id of ids) {
-              if (id === "explodex-shell") continue;
+            for (const id of pluginIds) {
               const manifest = pm.get(id);
               if (!manifest) continue;
               const row = document.createElement("div");
@@ -1782,12 +2042,30 @@
               row.appendChild(metaCol);
               body.appendChild(row);
             }
+
+            const footer = document.createElement("div");
+            footer.style.cssText =
+              "display:flex;justify-content:flex-end;padding-top:8px;margin-top:4px;border-top:1px solid color-mix(in srgb,currentColor 8%,transparent)";
+            footer.appendChild(
+              c.button({
+                label: "Open Plugins Folder",
+                color: "secondary",
+                size: "composerSm",
+                onClick: () => {
+                  void openUserPluginsFolder();
+                },
+              }),
+            );
+            body.appendChild(footer);
             return body;
           },
         });
       }
 
       function mountShellNav() {
+        if (document.querySelector('[data-explodex-nav="explodex-shell"]')?.isConnected) {
+          return true;
+        }
         const btn = overlay.navItem({
           icon: "💥",
           label: "Explodex",
@@ -1804,7 +2082,7 @@
       }
 
       mountShellNav();
-      waitFor("sidebar", mountShellNav);
+      observe("sidebar", mountShellNav, { includeMutations: true });
     },
   );
 

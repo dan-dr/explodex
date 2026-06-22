@@ -30,7 +30,7 @@ Keep `sdk/explodex-sdk.js` as the checked-in injection artifact until the launch
 
 1. Add a dependency-light bundler script or use plain Node to concatenate ESM modules into the existing IIFE wrapper.
 2. Move one concern at a time, starting with pure helpers and UI catalog code.
-3. Keep `window.Explodex` and the legacy `window.BetterCodex` alias behavior unchanged.
+3. Keep `window.Explodex` as the sole global API export.
 4. Update `scripts/cdp-inject.py`, `scripts/sync-wrapper.sh`, and docs only after the output path is stable.
 5. Add a syntax gate for every module and the generated bundle.
 

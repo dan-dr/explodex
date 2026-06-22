@@ -6,7 +6,6 @@
 # Local app/user data
 .explodex/
 .explodex-user-data/
-.bettercodex-user-data/
 
 # Generated output
 dist/*
@@ -18,12 +17,6 @@ vendor/
 extracted/
 tmp_extracted/
 *.asar
-
-# Python
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.mypy_cache/
 
 # JavaScript
 node_modules/

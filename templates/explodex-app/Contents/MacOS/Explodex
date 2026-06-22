@@ -1,0 +1,151 @@
+#!/bin/zsh
+# Explodex.app launcher — wraps Codex with runtime SDK injection (no ASAR patching).
+set -euo pipefail
+
+LOG_DIR="${EXPLODEX_LOG_DIR:-$HOME/.explodex}"
+DEBUG_PORT="${EXPLODEX_DEBUG_PORT:-9333}"
+USER_DATA="${EXPLODEX_USER_DATA:-$HOME/.explodex}"
+
+mkdir -p "$LOG_DIR"
+exec > >(tee -a "$LOG_DIR/launcher.log") 2>&1
+
+echo "=== Explodex wrapper started at $(date) ==="
+
+resolve_dir() {
+  (cd "$1" 2>/dev/null && pwd -P) || return 1
+}
+
+MACOS_DIR="$(resolve_dir "$(dirname "$0")")"
+CONTENTS_DIR="$(resolve_dir "$MACOS_DIR/..")"
+BUNDLE_ROOT="$(resolve_dir "$CONTENTS_DIR/..")"
+RESOURCES="$CONTENTS_DIR/Resources"
+
+PROJECT_DIR=""
+if [[ -f "$RESOURCES/explodex-project-root" ]]; then
+  PROJECT_DIR="$(<"$RESOURCES/explodex-project-root")"
+  PROJECT_DIR="$(resolve_dir "$PROJECT_DIR" 2>/dev/null || echo "$PROJECT_DIR")"
+fi
+
+show_alert() {
+  osascript -e "display alert \"Explodex\" message \"$1\" as ${2:-warning}" 2>/dev/null || true
+}
+
+port_listening() {
+  lsof -iTCP:"$DEBUG_PORT" -sTCP:LISTEN >/dev/null 2>&1
+}
+
+codex_main_running() {
+  pgrep -f "Codex.app/Contents/MacOS/Codex" >/dev/null 2>&1
+}
+
+find_codex() {
+  if [[ -n "${CODEX_PATH:-}" && -x "$CODEX_PATH" ]]; then
+    echo "$CODEX_PATH"
+    return 0
+  fi
+  local candidate
+  if [[ -n "$PROJECT_DIR" ]]; then
+    candidate="$PROJECT_DIR/vendor/Codex.app/Contents/MacOS/Codex"
+    if [[ -x "$candidate" ]]; then
+      echo "$candidate"
+      return 0
+    fi
+  fi
+  candidate="/Applications/Codex.app/Contents/MacOS/Codex"
+  if [[ -x "$candidate" ]]; then
+    echo "$candidate"
+    return 0
+  fi
+  return 1
+}
+
+run_injector() {
+  local injector="$RESOURCES/cdp-inject.sh"
+  if [[ ! -x "$injector" ]]; then
+    echo "ERROR: injector not found at $injector"
+    return 1
+  fi
+
+  local user_plugins="$HOME/.explodex/plugins"
+  mkdir -p "$user_plugins"
+
+  local dev_plugins_dir=""
+  if [[ -n "$PROJECT_DIR" && -d "$PROJECT_DIR/plugins" ]]; then
+    dev_plugins_dir="$PROJECT_DIR/plugins"
+  fi
+
+  echo "Explodex: Running injector ($injector)"
+  echo "Explodex: User plugins: $user_plugins"
+  EXPLODEX_DEBUG_PORT="$DEBUG_PORT" \
+    EXPLODEX_SDK_PATH="$RESOURCES/explodex-sdk.js" \
+    EXPLODEX_USER_PLUGINS_DIR="$user_plugins" \
+    EXPLODEX_PLUGINS_DIR="$dev_plugins_dir" \
+    "$injector"
+}
+
+REAL_CODEX="$(find_codex || true)"
+if [[ -z "$REAL_CODEX" || ! -x "$REAL_CODEX" ]]; then
+  echo "Explodex: Could not locate Codex.app to launch."
+  show_alert "Could not find Codex. Install Codex.app or set CODEX_PATH." "critical"
+  exit 1
+fi
+
+echo "Explodex: Using Codex at $REAL_CODEX"
+echo "Bundle: $BUNDLE_ROOT"
+
+if port_listening; then
+  echo "Explodex: Debug port $DEBUG_PORT already listening."
+  if run_injector; then
+    show_alert "Explodex SDK injected into the running Codex instance."
+    exit 0
+  fi
+  show_alert "Found Codex on port $DEBUG_PORT but injection failed. See $LOG_DIR/launcher.log" "critical"
+  exit 1
+fi
+
+if codex_main_running; then
+  echo "Explodex: Codex is already running without remote debugging."
+  show_alert "Codex is already running. Quit Codex (Cmd+Q), then launch Explodex again." "critical"
+  exit 1
+fi
+
+mkdir -p "$USER_DATA"
+echo "Explodex: Launching Codex with runtime injection..."
+echo "User data: $USER_DATA"
+echo "Log: $USER_DATA/codex.log"
+
+CODEX_ELECTRON_USER_DATA_PATH="$USER_DATA" \
+  "$REAL_CODEX" --remote-debugging-port="$DEBUG_PORT" >"$USER_DATA/codex.log" 2>&1 &
+CODEX_PID=$!
+
+PORT_READY=0
+for _ in {1..60}; do
+  if ! kill -0 "$CODEX_PID" 2>/dev/null; then
+    break
+  fi
+  if port_listening; then
+    PORT_READY=1
+    break
+  fi
+  sleep 0.5
+done
+
+if [[ "$PORT_READY" -ne 1 ]]; then
+  if grep -q "Opening in existing browser session" "$USER_DATA/codex.log" 2>/dev/null; then
+    show_alert "Codex is already running. Quit Codex (Cmd+Q), then launch Explodex again." "critical"
+  elif ! kill -0 "$CODEX_PID" 2>/dev/null; then
+    show_alert "Codex exited before Explodex could inject. See $USER_DATA/codex.log" "critical"
+  else
+    show_alert "Codex started but debug port $DEBUG_PORT never opened. See $USER_DATA/codex.log" "critical"
+  fi
+  exit 1
+fi
+
+if ! run_injector; then
+  show_alert "Codex launched but SDK injection failed. See $LOG_DIR/launcher.log" "critical"
+  disown "$CODEX_PID" 2>/dev/null || true
+  exit 1
+fi
+
+echo "Explodex: SDK injected. DevTools: http://127.0.0.1:$DEBUG_PORT/json/list"
+wait "$CODEX_PID" || true

@@ -95,11 +95,15 @@ run_injector() {
         plugins_env="$(IFS=:; echo "${EXTRA_PLUGINS[*]}")"
     fi
 
+    local user_plugins="${EXPLODEX_USER_PLUGINS_DIR:-$HOME/.explodex/plugins}"
+    mkdir -p "$user_plugins"
+
     EXPLODEX_DEBUG_PORT="$PORT" \
         EXPLODEX_SDK_PATH="${EXPLODEX_SDK_PATH:-$ROOT/sdk/explodex-sdk.js}" \
         EXPLODEX_PLUGINS_DIR="${EXPLODEX_PLUGINS_DIR:-$ROOT/plugins}" \
+        EXPLODEX_USER_PLUGINS_DIR="$user_plugins" \
         EXPLODEX_PLUGINS="$plugins_env" \
-        python3 "$ROOT/scripts/cdp-inject.py"
+        "$ROOT/scripts/cdp-inject.sh"
 }
 
 if [[ "$INJECT_ONLY" -eq 1 ]]; then

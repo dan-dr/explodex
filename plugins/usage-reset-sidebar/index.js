@@ -201,7 +201,7 @@
       dynamicUnloadable: true,
     },
     (api) => {
-      const { waitFor, sidebarNav: nav, ui, log } = api;
+      const { observeZone, sidebarNav: nav, ui, log } = api;
       const h = readOnlyHttp(api.http);
       log.info("setup start");
       let disposed = false;
@@ -494,8 +494,8 @@
         .then(() => log.info("initial refresh complete"))
         .catch((err) => log.error("initial refresh failed", err));
 
-      unsubscribeSidebar = waitFor("sidebar", () => {
-        log.debug("sidebar zone ready — remounting nav item");
+      unsubscribeSidebar = observeZone("sidebar", (_anchor, { previousAnchor } = {}) => {
+        log.debug(previousAnchor ? "sidebar zone changed — remounting nav item" : "sidebar zone ready — remounting nav item");
         navButton = null;
         paintNav();
         refresh();

@@ -19,12 +19,14 @@ Example: `!m explain this function` sends `explain this function` with medium re
 
 The plugin live-applies effort while the user is typing a valid prefix. On send, it strips the prefix, lets the native composer submit continue, then restores the previous effort after a short post-submit delay.
 
+Effort is applied by driving the **same in-renderer React callback the intelligence dropdown uses**, reached via `Explodex.codex.applyThreadSettingsForNextTurn` (SDK fiber walk). The older `bridge.send("update-thread-settings-for-next-turn")` path is **not** used for existing threads: in current Codex builds the SDK's AppServer router capture fails, so that bridge call falls back to a main-process IPC path that never updates the renderer atoms the composer ships. See `docs/reasoning-effort-prefix-session.md` §12.
+
 Key APIs:
 
-- `update-thread-settings-for-next-turn`
-- `set-default-model-config-for-host`
-- `list-models-for-host`
-- `read-config-for-host`
+- `Explodex.codex.applyThreadSettingsForNextTurn` (existing thread; in-renderer setter)
+- `Explodex.codex.getThreadModel` (read current model so effort-only changes keep the model)
+- `set-default-model-config-for-host` (new-thread fallback, via bridge)
+- `list-models-for-host` / `read-config-for-host` (model context; bridge, best-effort)
 
 ## Current Fixes
 

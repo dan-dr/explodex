@@ -13,16 +13,17 @@
   }
 
   const PROJECT_PINS_KEY = "explodex-project-pinned-threads";
-  const LEGACY_PROJECT_PINS_KEY = "bettercodex-project-pinned-threads";
   const RECONCILE_DEBOUNCE_MS = 250;
-  const RECONCILE_INTERVAL_MS = 5_000;
   const GLOBAL_STATE_KEYS = {
     assignments: "thread-project-assignments",
     projectOrders: "sidebar-project-thread-orders",
+    projectPins: PROJECT_PINS_KEY,
     projectless: "projectless-thread-ids",
   };
 
   const PIN_LABEL_RE = /^(pin|unpin)\s+(chat|conversation)/i;
+  const SHOW_MORE_LESS_RE = /show\s+(more|less)/i;
+
   const CONVERSATION_ID_RE =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   const LOCAL_THREAD_KEY_RE =
@@ -32,21 +33,25 @@
     {
       id: "pin-scope-menu",
       name: "Pin Scope Menu",
-      version: "1.2.0",
+      version: "1.2.3",
       dynamicLoadable: true,
       dynamicUnloadable: true,
     },
     (api) => {
-      const { bridge, storage, components: c, log } = api;
+      const { bridge, storage, components: c, log, inject } = api;
 
       let menuOpen = false;
       let activeMenu = null;
       let allowNativePin = false;
       let suppressNextPinClick = false;
       let reconcileTimer = null;
-      let reconcileInterval = null;
       let sidebarObserver = null;
+      let unsubscribeSidebar = null;
       let reconcileInFlight = false;
+      let pinStylesInstalled = false;
+      let pinsCache = {};
+      let pinsHydrated = false;
+      let pinsHydratePromise = null;
       let disposed = false;
 
       function normalizeConversationId(value) {
@@ -97,15 +102,65 @@
         return `local:${conversationId}`;
       }
 
-      function readProjectPins() {
-        const raw =
-          storage.persisted.get(PROJECT_PINS_KEY, null) ??
-          storage.persisted.get(LEGACY_PROJECT_PINS_KEY, null);
-        return raw && typeof raw === "object" ? { ...raw } : {};
+      function normalizeProjectPinsMap(value) {
+        return value && typeof value === "object" && !Array.isArray(value) ? { ...value } : {};
       }
 
-      function writeProjectPins(map) {
-        storage.persisted.set(PROJECT_PINS_KEY, map);
+      function readPersistedProjectPins() {
+        const raw = storage.persisted.get(PROJECT_PINS_KEY, null);
+        return normalizeProjectPinsMap(raw);
+      }
+
+      function readProjectPins() {
+        return { ...pinsCache };
+      }
+
+      async function hydrateProjectPins() {
+        if (pinsHydrated) return pinsCache;
+        if (pinsHydratePromise) return pinsHydratePromise;
+
+        pinsHydratePromise = (async () => {
+          if (Object.keys(pinsCache).length === 0) {
+            pinsCache = readPersistedProjectPins();
+          }
+
+          if (!bridge.isAvailable()) return pinsCache;
+
+          try {
+            const fromGlobal = normalizeProjectPinsMap(
+              await storage.globalState.get(GLOBAL_STATE_KEYS.projectPins),
+            );
+            if (Object.keys(fromGlobal).length > 0) {
+              pinsCache = fromGlobal;
+            } else if (Object.keys(pinsCache).length > 0) {
+              await storage.globalState.set(GLOBAL_STATE_KEYS.projectPins, pinsCache);
+              storage.persisted.remove(PROJECT_PINS_KEY);
+              log.debug("migrated project pins to global state");
+            }
+          } catch (err) {
+            log.warn("project pin hydrate failed", err);
+          } finally {
+            pinsHydrated = true;
+            pinsHydratePromise = null;
+          }
+
+          return pinsCache;
+        })();
+
+        return pinsHydratePromise;
+      }
+
+      async function writeProjectPins(map) {
+        pinsCache = normalizeProjectPinsMap(map);
+        pinsHydrated = true;
+
+        if (!bridge.isAvailable()) {
+          storage.persisted.set(PROJECT_PINS_KEY, pinsCache);
+          return;
+        }
+
+        await storage.globalState.set(GLOBAL_STATE_KEYS.projectPins, pinsCache);
+        storage.persisted.remove(PROJECT_PINS_KEY);
       }
 
       function isProjectPinned(conversationId) {
@@ -148,20 +203,28 @@
         return normalizeConversationId(row.getAttribute("data-app-action-sidebar-thread-id"));
       }
 
+      function sidebarNavRoot() {
+        return (
+          document.querySelector('nav[aria-label="Automation folders"]') ??
+          document.querySelector("nav")
+        );
+      }
+
       function projectIdFromDomScan(threadKey) {
         if (!threadKey) return null;
-        const projects = document.querySelectorAll("[data-app-action-sidebar-project-id]");
-        for (const projectEl of projects) {
-          const projectId = normalizeProjectId(
-            projectEl.getAttribute("data-app-action-sidebar-project-id"),
-          );
-          if (!projectId) continue;
-          const container =
-            projectEl.closest("[data-app-action-sidebar-section]") ??
-            projectEl.parentElement ??
-            projectEl;
-          if (container?.querySelector(`[data-app-action-sidebar-thread-id="${threadKey}"]`)) {
-            return projectId;
+        const nav = sidebarNavRoot();
+        if (!nav) return null;
+
+        let currentProject = null;
+        for (const el of nav.querySelectorAll(
+          "[data-app-action-sidebar-project-id], [data-app-action-sidebar-thread-id]",
+        )) {
+          if (el.hasAttribute("data-app-action-sidebar-project-id")) {
+            currentProject = el.getAttribute("data-app-action-sidebar-project-id");
+            continue;
+          }
+          if (el.getAttribute("data-app-action-sidebar-thread-id") === threadKey) {
+            return normalizeProjectId(currentProject);
           }
         }
         return null;
@@ -260,6 +323,160 @@
 
       async function writeProjectOrders(orders) {
         await storage.globalState.set(GLOBAL_STATE_KEYS.projectOrders, orders);
+        applySidebarDomReorder(orders);
+      }
+
+      const PIN_SCOPE_STYLE_TEXT =
+        'nav [data-app-action-sidebar-thread-pinned="true"] button[aria-label="Unpin chat"],' +
+        'nav [data-explodex-project-pinned="true"] button[aria-label="Pin chat"]{' +
+        "opacity:1!important;color:var(--color-text-primary,#fff)!important}" +
+        'nav [data-explodex-project-pinned="true"] button[aria-label="Pin chat"] svg path{' +
+        "fill:currentColor!important}";
+
+      function ensurePinScopeStyles() {
+        pinStylesInstalled = true;
+        let style = document.getElementById("explodex-pin-scope-styles");
+        if (!style) {
+          style = document.createElement("style");
+          style.id = "explodex-pin-scope-styles";
+          document.head.appendChild(style);
+        }
+        if (style.textContent !== PIN_SCOPE_STYLE_TEXT) style.textContent = PIN_SCOPE_STYLE_TEXT;
+      }
+
+      function isThreadProjectPinned(threadKey) {
+        const conversationId = normalizeConversationId(
+          threadKey?.startsWith("local:") ? threadKey.slice("local:".length) : threadKey,
+        );
+        if (!conversationId || !isProjectPinned(conversationId)) return false;
+        const assignedProject = normalizeProjectId(projectIdForPinned(conversationId));
+        const sidebarProject = projectIdFromDomScan(threadKey);
+        if (!assignedProject || !sidebarProject) return true;
+        return assignedProject === sidebarProject;
+      }
+
+      function syncProjectPinVisuals() {
+        ensurePinScopeStyles();
+        let changed = false;
+        for (const el of document.querySelectorAll("[data-app-action-sidebar-thread-id]")) {
+          const threadKey = el.getAttribute("data-app-action-sidebar-thread-id");
+          if (!threadKey) continue;
+
+          const shouldPin = isThreadProjectPinned(threadKey);
+          const isMarked = el.getAttribute("data-explodex-project-pinned") === "true";
+          if (shouldPin && !isMarked) {
+            el.setAttribute("data-explodex-project-pinned", "true");
+            changed = true;
+          } else if (!shouldPin && isMarked) {
+            el.removeAttribute("data-explodex-project-pinned");
+            changed = true;
+          }
+        }
+        return changed;
+      }
+
+      function projectShowMoreLessToggle(projectId) {
+        const nav = sidebarNavRoot();
+        if (!nav) return null;
+
+        let currentProject = null;
+        for (const listItem of nav.querySelectorAll('[role="listitem"]')) {
+          const projectEl = listItem.querySelector("[data-app-action-sidebar-project-id]");
+          if (projectEl) {
+            if (currentProject === projectId) break;
+            currentProject = projectEl.getAttribute("data-app-action-sidebar-project-id");
+            continue;
+          }
+          if (currentProject !== projectId) continue;
+          const label = listItem.querySelector("button")?.textContent ?? "";
+          if (SHOW_MORE_LESS_RE.test(label)) return listItem;
+        }
+        return null;
+      }
+
+      function projectSidebarListItems(projectId) {
+        const nav = sidebarNavRoot();
+        if (!nav) return [];
+
+        let currentProject = null;
+        const items = [];
+        for (const el of nav.querySelectorAll(
+          "[data-app-action-sidebar-project-id], [data-app-action-sidebar-thread-id]",
+        )) {
+          if (el.hasAttribute("data-app-action-sidebar-project-id")) {
+            if (currentProject === projectId && items.length > 0) break;
+            currentProject = el.getAttribute("data-app-action-sidebar-project-id");
+            continue;
+          }
+          if (currentProject !== projectId) continue;
+          const listItem = el.closest('[role="listitem"]');
+          const threadId = el.getAttribute("data-app-action-sidebar-thread-id");
+          if (!listItem || !threadId || items.some((entry) => entry.el === listItem)) continue;
+          items.push({ threadId, el: listItem });
+        }
+        return items;
+      }
+
+      function reorderProjectThreadsInSidebar(projectId, threadIds) {
+        if (!projectId || !Array.isArray(threadIds) || threadIds.length === 0) return false;
+        const items = projectSidebarListItems(projectId);
+        const list = items[0]?.el?.parentElement;
+        if (!list) return false;
+
+        const toggle = projectShowMoreLessToggle(projectId);
+        const byId = new Map(items.map((entry) => [entry.threadId, entry.el]));
+        const seen = new Set();
+        const ordered = [];
+
+        for (const threadId of threadIds) {
+          const row = byId.get(threadId);
+          if (!row) continue;
+          ordered.push(row);
+          seen.add(threadId);
+        }
+        for (const { threadId, el } of items) {
+          if (!seen.has(threadId)) ordered.push(el);
+        }
+
+        const desiredOrder = ordered
+          .map((row) =>
+            row
+              .querySelector("[data-app-action-sidebar-thread-id]")
+              ?.getAttribute("data-app-action-sidebar-thread-id"),
+          )
+          .filter(Boolean);
+        const currentOrder = items.map((entry) => entry.threadId);
+        if (arraysEqual(currentOrder, desiredOrder)) return false;
+
+        if (toggle) {
+          let insertBefore = toggle;
+          for (let index = ordered.length - 1; index >= 0; index -= 1) {
+            const row = ordered[index];
+            list.insertBefore(row, insertBefore);
+            insertBefore = row;
+          }
+        } else {
+          for (const row of ordered) list.appendChild(row);
+        }
+        return true;
+      }
+
+      function applySidebarDomReorder(orders, { deferred = false } = {}) {
+        if (!orders || typeof orders !== "object") return false;
+        let changed = false;
+        for (const [projectId, order] of Object.entries(orders)) {
+          const threadIds = Array.isArray(order?.threadIds) ? order.threadIds : null;
+          if (!threadIds?.length) continue;
+          if (reorderProjectThreadsInSidebar(projectId, threadIds)) changed = true;
+        }
+        if (syncProjectPinVisuals()) changed = true;
+        if (changed && !deferred) {
+          global.requestAnimationFrame(() => {
+            if (disposed) return;
+            applySidebarDomReorder(orders, { deferred: true });
+          });
+        }
+        return changed;
       }
 
       function arraysEqual(left, right) {
@@ -331,6 +548,8 @@
 
       async function reconcileProjectPins() {
         if (disposed || reconcileInFlight || !bridge.isAvailable()) return;
+        await hydrateProjectPins();
+        if (disposed) return;
         const pins = readProjectPins();
         if (Object.keys(pins).length === 0) return;
 
@@ -339,9 +558,12 @@
           const orders = await readProjectOrders();
           if (disposed) return;
           const next = applyProjectPinOrder(orders, pins);
-          if (next.changed && !disposed) {
+          if (disposed) return;
+          if (next.changed) {
             await writeProjectOrders(next.orders);
             log.debug("reconciled project pins");
+          } else {
+            applySidebarDomReorder(orders);
           }
         } catch (err) {
           log.warn("project pin reconcile failed", err);
@@ -352,11 +574,34 @@
 
       function scheduleProjectPinReconcile() {
         if (disposed) return;
+        const pins = readProjectPins();
+        if (Object.keys(pins).length === 0) {
+          syncProjectPinVisuals();
+          return;
+        }
         if (reconcileTimer != null) global.clearTimeout(reconcileTimer);
         reconcileTimer = global.setTimeout(() => {
           reconcileTimer = null;
           reconcileProjectPins();
         }, RECONCILE_DEBOUNCE_MS);
+      }
+
+      function bindSidebarObserver() {
+        sidebarObserver?.disconnect();
+        sidebarObserver = null;
+        const nav = sidebarNavRoot();
+        if (!nav) return;
+        sidebarObserver = new MutationObserver(scheduleProjectPinReconcile);
+        sidebarObserver.observe(nav, {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          attributeFilter: [
+            "data-app-action-sidebar-thread-pinned",
+            "data-app-action-sidebar-thread-id",
+            "data-explodex-project-pinned",
+          ],
+        });
       }
 
       async function moveThreadToProjectTop(threadKey, conversationId, projectId) {
@@ -373,7 +618,7 @@
           await setGlobalPin(threadKey, false);
         }
         pins[conversationId] = projectId;
-        writeProjectPins(pins);
+        await writeProjectPins(pins);
         await moveThreadToProjectTop(threadKey, conversationId, projectId);
       }
 
@@ -381,7 +626,8 @@
         const pins = readProjectPins();
         if (!Object.prototype.hasOwnProperty.call(pins, conversationId)) return;
         delete pins[conversationId];
-        writeProjectPins(pins);
+        await writeProjectPins(pins);
+        scheduleProjectPinReconcile();
       }
 
       function findPinButton(target) {
@@ -498,11 +744,13 @@
           if (wasGlobalPinned) {
             await setGlobalPin(threadKey, false);
             c.statusToast("Unpinned globally");
+            scheduleProjectPinReconcile();
             return;
           }
           await unpinFromProject(conversationId);
           await setGlobalPin(threadKey, true);
           c.statusToast("Pinned globally");
+          scheduleProjectPinReconcile();
         } catch (err) {
           log.error("global pin failed", err);
           c.statusToast("Failed to update global pin");
@@ -518,10 +766,12 @@
           if (wasProjectPinned) {
             await unpinFromProject(conversationId);
             c.statusToast("Unpinned from project");
+            scheduleProjectPinReconcile();
             return;
           }
           await pinToProject(threadKey, conversationId, projectId);
           c.statusToast("Pinned to project");
+          scheduleProjectPinReconcile();
         } catch (err) {
           log.error("project pin failed", err);
           c.statusToast("Failed to update project pin");
@@ -535,6 +785,8 @@
         }
 
         try {
+          await hydrateProjectPins();
+          if (disposed) return false;
           const assignmentProjectId = ctx.projectId
             ? null
             : await getProjectIdForThread(ctx.threadKey, ctx.conversationId);
@@ -623,10 +875,17 @@
       global.addEventListener("pointerdown", onPinPointerDown, true);
       global.addEventListener("click", onPinClick, true);
       global.addEventListener("keydown", onKeyDown, true);
-      reconcileInterval = global.setInterval(scheduleProjectPinReconcile, RECONCILE_INTERVAL_MS);
-      sidebarObserver = new MutationObserver(scheduleProjectPinReconcile);
-      sidebarObserver.observe(document.documentElement, { childList: true, subtree: true });
-      scheduleProjectPinReconcile();
+      bindSidebarObserver();
+      unsubscribeSidebar = inject.observeZone("sidebar", () => {
+        bindSidebarObserver();
+        scheduleProjectPinReconcile();
+      });
+      void hydrateProjectPins()
+        .then(() => {
+          if (disposed) return;
+          scheduleProjectPinReconcile();
+        })
+        .catch((err) => log.warn("initial project pin hydrate failed", err));
 
       log.info("pin scope menu attached");
 
@@ -635,8 +894,8 @@
         log.info("teardown");
         closeMenu();
         if (reconcileTimer != null) global.clearTimeout(reconcileTimer);
-        if (reconcileInterval != null) global.clearInterval(reconcileInterval);
         sidebarObserver?.disconnect();
+        unsubscribeSidebar?.();
         global.removeEventListener("pointerdown", onPinPointerDown, true);
         global.removeEventListener("click", onPinClick, true);
         global.removeEventListener("keydown", onKeyDown, true);

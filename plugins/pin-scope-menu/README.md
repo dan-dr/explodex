@@ -13,8 +13,8 @@ Global uses Codex's native pinned-thread API. Project stores an Explodex project
 
 State keys:
 
-- `explodex-project-pinned-threads`
-- legacy read fallback: `bettercodex-project-pinned-threads`
+- Codex global state: `explodex-project-pinned-threads` (durable map of conversationId → projectId)
+- renderer localStorage fallback: `codex:persisted-atom:explodex-project-pinned-threads`
 - Codex global state: `sidebar-project-thread-orders`
 - Codex global state: `thread-project-assignments`
 - Codex global state: `projectless-thread-ids`
@@ -25,7 +25,20 @@ Project manual ordering is written as `{ threadIds }`.
 
 ## Fix Notes
 
-Codex ignores manual `threadIds` when a project order has `sortKey`. The plugin deletes `sortKey` for project-pinned groups and reconciles pinned order on an interval and after sidebar DOM mutations.
+Codex ignores manual `threadIds` when a project order has `sortKey`. The plugin deletes `sortKey` for project-pinned groups and reconciles pinned order after sidebar DOM mutations and pin/unpin actions.
+
+### Persistence (v1.2.3+)
+
+Project pin membership is stored in **Codex global state** (`set-global-state`), not renderer `localStorage` persisted atoms. Codex mirrors persisted atoms from main process on startup and can drop renderer-only writes; global state survives app restart in `.codex-global-state.json`.
+
+On first load, any renderer localStorage pin map is migrated into global state.
+
+### Performance (v1.2.2+)
+
+- Mutation observer is scoped to the sidebar `nav`, not `document.documentElement`.
+- Reconcile skips DOM writes when order and `data-explodex-project-pinned` markers are already correct.
+- Project-pin visuals use CSS on thread rows (no `innerHTML` on React-owned pin buttons).
+- The 5s polling interval was removed; reconcile is event-driven (sidebar mutations, zone rebinding, pin actions).
 
 The native pin button receives both `pointerdown` and `click`. The plugin intercepts both phases for project threads so the scope menu does not leak a native pin toggle after opening.
 

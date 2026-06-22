@@ -1,7 +1,7 @@
 # Reasoning effort prefix — development session log
 
 > Session focus: Explodex plugin to set Codex **reasoning effort for the next message only** via composer prefixes (`!xh`, `!h`, `!m`, `!l`, etc.).  
-> Status as of **2026-06-21**: v1 implemented and verified partially; root cause of effort bug identified; **Option A fix not yet implemented**.
+> Status as of **2026-06-21**: **FIXED in v2.2.0.** Real root cause was *not* the React-snapshot race theorized below — it was the SDK's **broken in-renderer AppServer router capture**, which silently routed every `bridge.send` to the main-process AppServer (never updating renderer atoms). Fixed by driving the same in-renderer React callback the intelligence dropdown uses, located via fiber walk (`Explodex.codex.applyThreadSettingsForNextTurn`). See [§12](#12-real-root-cause--fix-v220-2026-06-21). Earlier sections (§6, §9, §11) are kept as historical analysis.
 
 **Related docs**
 
@@ -278,7 +278,7 @@ Composer submit passes non-null `collaborationMode`; turn logic then forces `par
 - [x] Plaintext prefix in composer (no above-composer chip; intelligence UI shows effort)
 - [x] Strip prefix on send in capture phase; native Enter when already armed
 - [ ] Add `sC`-style guard for thread settings
-- [ ] Re-verify rollout `jq` after `!m` / `!xh`
+- [x] Effort apply fixed (v2.2.0) — in-renderer fiber setter, verified live (indicator moves; turn streams at applied effort). Disk `turn_context.effort` re-check pending (see §12 caveat).
 
 ### Option A tasks (fallback if D insufficient)
 
@@ -389,6 +389,53 @@ Plugin `reasoning-effort-prefix.js` Option D:
 | 2026-06-21 | Added Option D: live apply + restore + pill; preferred over A |
 | 2026-06-21 | Implemented Option D v2.0.0: live apply, plaintext prefix, strip-on-send, post-submit restore |
 | 2026-06-21 | Moved plugin docs to `plugins/reasoning-effort-prefix/README.md`; cancelled stale debounced apply after prefix removal |
+
+---
+
+## 12. Real root cause + fix (v2.2.0, 2026-06-21)
+
+> The §6 "stale React `collaborationMode`" theory was **wrong**. Live debugging via Chrome DevTools (CDP on `:9333`) found the actual bug one layer lower, in the SDK bridge itself.
+
+### Real root cause: broken router capture → silent IPC fallback
+
+1. The SDK tries to capture the in-renderer AppServer `send` at injection time by patching `Function.prototype.call/apply` (top of `sdk/explodex-sdk.js`). This **fails**: injection happens *after* app load, and the router's methods are invoked directly (not via `.call/.apply`), so the hook never fires. Result: `window.__explodexAppServerSend` is never bound — confirmed live as `appServerSend: false`.
+2. With no captured router, `bridge.send(...)` falls back to `electronBridge.sendMessageFromView`. That IPC path routes to the **main-process** AppServer and **does not** update the **in-renderer** manager / Jotai atoms the composer reads at submit time.
+3. So `update-thread-settings-for-next-turn` over the bridge "succeeds" but the effort never reaches the turn. Proven live: sending it via `electronBridge` left `[data-selected-reasoning-effort]` unchanged.
+
+This also explains why the dropdown worked but the plugin didn't: the dropdown calls an in-renderer React callback directly; it never touches the broken bridge path.
+
+### The fix: drive the in-renderer callback via fiber walk
+
+Added a `codex` namespace to the SDK (`sdk/explodex-sdk.js`) exposed on `Explodex.codex`:
+
+- `getThreadConversation(id)` / `getThreadModel(id)` / `getThreadEffort(id)` — read the live conversation-state object from the React fiber tree (scan hook states + props for `{ id, latestThreadSettings }`).
+- `applyThreadSettingsForNextTurn(id, { model, effort })` — locate the dropdown's `useCallback` setter and invoke it. The setter is matched precisely: its source contains the literal `"update-thread-settings-for-next-turn"` and its dependency array's first entry is the bound `conversationId`. This updates the **same atoms** the composer ships, so effort reaches the turn.
+
+The plugin (`plugins/reasoning-effort-prefix/index.js` v2.2.0) now:
+
+- `pushThreadEffort` calls `codex.applyThreadSettingsForNextTurn` instead of `bridge.send`. It reads the **current** model from `codex.getThreadModel` first, so an effort-only change never alters the model.
+- `fetchModelContext` prefers `codex.getThreadModel(activeConversationId)` over the unreliable bridge reads.
+- New-thread path (`pushDefaultEffort`) still uses the bridge as a best-effort fallback (separate, lower-priority problem).
+
+### Hint-on-space fix
+
+`shouldShowHint` now returns `false` as soon as a space follows the prefix (e.g. `!m `), so the popover closes when the user starts typing the prompt (previously it stayed open until a non-empty prompt existed).
+
+### Verification (live, via CDP)
+
+- `Explodex.codex.applyThreadSettingsForNextTurn(convId, {effort:"medium"})` → returns `true`, moves the live indicator `xhigh → medium`, model unchanged. The broken bridge path left it untouched.
+- Typing `!m …` through the plugin: indicator → `medium`; hint popover closed after the space; Enter stripped the prefix and a real turn **streamed with the effort atom at `medium`**.
+- **Rollout JSONL caveat:** could not capture `turn_context.effort` from disk for this specific dev conversation — CDP-driven sends to it did not persist under `~/.codex/sessions` (turns from other conversations do persist). Since the fix drives the exact same in-renderer callback/atom as a manual dropdown selection (indicator verified moving), the shipped effort is equivalent to a manual UI change. Re-confirm with `jq` on `turn_context.effort` during a normal hand-typed session when convenient.
+
+### Tooling
+
+Live debugging used two Bun CDP helpers in `~/Projects/agent-scripts`: `cdp-eval.ts` (eval JS in the renderer) and `cdp-key.ts` (trusted `Input.insertText` + `Input.dispatchKeyEvent`, needed because synthetic DOM `KeyboardEvent`s are untrusted and don't trigger ProseMirror submit).
+
+### Changelog addendum
+
+| Date | Update |
+|------|--------|
+| 2026-06-21 | v2.2.0: real root cause (broken router capture → IPC fallback); fix via fiber-walk `Explodex.codex` setter; hint closes on space; effort read from live thread model |
 
 ---
 
