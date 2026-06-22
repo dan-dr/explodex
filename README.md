@@ -1,13 +1,17 @@
-# Explodex
+# Explodex  💥 💥 💥 Mod the official Codex app
 
-Is it explore? Explode? Exploit? Ideally: explore Codex internals, explode your own local UI, exploit nothing.
+<img width="498" height="326" alt="image" src="https://i.pinimg.com/originals/1a/c6/70/1ac6702bbd0296122a33da8751523125.gif" />
 
-Explodex is a local-only extension SDK and plugin playground for the [Codex](https://openai.com/codex) desktop app. It injects a small renderer runtime into a Codex Electron window, exposes DOM zones such as the sidebar and composer, and loads plugins from `plugins/<id>/`.
+Explore, explit and explode.
 
-> **Warning** — This is a hack, not a product. Explodex is **not affiliated with, endorsed by, or supported by OpenAI**. It works by injecting into the renderer of an app whose internals are reverse-engineered, so **APIs can break between Codex releases** without warning. It runs entirely locally and does not modify your installed `/Applications/Codex.app`. Use at your own risk.
+Explodex is an extension SDK and plugin playground for the [Codex](https://openai.com/codex) desktop app. It injects a small renderer runtime into a Codex Electron window, exposes DOM zones such as the sidebar and composer, and loads plugins from `plugins/<id>/`.
 
-## Why Explodex?
+> ⚠️ **Warning** — This is extremely hacky, built almost entirely with AI. It works by injecting into the renderer of an app whose internals are reverse-engineered, so **APIs can break between Codex releases** without warning. It runs entirely locally and does not modify your installed `/Applications/Codex.app`. Use at your own risk. Explodex is **not affiliated with, endorsed by, or supported by OpenAI**.
 
+## Why make this monstrosity?
+I wanted something like BetterDiscord/Legcord for codex, being able to modify the app in slight ways for UX reasons. But Discord is much easier to hook into than codex.
+
+## Features
 - **Plugin-first** — drop a folder with `plugin.json` + `index.js` and register against `Explodex`
 - **Typed SDK** — full [API reference](docs/sdk-api.md) and [TypeScript definitions](sdk/explodex-sdk.d.ts)
 - **Codex-native UI** — components and overlays that match Codex design tokens
@@ -19,10 +23,10 @@ Explodex is a local-only extension SDK and plugin playground for the [Codex](htt
 | Plugin | What it does |
 |--------|----------------|
 | [reasoning-effort-prefix](plugins/reasoning-effort-prefix/) | Set reasoning effort from composer prefixes like `!m` or `!xh` |
-| [pin-scope-menu](plugins/pin-scope-menu/) | Pin and scope menu for thread context |
-| [usage-reset-sidebar](plugins/usage-reset-sidebar/) | Usage reset controls in the sidebar |
+| [pin-scope-menu](plugins/pin-scope-menu/) | Pin threads to top of menu instead of globally |
+| [usage-reset-sidebar](plugins/usage-reset-sidebar/) | Always visible usage stats (plus reset expiration) |
 
-The built-in **💥 Explodex** sidebar item opens the plugin manager (enable/disable, open plugins folder).
+The built-in **💥 Explodex** sidebar menu item opens the plugin manager (enable/disable, open plugins folder).
 
 ## Write a plugin
 
@@ -169,8 +173,8 @@ Codex internals can change between releases. See [docs/sdk-fragility.md](docs/sd
 | [docs/sdk-fragility.md](docs/sdk-fragility.md) | What breaks across Codex updates |
 | [docs/plugins/README.md](docs/plugins/README.md) | Bundled plugin notes |
 
-## Public Repo Notes
 
-This repo should contain source, docs, scripts, and manifests only. The large Codex bundles and extracted assets are local reference material and are ignored by design.
+## Is the readme accurate
+idk
 
 When changing SDK behavior, update [docs/sdk-api.md](docs/sdk-api.md) and [sdk/explodex-sdk.d.ts](sdk/explodex-sdk.d.ts) in the same change.
