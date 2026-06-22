@@ -23,7 +23,7 @@ for ts in scripts/cdp-inject.ts scripts/dev.ts scripts/package-app.ts; do
   bun -e "import './${ts}'"
 done
 
-for file in sdk/explodex-sdk.js plugins/*/index.js poc/loader.js; do
+for file in sdk/explodex-sdk.js plugins/*/index.js; do
   bun build "$file" --outfile="/tmp/explodex-validate-$(basename "$file")"
 done
 

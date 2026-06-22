@@ -26,10 +26,20 @@ type PluginEntry = {
   [key: string]: unknown;
 };
 
+/** Directory for Resources next to a compiled cdp-inject-bin (Bun embeds code in /$bunfs). */
+function injectorResourceDir(): string {
+  const here = resolve(__dirname);
+  if (!here.startsWith("/$bunfs")) return here;
+  const exe = process.argv[0];
+  return exe ? resolve(dirname(exe)) : here;
+}
+
 function findSdkPath(): string | null {
   const env = process.env.EXPLODEX_SDK_PATH ?? "";
+  const resourceDir = injectorResourceDir();
   const candidates = [
     join(__dirname, "..", "sdk", "explodex-sdk.js"),
+    join(resourceDir, "explodex-sdk.js"),
     join(__dirname, "explodex-sdk.js"),
     join(process.cwd(), "sdk", "explodex-sdk.js"),
     env,
@@ -41,7 +51,19 @@ function findSdkPath(): string | null {
 }
 
 function findBundledPluginsDir(): string | null {
-  const here = resolve(__dirname);
+  const env = (process.env.EXPLODEX_BUNDLED_PLUGINS_DIR ?? "").trim();
+  if (env) {
+    const resolved = resolve(env);
+    if (existsSync(resolved) && statSync(resolved).isDirectory()) return resolved;
+  }
+
+  const sdkPath = (process.env.EXPLODEX_SDK_PATH ?? "").trim();
+  if (sdkPath) {
+    const sibling = join(dirname(resolve(sdkPath)), "plugins");
+    if (existsSync(sibling) && statSync(sibling).isDirectory()) return sibling;
+  }
+
+  const here = injectorResourceDir();
   const candidates = [
     join(here, "plugins"),
     join(here, "..", "plugins"),
@@ -202,7 +224,9 @@ function discoverPlugins(): PluginEntry[] {
 }
 
 function findRelaunchScript(): string | null {
+  const resourceDir = injectorResourceDir();
   const candidates = [
+    join(resourceDir, "relaunch.sh"),
     join(__dirname, "relaunch.sh"),
     join(__dirname, "..", "templates", "explodex-app", "Contents", "Resources", "relaunch.sh"),
   ];

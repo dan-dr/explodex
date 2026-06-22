@@ -129,12 +129,6 @@ Validate source and types:
 bun run validate
 ```
 
-Try the static harness (no Codex required):
-
-```sh
-open poc/harness.html
-```
-
 Dev state is isolated under `.explodex-user-data/` (override with `EXPLODEX_USER_DATA`).
 
 ### Commands

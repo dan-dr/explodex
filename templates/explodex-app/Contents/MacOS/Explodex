@@ -74,10 +74,13 @@ run_injector() {
     dev_plugins_dir="$PROJECT_DIR/plugins"
   fi
 
+  local bundled_plugins="$RESOURCES/plugins"
   echo "Explodex: Running injector ($injector)"
+  echo "Explodex: Bundled plugins: $bundled_plugins"
   echo "Explodex: User plugins: $user_plugins"
   EXPLODEX_DEBUG_PORT="$DEBUG_PORT" \
     EXPLODEX_SDK_PATH="$RESOURCES/explodex-sdk.js" \
+    EXPLODEX_BUNDLED_PLUGINS_DIR="$bundled_plugins" \
     EXPLODEX_USER_PLUGINS_DIR="$user_plugins" \
     EXPLODEX_PLUGINS_DIR="$dev_plugins_dir" \
     "$injector"

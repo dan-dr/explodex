@@ -57,6 +57,7 @@
       let onSelectionChange = null;
       let restoreAfterSubmitTimer = null;
       let disposed = false;
+      let lastInputSyncId = 0;
 
       function getHostId() {
         const portal = document.querySelector("[data-above-composer-portal]");
@@ -204,13 +205,20 @@
           const activeModel = activeConversationId
             ? codex?.getThreadModel?.(activeConversationId)
             : null;
+          const activeEffort = activeConversationId
+            ? codex?.getThreadEffort?.(activeConversationId)
+            : null;
           const currentModel =
             activeModel ??
             config.model ??
             defaultModel?.model ??
             models.find((m) => m.isDefault)?.model ??
             "gpt-5.5";
-          const currentEffort = config.model_reasoning_effort ?? defaultModel?.defaultReasoningEffort ?? "medium";
+          const currentEffort =
+            activeEffort ??
+            config.model_reasoning_effort ??
+            defaultModel?.defaultReasoningEffort ??
+            "medium";
           const supported = new Set(supportedEffortsForModel(models, currentModel));
           const levels = LEVEL_CATALOG.filter((l) => supported.has(l.effort));
 
@@ -307,6 +315,9 @@
         const trigger = document.querySelector("[data-codex-intelligence-trigger]");
         const fromUi = trigger?.getAttribute("data-selected-reasoning-effort");
         if (fromUi) return fromUi;
+        const conversationId = getConversationId();
+        const fromThread = conversationId ? codex?.getThreadEffort?.(conversationId) : null;
+        if (fromThread) return fromThread;
         return modelCache.effort ?? "medium";
       }
 
@@ -341,6 +352,15 @@
         // Use the in-renderer callback (via fiber walk) rather than the IPC
         // bridge: the bridge routes to the main-process AppServer and never
         // updates the renderer atoms the composer ships at submit time.
+        if (
+          typeof codex?.applyThreadSettingsForNextTurn !== "function" ||
+          typeof codex?.getThreadConversation !== "function"
+        ) {
+          throw new Error("in-renderer thread settings API unavailable");
+        }
+        if (!codex.getThreadConversation(conversationId)) {
+          throw new Error("thread settings state unavailable for active thread");
+        }
         const currentModel = codex?.getThreadModel?.(conversationId) ?? model;
         const ok = await codex.applyThreadSettingsForNextTurn(conversationId, {
           model: currentModel,
@@ -383,9 +403,9 @@
         pendingRestoreAfterSubmit = false;
       }
 
-      async function restoreBaselineEffort() {
+      async function restoreBaselineEffort({ force = false } = {}) {
         if (!armed || restoring) return;
-        if (disposed || !bridge.isAvailable()) {
+        if ((!force && disposed) || !bridge.isAvailable()) {
           disarm();
           return;
         }
@@ -512,6 +532,7 @@
       }
 
       async function syncFromComposerText() {
+        const syncId = (lastInputSyncId += 1);
         const text = composer.getText();
         const parsed = parsePrefix(text);
 
@@ -526,6 +547,7 @@
         }
 
         const ctx = await fetchModelContext();
+        if (disposed || syncId !== lastInputSyncId || composer.getText() !== text) return;
         if (!ctx.levels.some((l) => l.effort === parsed.level.effort)) {
           cancelPendingApply();
           if (armed) await restoreBaselineEffort();
@@ -660,6 +682,15 @@
 
         hintOpen = true;
         const ctx = await fetchModelContext(true);
+        if (
+          disposed ||
+          !hintOpen ||
+          input !== composer.getInput() ||
+          !input.isConnected ||
+          !shouldShowHint(composer.getText())
+        ) {
+          return;
+        }
         ui.popover({
           anchor: input,
           anchorRect: hintAnchorRect(),
@@ -795,6 +826,10 @@
 
       function bindComposerInput() {
         const input = composer.getInput();
+        if (boundInput && !boundInput.isConnected) {
+          boundInput.removeEventListener("input", onInput);
+          boundInput = null;
+        }
         if (!input || input === boundInput) return;
         if (boundInput) {
           boundInput.removeEventListener("input", onInput);
@@ -812,6 +847,7 @@
 
       function detach() {
         disposed = true;
+        lastInputSyncId += 1;
         stopHintTracking();
         closeHint();
         cancelPendingApply();
@@ -824,7 +860,7 @@
         }
         observer?.disconnect();
         observer = null;
-        restoreBaselineEffort().catch(() => {});
+        restoreBaselineEffort({ force: true }).catch(() => {});
       }
 
       attach();

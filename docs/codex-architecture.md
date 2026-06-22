@@ -744,7 +744,7 @@ Explodex.plugins.register({ id, name, version }, (api) => {
 });
 ```
 
-Loaded after the SDK by `scripts/cdp-inject.py` or `poc/loader.js` (ASAR patch).
+Loaded after the SDK by `scripts/cdp-inject.ts` (CDP inject) or ASAR patch.
 
 | | Official Codex | Explodex |
 |--|----------------|-------------|

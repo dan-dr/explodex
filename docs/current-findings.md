@@ -270,31 +270,9 @@ Initial zones:
 - `composerActions`
 - `aboveComposer`
 
-## POC written
+## POC removed (2026-06-22)
 
-Current POC files:
-
-```text
-poc/
-  explodex-sdk.js
-  harness.html
-  loader.js
-scripts/
-  asar.py          # unpack/pack
-  patch.py         # --apply / --restore / --unpack-only
-  restore.sh
-```
-
-The POC:
-
-- Creates `window.Explodex`.
-- Registers a demo plugin.
-- Adds a `💥 Explodex` sidebar item when a sidebar-like landmark exists.
-- Adds an `Insert hello` composer button when a composer-like input exists.
-- Inserts text into a textarea/input/contenteditable composer.
-- Uses mutation observers so mounts can appear after React renders or rerenders.
-- Can be tested in `poc/harness.html` without launching Codex.
-- **Injected into real renderer**: `python3 scripts/patch.py --apply` patches the vendor asar, injects SDK+loader, relaxes CSP, removes ElectronAsarIntegrity for the local copy.
+The standalone `poc/` harness and built-in `explodex-demo` plugin were removed. Validation and plugin work now run through `bun run dev` / `bun run inject` against the live Codex renderer.
 
 ## Next implementation plan
 
@@ -310,9 +288,9 @@ The POC:
 
 - ASAR integrity may prevent a naive repack from launching until `Info.plist` is adjusted in the local copy.
 - macOS code signing may complain after local bundle mutation. Local ad-hoc re-signing may be required for a patched app copy.
-- The current POC selector strategy is intentionally heuristic. It should be refined with runtime DOM inspection from the local copied app.
+- Zone selectors are intentionally heuristic. They should be refined with runtime DOM inspection from the local copied app.
 - DevTools may be gated by `allowDevtools`; if unavailable, a local loader patch is the best next step.
-- React state integration is not implemented. The POC only mounts DOM and dispatches input events.
+- React state integration is limited. Plugins mount DOM and hook official bridge paths where possible.
 - Official/internal plugin chunks exist, but their scope and stability are unknown.
 
 ## Strong recommendation

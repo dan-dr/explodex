@@ -14,7 +14,6 @@ Explodex is a source-first repo. Keep proprietary Codex bundles and extracted re
 | `scripts/package-app.ts` | Build `dist/Explodex.app` from `templates/explodex-app/` |
 | `scripts/launch.sh` | Launch Codex with remote debugging and inject Explodex |
 | `templates/explodex-app/` | Tracked shell launcher template for the wrapper app |
-| `poc/harness.html` | Static browser harness for SDK zones |
 | `dist/` | Ignored generated output (`dist/Explodex.app`) |
 
 For packaging, install, user-data, and plugin load-path design notes, see [local-development.md](./local-development.md).
@@ -45,7 +44,7 @@ bun run inject
 bun run install:app
 ```
 
-Packages `dist/Explodex.app` (release build, no repo project-root marker), installs to `/Applications/Explodex.app`, and creates `~/.explodex/plugins` for user-managed plugins. User plugins override bundled plugins with the same ID.
+Packages `dist/Explodex.app` (release build, no repo project-root marker), copies repo `plugins/` into `Contents/Resources/plugins/`, installs to `/Applications/Explodex.app`, and creates `~/.explodex/plugins` for user-managed plugins. Bundled plugins load automatically on launch; user plugins override bundled plugins with the same ID.
 
 ## Validate
 

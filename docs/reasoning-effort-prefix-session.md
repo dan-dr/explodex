@@ -277,7 +277,7 @@ Composer submit passes non-null `collaborationMode`; turn logic then forces `par
 - [x] Restore previous effort on send (microtask + rAF after strip), delete, or invalid prefix
 - [x] Plaintext prefix in composer (no above-composer chip; intelligence UI shows effort)
 - [x] Strip prefix on send in capture phase; native Enter when already armed
-- [ ] Add `sC`-style guard for thread settings
+- [x] Add `sC`-style guard for thread settings (requires live `codex.getThreadConversation` before invoking the fiber setter)
 - [x] Effort apply fixed (v2.2.0) — in-renderer fiber setter, verified live (indicator moves; turn streams at applied effort). Disk `turn_context.effort` re-check pending (see §12 caveat).
 
 ### Option A tasks (fallback if D insufficient)
@@ -414,7 +414,8 @@ Added a `codex` namespace to the SDK (`sdk/explodex-sdk.js`) exposed on `Explode
 The plugin (`plugins/reasoning-effort-prefix/index.js` v2.2.0) now:
 
 - `pushThreadEffort` calls `codex.applyThreadSettingsForNextTurn` instead of `bridge.send`. It reads the **current** model from `codex.getThreadModel` first, so an effort-only change never alters the model.
-- `fetchModelContext` prefers `codex.getThreadModel(activeConversationId)` over the unreliable bridge reads.
+- `pushThreadEffort` now refuses to apply unless `codex.getThreadConversation(conversationId)` finds live thread state, approximating the UI's `sC` loaded-thread guard before touching settings.
+- `fetchModelContext` prefers `codex.getThreadModel(activeConversationId)` and `codex.getThreadEffort(activeConversationId)` over the unreliable bridge reads.
 - New-thread path (`pushDefaultEffort`) still uses the bridge as a best-effort fallback (separate, lower-priority problem).
 
 ### Hint-on-space fix
@@ -436,6 +437,7 @@ Live debugging used two Bun CDP helpers in `~/Projects/agent-scripts`: `cdp-eval
 | Date | Update |
 |------|--------|
 | 2026-06-21 | v2.2.0: real root cause (broken router capture → IPC fallback); fix via fiber-walk `Explodex.codex` setter; hint closes on space; effort read from live thread model |
+| 2026-06-22 | Hardened v2.2.0 plugin lifecycle: loaded-thread guard, live effort baseline restore, stale async input/hint cancellation, and unload restore |
 
 ---
 

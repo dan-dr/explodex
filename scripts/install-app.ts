@@ -4,7 +4,7 @@
  * Also ensures ~/.explodex/plugins exists for user-managed plugins.
  */
 
-import { access, chmod, constants, cp, mkdir, rm } from "node:fs/promises";
+import { access, chmod, constants, cp, mkdir, readdir, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "bun";
@@ -41,6 +41,10 @@ async function installApp(): Promise<void> {
   }
 
   await packageApp({ release: true });
+
+  const bundledPlugins = join(DIST, "Contents", "Resources", "plugins");
+  const bundledIds = (await readdir(bundledPlugins)).sort();
+  console.log(`Bundled plugins (${bundledIds.length}): ${bundledIds.join(", ") || "(none)"}`);
 
   await mkdir(USER_PLUGINS, { recursive: true });
   console.log(`User plugins dir: ${USER_PLUGINS}`);

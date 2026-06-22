@@ -337,6 +337,15 @@
         });
       }
 
+      function setNavButtonLabel(label) {
+        const labelNode = navButton?.querySelector("span:last-child");
+        if (labelNode) {
+          labelNode.textContent = label;
+          return;
+        }
+        navButton?.replaceChildren(document.createTextNode(label));
+      }
+
       function isNavMounted() {
         return Boolean(
           navButton?.isConnected &&
@@ -380,9 +389,9 @@
               });
             },
           });
-          navButton.querySelector("span:last-child").textContent = label;
+          setNavButtonLabel(label);
         } else {
-          navButton.querySelector("span:last-child").textContent = label;
+          setNavButtonLabel(label);
         }
         const mounted = nav.insertBefore(["Settings"], navButton, "usage-reset-sidebar");
         if (!mounted) {
@@ -446,6 +455,7 @@
       }
 
       function startPolling() {
+        if (disposed) return;
         stopPolling();
         pollTimer = global.setInterval(refresh, POLL_MS);
       }
@@ -490,8 +500,11 @@
       paintNav();
       startMountObserver();
       refresh()
-        .then(startPolling)
-        .then(() => log.info("initial refresh complete"))
+        .then(() => {
+          if (disposed) return;
+          startPolling();
+          log.info("initial refresh complete");
+        })
         .catch((err) => log.error("initial refresh failed", err));
 
       unsubscribeSidebar = observeZone("sidebar", (_anchor, { previousAnchor } = {}) => {

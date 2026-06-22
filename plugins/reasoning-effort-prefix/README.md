@@ -24,7 +24,7 @@ Effort is applied by driving the **same in-renderer React callback the intellige
 Key APIs:
 
 - `Explodex.codex.applyThreadSettingsForNextTurn` (existing thread; in-renderer setter)
-- `Explodex.codex.getThreadModel` (read current model so effort-only changes keep the model)
+- `Explodex.codex.getThreadModel` / `getThreadEffort` (read current thread state so effort-only changes keep the model and restore the right baseline)
 - `set-default-model-config-for-host` (new-thread fallback, via bridge)
 - `list-models-for-host` / `read-config-for-host` (model context; bridge, best-effort)
 
@@ -32,13 +32,14 @@ Key APIs:
 
 - Live apply is debounced while typing valid prefixes.
 - Pending debounced apply is cancelled when the prefix is removed or becomes unsupported, so a stale timer cannot arm effort after the composer no longer has a prefix.
-- Teardown clears input listeners, global submit listeners, hint tracking, mutation observers, debounce timers, and post-submit restore timers.
-- Async apply/restore paths bail after plugin teardown.
+- Existing-thread apply requires `Explodex.codex.getThreadConversation` to find live thread state before invoking the fiber setter, mirroring Codex's loaded-thread guard.
+- Teardown clears input listeners, global submit listeners, hint tracking, mutation observers, debounce timers, and post-submit restore timers, then force-restores any armed effort.
+- Async input and hint paths bail when the composer text/node changes or the plugin unloads.
 
 ## Risks
 
 - ProseMirror text replacement still uses DOM insertion because Codex does not expose the composer controller.
-- There is no direct plugin access to Codex's `sC` thread-manager guard; rollout JSONL remains final truth for real effort behavior.
+- The `sC` guard is approximated through `Explodex.codex.getThreadConversation`; that fiber shape is private and may change across Codex releases. Rollout JSONL remains final truth for real effort behavior.
 - New-thread default config restore is best-effort.
 
 ## Verify

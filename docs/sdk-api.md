@@ -220,7 +220,7 @@ Everything on `Explodex`, plus:
 | `waitFor` | `InjectAPI["waitFor"]` | Same as `inject.waitFor`. |
 | `mount` | `InjectAPI["mount"]` | `inject.mount` with `pluginId` pre-bound. |
 
-**Legacy aliases** (deprecated, kept for poc compat): `mount`, `waitFor`,
+**Legacy aliases** (deprecated): `mount`, `waitFor`,
 `waitForZone`, `observeZone`, `registerPlugin`, `insertIntoComposer`,
 `showStatus`. Use the namespaced equivalents in new code.
 

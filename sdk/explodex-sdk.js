@@ -481,7 +481,11 @@
         display: flex; align-items: flex-start; gap: 10px; padding: 8px 0;
         border-bottom: 1px solid color-mix(in srgb, currentColor 8%, transparent);
       }
-      .ex-plugin-row:last-child { border-bottom: 0; }
+      .ex-plugin-list .ex-plugin-row:last-child { border-bottom: 0; }
+      .ex-plugin-footer {
+        display: flex; justify-content: flex-end; padding-top: 8px; margin-top: 4px;
+        border-top: 1px solid color-mix(in srgb, currentColor 8%, transparent);
+      }
     `;
     document.head.appendChild(style);
   }
@@ -1626,7 +1630,6 @@
       "usage-reset-sidebar": true,
       "reasoning-effort-prefix": true,
       "pin-scope-menu": true,
-      "explodex-demo": false,
     };
   }
 
@@ -1959,13 +1962,14 @@
           c.statusToast("Plugins folder path unavailable");
           return;
         }
-        const url = dir.startsWith("file://") ? dir : `file://${encodeURI(dir)}`;
         if (bridge.isAvailable()) {
           try {
-            await bridge.send("open-external", { url });
-            return;
+            const res = await bridge.send("open-file", {
+              params: { path: dir, target: "fileManager" },
+            });
+            if (res?.success !== false) return;
           } catch (err) {
-            console.warn("[Explodex] open-external plugins folder failed", err);
+            console.warn("[Explodex] open-file plugins folder failed", err);
           }
         }
         c.statusToast(dir);
@@ -1982,11 +1986,13 @@
           },
           content: () => {
             const body = document.createElement("div");
+            const list = document.createElement("div");
+            list.className = "ex-plugin-list";
             const pluginIds = ids.filter((id) => id !== "explodex-shell");
             if (!pluginIds.length) {
               const empty = document.createElement("div");
               empty.textContent = "No plugins in catalog.";
-              body.appendChild(empty);
+              list.appendChild(empty);
             }
             for (const id of pluginIds) {
               const manifest = pm.get(id);
@@ -2040,12 +2046,12 @@
 
               row.appendChild(checkbox);
               row.appendChild(metaCol);
-              body.appendChild(row);
+              list.appendChild(row);
             }
+            body.appendChild(list);
 
             const footer = document.createElement("div");
-            footer.style.cssText =
-              "display:flex;justify-content:flex-end;padding-top:8px;margin-top:4px;border-top:1px solid color-mix(in srgb,currentColor 8%,transparent)";
+            footer.className = "ex-plugin-footer";
             footer.appendChild(
               c.button({
                 label: "Open Plugins Folder",
@@ -2085,67 +2091,6 @@
       observe("sidebar", mountShellNav, { includeMutations: true });
     },
   );
-
-  // ─── Optional demo plugin (disabled by default) ───────────────────────────
-
-  declarePlugin({
-    id: "explodex-demo",
-    name: "Explodex Demo",
-    version: VERSION,
-    builtin: true,
-    dynamicLoadable: false,
-    dynamicUnloadable: true,
-  });
-
-  if (isPluginEnabled("explodex-demo")) {
-    registerPlugin(
-      {
-        id: "explodex-demo",
-        name: "Explodex Demo",
-        version: VERSION,
-        builtin: true,
-        dynamicLoadable: false,
-        dynamicUnloadable: true,
-      },
-      (ctx) => {
-        const { mount, waitFor, components: c, composer: comp, bridge: b } = ctx;
-        const renderAboveComposer = () =>
-          mount("aboveComposer", () =>
-            c.panel({
-              title: "Explodex Demo",
-              children: () => {
-                const row = document.createElement("div");
-                row.style.cssText = "display:flex;gap:6px;flex-wrap:wrap";
-                row.appendChild(
-                  c.button({
-                    label: "Insert greeting",
-                    color: "secondary",
-                    size: "composerSm",
-                    onClick: () => {
-                      if (!comp.insertText("Hello from Explodex! ")) {
-                        c.statusToast("Composer not ready");
-                      }
-                    },
-                  }),
-                );
-                row.appendChild(
-                  c.button({
-                    label: `Theme: ${b.theme()}`,
-                    color: "ghost",
-                    size: "composerSm",
-                    onClick: () =>
-                      c.statusToast(`Build: ${b.buildFlavor()}, Owl: ${b.usesOwlShell()}`),
-                  }),
-                );
-                return row;
-              },
-            }),
-          );
-        renderAboveComposer();
-        waitFor("aboveComposer", renderAboveComposer);
-      },
-    );
-  }
 
   log.info("initializing", { version: VERSION });
   initFromCatalog();
