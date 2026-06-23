@@ -1627,6 +1627,7 @@
 
   function defaultEnabledState() {
     return {
+      "command-menu-thread-search": true,
       "usage-reset-sidebar": true,
       "reasoning-effort-prefix": true,
       "pin-scope-menu": true,

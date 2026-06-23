@@ -10,6 +10,7 @@ Explodex plugins live in `plugins/<id>/` and include:
 
 | Plugin | Purpose | Doc |
 |--------|---------|-----|
+| `command-menu-thread-search` | Threads first in Cmd+K palette (Cmd+G merge) | [README.md](../../plugins/command-menu-thread-search/README.md) |
 | `reasoning-effort-prefix` | Prefix-driven one-message reasoning effort | [README.md](../../plugins/reasoning-effort-prefix/README.md) |
 | `pin-scope-menu` | Global vs project pin scope menu | [README.md](../../plugins/pin-scope-menu/README.md) |
 | `usage-reset-sidebar` | View-only usage/reset sidebar status | [README.md](../../plugins/usage-reset-sidebar/README.md) |

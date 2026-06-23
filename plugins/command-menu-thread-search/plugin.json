@@ -1,0 +1,9 @@
+{
+  "id": "command-menu-thread-search",
+  "name": "Command Menu Thread Search",
+  "version": "1.0.0",
+  "entry": "index.js",
+  "description": "Merges Cmd+G thread search into the Cmd+K command menu with a Threads section first.",
+  "dynamicLoadable": true,
+  "dynamicUnloadable": true
+}

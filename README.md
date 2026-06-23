@@ -21,8 +21,9 @@ I wanted something like BetterDiscord/Legcord for codex, being able to modify th
 
 | Plugin | What it does |
 |--------|----------------|
+| [command-menu-thread-search](plugins/command-menu-thread-search/) | Search all threads from Cmd+K (including collapsed projects); threads listed first under **Threads** |
 | [reasoning-effort-prefix](plugins/reasoning-effort-prefix/) | Set reasoning effort from composer prefixes like `!m` or `!xh` |
-| [pin-scope-menu](plugins/pin-scope-menu/) | Pin threads to top of menu instead of globally |
+| [pin-scope-menu](plugins/pin-scope-menu/) | Pin threads under project instead of globally |
 | [usage-reset-sidebar](plugins/usage-reset-sidebar/) | Always visible usage stats (plus reset expiration) |
 
 The built-in **💥 Explodex** sidebar menu item opens the plugin manager (enable/disable, open plugins folder).
@@ -89,6 +90,7 @@ Use those locally, but do not commit them.
 
 ### Prerequisites
 
+- **macOS only** — Explodex currently targets the macOS Codex desktop app only; Linux and Windows are not supported yet
 - [Bun](https://bun.sh) (Node 22-compatible runtime for dev scripts)
 - [Codex desktop app](https://openai.com/codex) installed at `/Applications/Codex.app`
 - Quit Codex completely (Cmd+Q) before starting a new debug session
@@ -131,6 +133,20 @@ bun run validate
 ```
 
 Dev state is isolated under `.explodex-user-data/` (override with `EXPLODEX_USER_DATA`).
+
+To use your local `plugins/` checkout instead of the bundled copies (user plugins override bundled plugins with the same id), either symlink:
+
+```sh
+ln -sf "$(pwd)/plugins" ~/.explodex/plugins
+```
+
+or point the user plugins directory at your repo:
+
+```sh
+export EXPLODEX_USER_PLUGINS_DIR="$(pwd)/plugins"
+```
+
+Then run `bun run inject` after editing plugin source.
 
 ### Commands
 

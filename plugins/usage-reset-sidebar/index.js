@@ -160,14 +160,23 @@
     return `${Math.ceil(minutes)}m`;
   }
 
+  function percentLeft(usedPercent) {
+    return Math.round(100 - clampPercent(usedPercent));
+  }
+
+  function formatPercentLabel(usedPercent, showLeft) {
+    if (showLeft) return `${percentLeft(usedPercent)}% left`;
+    return `${Math.round(clampPercent(usedPercent))}% used`;
+  }
+
   function formatCompact(usage, resets) {
     if (!usage && !resets) return "Usage: unavailable";
     const primary = usage?.primary;
     const secondary = usage?.secondary;
     const shortLabel = formatWindowLabel(primary?.windowMinutes);
-    const shortPct = Math.round(100 - (primary?.usedPercent ?? 0));
+    const shortPct = percentLeft(primary?.usedPercent ?? 0);
     const shortLeft = formatTimeLeft(primary?.resetAt);
-    const weekPct = Math.round(secondary?.usedPercent ?? 0);
+    const weekPct = percentLeft(secondary?.usedPercent ?? 0);
     const weekLeft = formatDaysLeft(secondary?.resetAt);
     const resetCount = resets?.availableCount ?? 0;
     return `${shortLabel}: ${shortPct}% ${shortLeft} • Weekly: ${weekPct}% ${weekLeft} • Reset: ${resetCount}`;
@@ -195,7 +204,7 @@
     {
       id: "usage-reset-sidebar",
       name: "Usage & Resets",
-      version: "1.2.3",
+      version: "1.2.4",
       viewOnly: true,
       dynamicLoadable: true,
       dynamicUnloadable: true,
@@ -208,6 +217,7 @@
       let pollTimer = null;
       let pendingRefreshAbort = null;
       let popoutOpen = false;
+      let showPercentLeft = true;
       let navButton = null;
       let mountObserver = null;
       let mountFrame = null;
@@ -246,9 +256,73 @@
           block.appendChild(row(title, "—", { muted: true }));
           return block;
         }
-        block.appendChild(row(title, `${Math.round(win.usedPercent)}% used`, { accent: true }));
+        block.appendChild(
+          row(title, formatPercentLabel(win.usedPercent, showPercentLeft), { accent: true }),
+        );
         block.appendChild(row("Resets", formatResetAt(win.resetAt), { muted: true }));
         return block;
+      }
+
+      function percentDisplayToggle() {
+        const el = document.createElement("div");
+        el.style.cssText =
+          "display:flex;justify-content:space-between;gap:8px;align-items:center;font-size:12px;line-height:18px";
+        const label = document.createElement("span");
+        label.textContent = "Usage display";
+        const controls = document.createElement("div");
+        controls.style.cssText = "display:inline-flex;gap:2px;border-radius:6px;padding:2px;background:color-mix(in srgb, currentColor 8%, transparent)";
+
+        function makeOption(text, active) {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.textContent = text;
+          btn.setAttribute("aria-pressed", active ? "true" : "false");
+          btn.style.cssText = [
+            "border:0",
+            "border-radius:4px",
+            "padding:2px 8px",
+            "font:inherit",
+            "font-size:11px",
+            "line-height:16px",
+            "cursor:pointer",
+            active
+              ? "background:var(--color-bg-primary, color-mix(in srgb, currentColor 14%, transparent));font-weight:600"
+              : "background:transparent;color:var(--color-text-tertiary, color-mix(in srgb, currentColor 55%, transparent))",
+          ].join(";");
+          return btn;
+        }
+
+        const leftBtn = makeOption("% left", showPercentLeft);
+        const usedBtn = makeOption("% used", !showPercentLeft);
+        leftBtn.addEventListener("click", () => {
+          if (showPercentLeft) return;
+          showPercentLeft = true;
+          reopenPopover();
+        });
+        usedBtn.addEventListener("click", () => {
+          if (!showPercentLeft) return;
+          showPercentLeft = false;
+          reopenPopover();
+        });
+        controls.appendChild(leftBtn);
+        controls.appendChild(usedBtn);
+        el.appendChild(label);
+        el.appendChild(controls);
+        return el;
+      }
+
+      function reopenPopover() {
+        if (!popoutOpen || !navButton) return;
+        ui.popover({
+          anchor: navButton,
+          title: "Usage & Resets",
+          width: 380,
+          side: "right",
+          onClose: () => {
+            popoutOpen = false;
+          },
+          content: renderDetailPanel,
+        });
       }
 
       function renderDetailPanel() {
@@ -292,6 +366,9 @@
         }
 
         const usage = state.usage;
+        if (usage?.primary || usage?.secondary) {
+          body.appendChild(percentDisplayToggle());
+        }
         if (usage?.primary) {
           body.appendChild(windowSection("Short window", usage.primary));
         }
@@ -439,18 +516,7 @@
           };
         }
         paintNav();
-        if (popoutOpen && navButton) {
-          ui.popover({
-            anchor: navButton,
-            title: "Usage & Resets",
-            width: 380,
-            side: "right",
-            onClose: () => {
-              popoutOpen = false;
-            },
-            content: renderDetailPanel,
-          });
-        }
+        reopenPopover();
         if (pendingRefreshAbort === controller) pendingRefreshAbort = null;
       }
 
