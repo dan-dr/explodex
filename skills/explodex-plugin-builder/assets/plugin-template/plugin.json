@@ -1,0 +1,9 @@
+{
+  "id": "my-plugin",
+  "name": "My Plugin",
+  "version": "1.0.0",
+  "entry": "index.js",
+  "description": "Short description of what this plugin does.",
+  "dynamicLoadable": true,
+  "dynamicUnloadable": true
+}

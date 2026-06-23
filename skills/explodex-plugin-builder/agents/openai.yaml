@@ -1,0 +1,14 @@
+interface:
+  display_name: "Explodex Plugin Builder"
+  short_description: "Research, build, and test Explodex plugins"
+  default_prompt: "Use $explodex-plugin-builder to create or modify an Explodex plugin with research, implementation, and Chrome DevTools verification."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "chrome-devtools"
+      description: "Chrome DevTools MCP for renderer verification at http://127.0.0.1:9333"
+      transport: "stdio"
+
+policy:
+  allow_implicit_invocation: true
