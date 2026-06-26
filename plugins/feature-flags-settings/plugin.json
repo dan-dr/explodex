@@ -1,7 +1,7 @@
 {
   "id": "feature-flags-settings",
   "name": "Feature Flags",
-  "version": "1.1.0",
+  "version": "1.4.1",
   "entry": "index.js",
   "description": "Lists all Codex experimental feature flags with live state and persistent toggles in Settings.",
   "dynamicLoadable": true,

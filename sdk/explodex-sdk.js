@@ -532,7 +532,7 @@
       .ex-popover {
         position: fixed; z-index: 2147483646;
         width: min(380px, calc(100vw - 24px)); max-height: min(70vh, 560px);
-        overflow: auto; border-radius: 12px;
+        overflow: hidden; display: flex; flex-direction: column; border-radius: 12px;
         border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
         background: var(--color-bg-primary, #111);
         color: inherit;
@@ -545,7 +545,10 @@
         position: sticky; top: 0; background: inherit; z-index: 1;
       }
       .ex-popover-title { font-weight: 600; font-size: 14px; }
-      .ex-popover-body { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 10px; }
+      .ex-popover-body {
+        padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 10px;
+        flex: 1; min-height: 0; overflow: hidden;
+      }
       .ex-dialog-backdrop {
         position: fixed; inset: 0; z-index: 2147483647;
         background: color-mix(in srgb, #000 55%, transparent);

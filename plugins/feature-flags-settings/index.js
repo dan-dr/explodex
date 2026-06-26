@@ -27,6 +27,50 @@
   const EXPERIMENTAL_FEATURES_QUERY_KEY = "experimental-features";
   const CONFIG_USER_QUERY_KEY = "config";
 
+  const PERSISTED_GATE_HINTS_KEY = "explodex-feature-gate-hints";
+
+  // Proximity-scanned from Codex webview bundles (featureName near checkGate(`<id>`)).
+  const CODEX_BUNDLE_GATE_HINTS = {
+    browser_use: ["410262010"],
+    browser_use_external: ["410065390"],
+    chronicle: ["2574306096"],
+    computer_use: ["1506311413"],
+    in_app_browser: ["1834314516"],
+  };
+
+  const FEATURE_QUERY_KEY_HINTS = {
+    chronicle: [["vscode", "chronicle-permissions"]],
+    memories: [["vscode", "get-global-state", JSON.stringify({ key: "memories" })]],
+  };
+
+  const STAGE_SECTIONS = [
+    {
+      key: "stable",
+      title: "Stable",
+      description: "Generally available; intended for everyday use.",
+    },
+    {
+      key: "beta",
+      title: "Beta",
+      description: "Wider rollout with ongoing iteration.",
+    },
+    {
+      key: "underDevelopment",
+      title: "Under development",
+      description: "Experimental or internal; behavior may change abruptly.",
+    },
+    {
+      key: "removed",
+      title: "Removed",
+      description: "Deprecated or retired; toggles may no longer do anything.",
+    },
+    {
+      key: null,
+      title: "Unclassified",
+      description: "Not tagged by Codex list API (catalog fallback).",
+    },
+  ];
+
   const KNOWN_FEATURE_NAMES = [
     "memories",
     "multi_agent",
@@ -54,12 +98,12 @@
     {
       id: PLUGIN_ID,
       name: "Feature Flags",
-      version: "1.1.0",
+      version: "1.4.1",
       dynamicLoadable: true,
       dynamicUnloadable: true,
     },
     (api) => {
-      const { bridge, components: c, flags, inject, log, sidebarNav, ui } = api;
+      const { bridge, components: c, flags, inject, log, sidebarNav, storage, ui } = api;
 
       let disposed = false;
       let navButton = null;
@@ -68,7 +112,7 @@
       let routePollTimer = null;
       let refreshInFlight = null;
       let lastSettingsStateKey = null;
-      let lastPathname = global.location?.pathname ?? "";
+      let lastPathname = "";
       let toggling = new Set();
       let unsubscribeSidebar = null;
 
@@ -79,6 +123,26 @@
         hostId: DEFAULT_HOST_ID,
         updatedAt: null,
       };
+
+      function reactFiber(node) {
+        if (!node || typeof node !== "object") return null;
+        const key = Object.keys(node).find((name) => name.startsWith("__reactFiber"));
+        return key ? node[key] : null;
+      }
+
+      function getAppRoutePathname() {
+        const start =
+          document.querySelector('nav[aria-label="Settings"]') ??
+          document.querySelector("nav") ??
+          document.documentElement;
+        let fiber = reactFiber(start);
+        for (let depth = 0; depth < 200 && fiber; depth += 1) {
+          const loc = fiber.memoizedProps?.location ?? fiber.memoizedProps?.value?.location;
+          if (loc?.pathname) return loc.pathname;
+          fiber = fiber.return;
+        }
+        return global.location?.pathname ?? "";
+      }
 
       function resolveHostId() {
         const hostConfig = global.electronBridge?.getSharedObjectSnapshotValue?.("host_config");
@@ -103,6 +167,134 @@
         return out;
       }
 
+      function readPersistedGateHints() {
+        const raw = storage.persisted.get(PERSISTED_GATE_HINTS_KEY, {});
+        return raw && typeof raw === "object" ? raw : {};
+      }
+
+      function rememberGateHints(featureName, gateIds) {
+        if (!featureName || !gateIds?.length) return;
+        const hints = readPersistedGateHints();
+        const merged = new Set([...(hints[featureName] ?? []), ...gateIds]);
+        hints[featureName] = [...merged];
+        storage.persisted.set(PERSISTED_GATE_HINTS_KEY, hints);
+      }
+
+      function readStatsigGateCatalog() {
+        const byId = new Map();
+        const byName = new Map();
+
+        try {
+          for (let i = 0; i < (global.localStorage?.length ?? 0); i += 1) {
+            const storageKey = global.localStorage.key(i);
+            if (!storageKey?.startsWith("statsig.cached.evaluations.")) continue;
+            const raw = global.localStorage.getItem(storageKey);
+            if (!raw) continue;
+            const envelope = JSON.parse(raw);
+            const data = JSON.parse(envelope.data);
+            for (const [gateId, gate] of Object.entries(data.feature_gates ?? {})) {
+              const name = gate?.name == null ? null : String(gate.name);
+              const value = typeof gate?.value === "boolean" ? gate.value : null;
+              byId.set(gateId, { name, value });
+              if (name) {
+                const bucket = byName.get(name) ?? new Set();
+                bucket.add(gateId);
+                byName.set(name, bucket);
+              }
+            }
+          }
+        } catch {
+          // ignore parse errors
+        }
+
+        return { byId, byName };
+      }
+
+      function discoverStatsigGatesForFeature(featureName) {
+        const gateIds = new Set();
+        const catalog = readStatsigGateCatalog();
+        const statsigDefaults = readStatsigFeatures();
+        const persistedHints = readPersistedGateHints();
+
+        for (const gateId of catalog.byName.get(featureName) ?? []) gateIds.add(gateId);
+        if (catalog.byId.has(featureName)) gateIds.add(featureName);
+
+        if (featureName in statsigDefaults) gateIds.add(featureName);
+        if (flags.readStatsigGate(featureName) != null) gateIds.add(featureName);
+
+        for (const gateId of CODEX_BUNDLE_GATE_HINTS[featureName] ?? []) gateIds.add(gateId);
+        for (const gateId of persistedHints[featureName] ?? []) gateIds.add(gateId);
+
+        for (const [gateId, gate] of catalog.byId) {
+          if (gate?.name === featureName) gateIds.add(gateId);
+          if (gate?.name === gateId && gateId === featureName) gateIds.add(gateId);
+        }
+
+        const discovered = [...gateIds];
+        rememberGateHints(featureName, discovered);
+        return discovered;
+      }
+
+      function discoverQueryKeysForFeature(featureName) {
+        const keys = [];
+        const seen = new Set();
+
+        const push = (queryKey) => {
+          if (!Array.isArray(queryKey)) return;
+          const signature = JSON.stringify(queryKey);
+          if (seen.has(signature)) return;
+          seen.add(signature);
+          keys.push(queryKey);
+        };
+
+        for (const queryKey of FEATURE_QUERY_KEY_HINTS[featureName] ?? []) push(queryKey);
+
+        const queryClient = flags.getQueryClient();
+        const needle = featureName.toLowerCase();
+        for (const query of queryClient?.getQueryCache?.().getAll?.() ?? []) {
+          const queryKey = query?.queryKey;
+          if (!Array.isArray(queryKey)) continue;
+          const signature = JSON.stringify(queryKey).toLowerCase();
+          if (signature.includes(needle)) push(queryKey);
+        }
+
+        push(["vscode", `${featureName}-permissions`]);
+        return keys;
+      }
+
+      function buildActivationPlan(featureName, enabled) {
+        const gateIds = discoverStatsigGatesForFeature(featureName);
+        const statsigGates = {};
+        for (const gateId of gateIds) statsigGates[gateId] = enabled;
+        return {
+          configKey: featureKeyPath(featureName),
+          statsigGates,
+          statsigGateIds: gateIds,
+          queryKeys: discoverQueryKeysForFeature(featureName),
+          usesStatsig: gateIds.length > 0,
+        };
+      }
+
+      function enrichFeatureRequirements(feature) {
+        const plan = buildActivationPlan(feature.name, feature.enabled);
+        return {
+          ...feature,
+          statsigGateIds: plan.statsigGateIds,
+          usesStatsig: plan.usesStatsig,
+        };
+      }
+
+      async function applyFeatureActivation(hostId, featureName, enabled) {
+        const plan = buildActivationPlan(featureName, enabled);
+        await flags.propagate({
+          hostId,
+          statsigGates: plan.statsigGates,
+          queryKeys: plan.queryKeys,
+        });
+        applyFeatureOverridesToCaches(hostId, { [featureName]: enabled });
+        return plan;
+      }
+
       function experimentalFeaturesQueryKey(hostId) {
         return [EXPERIMENTAL_FEATURES_QUERY_KEY, "list", hostId];
       }
@@ -111,12 +303,16 @@
         return [CONFIG_USER_QUERY_KEY, "user", hostId];
       }
 
-      function loadFeaturesFromQueryCache(hostId) {
+      function loadFeaturesFromQueryCache(hostId, overrides = null) {
         const queryClient = flags.getQueryClient();
         if (!queryClient) return null;
         const list = queryClient.getQueryData(experimentalFeaturesQueryKey(hostId));
         if (!Array.isArray(list) || list.length === 0) return null;
-        return mergeFeatures(list);
+        const cachedOverrides =
+          overrides ??
+          queryClient.getQueryData(configUserQueryKey(hostId))?.config?.features ??
+          null;
+        return overlayConfigOverrides(mergeFeatures(list), cachedOverrides);
       }
 
       function updateFeatureInConfig(config, featureName, enabled) {
@@ -124,32 +320,94 @@
         return { ...config, features };
       }
 
-      async function syncCodexCaches(hostId, featureName, enabled) {
+      function applyFeatureOverridesToCaches(hostId, overrides) {
         const queryClient = flags.getQueryClient();
-        if (!queryClient) return;
+        if (!queryClient || !overrides || typeof overrides !== "object") return;
+
+        const entries = Object.entries(overrides).filter(
+          ([, value]) => typeof value === "boolean",
+        );
+        if (!entries.length) return;
 
         const expKey = experimentalFeaturesQueryKey(hostId);
         queryClient.setQueryData(expKey, (current) => {
           if (!Array.isArray(current)) return current;
-          let found = false;
-          const next = current.map((entry) => {
-            if (entry?.name !== featureName) return entry;
-            found = true;
-            return { ...entry, enabled };
+          return current.map((entry) => {
+            const override = overrides[entry?.name];
+            if (override == null) return entry;
+            return { ...entry, enabled: override };
           });
-          return found ? next : current;
         });
 
         const userKey = configUserQueryKey(hostId);
         queryClient.setQueryData(userKey, (current) => {
           if (!current?.config) return current;
+          const nextFeatures = { ...(current.config.features ?? {}) };
+          for (const [name, value] of entries) nextFeatures[name] = value;
           return {
             ...current,
-            config: updateFeatureInConfig(current.config, featureName, enabled),
+            config: { ...current.config, features: nextFeatures },
           };
         });
 
-        await flags.propagate({ hostId });
+        flags.notifyStatsigValuesUpdated();
+      }
+
+      async function readPersistedOverrides(hostId) {
+        const queryClient = flags.getQueryClient();
+        const fromCache = queryClient?.getQueryData(configUserQueryKey(hostId))?.config
+          ?.features;
+        if (fromCache && typeof fromCache === "object") {
+          const overrides = {};
+          for (const [name, value] of Object.entries(fromCache)) {
+            if (typeof value === "boolean") overrides[name] = value;
+          }
+          if (Object.keys(overrides).length) return overrides;
+        }
+
+        const overrides = {};
+        for (const name of KNOWN_FEATURE_NAMES) {
+          const value = await readConfigOverride(name);
+          if (value != null) overrides[name] = value;
+        }
+        return overrides;
+      }
+
+      function overlayConfigOverrides(features, overrides) {
+        if (!overrides || typeof overrides !== "object") return features;
+        return features.map((feature) => {
+          const override = overrides[feature.name];
+          if (override == null || typeof override !== "boolean") return feature;
+          return { ...feature, enabled: override, source: "config" };
+        });
+      }
+
+      async function rehydratePersistedFlags(hostId, { quiet = false } = {}) {
+        const overrides = await readPersistedOverrides(hostId);
+        const entries = Object.entries(overrides).filter(
+          ([, value]) => typeof value === "boolean",
+        );
+        if (!entries.length) return overrides;
+
+        const statsigGates = {};
+        const queryKeys = [];
+        for (const [name, enabled] of entries) {
+          const plan = buildActivationPlan(name, enabled);
+          Object.assign(statsigGates, plan.statsigGates);
+          queryKeys.push(...plan.queryKeys);
+        }
+
+        await flags.propagate({ hostId, statsigGates, queryKeys });
+        applyFeatureOverridesToCaches(hostId, Object.fromEntries(entries));
+
+        if (!quiet && state.features.length) {
+          state = {
+            ...state,
+            features: overlayConfigOverrides(state.features, overrides).map(enrichFeatureRequirements),
+          };
+        }
+
+        return overrides;
       }
 
       function stateKey() {
@@ -280,7 +538,7 @@
             expectedVersion: null,
           });
           persisted = res != null;
-          if (persisted) await syncCodexCaches(hostId, featureName, enabled);
+          if (persisted) await applyFeatureActivation(hostId, featureName, enabled);
         }
 
         if (!persisted) {
@@ -289,7 +547,7 @@
             value: enabled,
           });
           if (!res?.success) throw new Error("Failed to persist feature flag");
-          await syncCodexCaches(hostId, featureName, enabled);
+          await applyFeatureActivation(hostId, featureName, enabled);
         }
 
         if (featureName === "remote_control") {
@@ -304,12 +562,110 @@
         return `Flags: ${enabled}/${total}`;
       }
 
-      function stageLabel(feature) {
-        if (feature.stage) return feature.stage;
+      function featureStageKey(feature) {
+        return feature.stage ?? null;
+      }
+
+      function groupFeaturesByStage(features) {
+        const groups = new Map(STAGE_SECTIONS.map((section) => [section.key, []]));
+        for (const feature of features) {
+          const key = featureStageKey(feature);
+          const bucket = groups.has(key) ? key : null;
+          groups.get(bucket).push(feature);
+        }
+        return STAGE_SECTIONS.map((section) => ({
+          ...section,
+          features: (groups.get(section.key) ?? []).sort((left, right) =>
+            left.name.localeCompare(right.name),
+          ),
+        })).filter((section) => section.features.length > 0);
+      }
+
+      function stageAnchorId(sectionKey) {
+        return `ex-ff-stage-${sectionKey ?? "unclassified"}`;
+      }
+
+      function stageJumpNav(sections, scrollContainer) {
+        const nav = document.createElement("div");
+        nav.style.cssText =
+          "display:flex;flex-wrap:wrap;align-items:center;gap:4px 6px;" +
+          "font:11px/1.35 system-ui,-apple-system,sans-serif;" +
+          "color:color-mix(in srgb, currentColor 62%, transparent)";
+
+        const label = document.createElement("span");
+        label.textContent = "Jump to";
+        nav.appendChild(label);
+
+        sections.forEach((section, index) => {
+          if (index > 0) {
+            const sep = document.createElement("span");
+            sep.textContent = "·";
+            sep.setAttribute("aria-hidden", "true");
+            sep.style.cssText = "color:color-mix(in srgb, currentColor 35%, transparent)";
+            nav.appendChild(sep);
+          }
+
+          const link = document.createElement("button");
+          link.type = "button";
+          link.textContent = section.title;
+          link.setAttribute("aria-label", `Jump to ${section.title} flags`);
+          link.style.cssText =
+            "background:none;border:none;padding:0;margin:0;cursor:pointer;font:inherit;" +
+            "color:color-mix(in srgb, currentColor 88%, transparent);" +
+            "text-decoration:underline;text-underline-offset:2px";
+          link.addEventListener("click", () => {
+            const target = scrollContainer.querySelector(`#${CSS.escape(stageAnchorId(section.key))}`);
+            if (target) target.scrollIntoView({ block: "start", behavior: "smooth" });
+          });
+          nav.appendChild(link);
+        });
+
+        return nav;
+      }
+
+      function stageSectionHeader(section, { first = false } = {}) {
+        const header = document.createElement("div");
+        header.id = stageAnchorId(section.key);
+        header.style.cssText =
+          `display:flex;flex-direction:column;gap:3px;padding:${first ? "2px" : "14px"} 0 8px;` +
+          (first ? "" : "border-top:1px solid color-mix(in srgb, currentColor 10%, transparent);margin-top:2px;");
+
+        const titleRow = document.createElement("div");
+        titleRow.style.cssText =
+          "display:flex;align-items:baseline;justify-content:space-between;gap:8px";
+
+        const title = document.createElement("div");
+        title.textContent = section.title;
+        title.style.cssText =
+          "font:11px/1.3 ui-monospace,monospace;letter-spacing:0.06em;text-transform:uppercase;" +
+          "color:color-mix(in srgb, currentColor 78%, transparent)";
+        titleRow.appendChild(title);
+
+        const count = document.createElement("div");
+        const enabled = section.features.filter((feature) => feature.enabled).length;
+        count.textContent = `${enabled}/${section.features.length}`;
+        count.style.cssText =
+          "font:10px/1.3 ui-monospace,monospace;color:color-mix(in srgb, currentColor 55%, transparent)";
+        titleRow.appendChild(count);
+
+        header.appendChild(titleRow);
+
+        const blurb = document.createElement("div");
+        blurb.textContent = section.description;
+        blurb.style.cssText =
+          "font:11px/1.4 system-ui,-apple-system,sans-serif;" +
+          "color:color-mix(in srgb, currentColor 58%, transparent)";
+        header.appendChild(blurb);
+
+        return header;
+      }
+
+      function sourceBadgeLabel(feature) {
+        if (feature.usesStatsig) return "config+statsig";
         if (feature.source === "config") return "config";
         if (feature.source === "statsig") return "default";
         if (feature.source === "catalog") return "catalog";
-        return "unknown";
+        return null;
       }
 
       function isToggleDisabled(feature) {
@@ -347,14 +703,17 @@
           "padding:2px 6px;border-radius:6px;background:color-mix(in srgb, currentColor 8%, transparent)";
         title.appendChild(name);
 
-        const badge = document.createElement("span");
-        badge.textContent = stageLabel(feature);
-        badge.style.cssText =
-          "font:10px/1 ui-monospace,monospace;letter-spacing:0.04em;text-transform:uppercase;" +
-          "padding:2px 6px;border-radius:999px;" +
-          "border:1px solid color-mix(in srgb, currentColor 16%, transparent);" +
-          "color:color-mix(in srgb, currentColor 70%, transparent)";
-        title.appendChild(badge);
+        const badgeLabel = sourceBadgeLabel(feature);
+        if (badgeLabel) {
+          const badge = document.createElement("span");
+          badge.textContent = badgeLabel;
+          badge.style.cssText =
+            "font:10px/1 ui-monospace,monospace;letter-spacing:0.04em;text-transform:uppercase;" +
+            "padding:2px 6px;border-radius:999px;" +
+            "border:1px solid color-mix(in srgb, currentColor 16%, transparent);" +
+            "color:color-mix(in srgb, currentColor 70%, transparent)";
+          title.appendChild(badge);
+        }
 
         copy.appendChild(title);
 
@@ -372,6 +731,15 @@
             "font:12px/1.45 system-ui,-apple-system,sans-serif;" +
             "color:color-mix(in srgb, currentColor 68%, transparent)";
           copy.appendChild(description);
+        }
+
+        if (feature.usesStatsig && feature.statsigGateIds?.length) {
+          const gates = document.createElement("div");
+          gates.textContent = `config + statsig (${feature.statsigGateIds.join(", ")})`;
+          gates.style.cssText =
+            "font:11px/1.35 ui-monospace,monospace;" +
+            "color:color-mix(in srgb, currentColor 58%, transparent)";
+          copy.appendChild(gates);
         }
 
         const status = document.createElement("div");
@@ -395,7 +763,7 @@
                 ...state,
                 features: state.features.map((entry) =>
                   entry.name === target.name
-                    ? { ...entry, enabled, source: "config" }
+                    ? enrichFeatureRequirements({ ...entry, enabled, source: "config" })
                     : entry,
                 ),
                 updatedAt: new Date(),
@@ -422,15 +790,18 @@
 
       function renderPanelBody() {
         const body = document.createElement("div");
-        body.style.cssText = "display:flex;flex-direction:column;gap:12px";
+        const isPopover = popoutOpen;
+        body.style.cssText = isPopover
+          ? "display:flex;flex-direction:column;gap:12px;flex:1;min-height:0;overflow:hidden"
+          : "display:flex;flex-direction:column;gap:12px";
 
         const intro = document.createElement("div");
         intro.style.cssText =
           "font:12px/1.5 system-ui,-apple-system,sans-serif;" +
           "color:color-mix(in srgb, currentColor 72%, transparent)";
         intro.textContent = hasAppServer()
-          ? "All experimental feature flags known to this Codex build. Toggles persist to config and use the same APIs as Settings → General."
-          : "Feature flags from Codex defaults (statsig) and config overrides. Toggles use set-configuration when the in-renderer AppServer is unavailable.";
+          ? "Experimental flags persist to config.toml. Flags marked config+statsig also override discovered Statsig gates so Codex UI hooks stay in sync after restart."
+          : "Feature flags from Codex defaults (statsig) and config overrides. Toggles persist config and apply discovered Statsig gate overrides when needed.";
         body.appendChild(intro);
 
         if (state.loading && state.features.length === 0) {
@@ -464,15 +835,29 @@
           "background:color-mix(in srgb, currentColor 4%, transparent);color:inherit;font:13px system-ui,-apple-system,sans-serif";
         body.appendChild(filter);
 
+        const jumpNavWrap = document.createElement("div");
+        jumpNavWrap.style.cssText = "flex-shrink:0";
+
         const list = document.createElement("div");
-        list.style.cssText = "max-height:min(60vh,520px);overflow:auto;padding-right:4px";
+        list.style.cssText = isPopover
+          ? "flex:1;min-height:0;overflow:auto;padding-right:4px;scroll-padding-top:4px"
+          : "max-height:min(60vh,520px);overflow:auto;padding-right:4px;scroll-padding-top:4px";
 
         const paintRows = () => {
           const query = filter.value.trim().toLowerCase();
           list.replaceChildren();
+          jumpNavWrap.replaceChildren();
           const rows = state.features.filter((feature) => {
             if (!query) return true;
-            const haystack = [feature.name, feature.label, feature.description, feature.stage]
+            const section = STAGE_SECTIONS.find((entry) => entry.key === featureStageKey(feature));
+            const haystack = [
+              feature.name,
+              feature.label,
+              feature.description,
+              feature.stage,
+              section?.title,
+              section?.description,
+            ]
               .filter(Boolean)
               .join(" ")
               .toLowerCase();
@@ -486,11 +871,19 @@
             list.appendChild(empty);
             return;
           }
-          for (const feature of rows) list.appendChild(featureRow(feature));
+          const sections = groupFeaturesByStage(rows);
+          if (sections.length > 1) {
+            jumpNavWrap.appendChild(stageJumpNav(sections, list));
+          }
+          sections.forEach((section, index) => {
+            list.appendChild(stageSectionHeader(section, { first: index === 0 }));
+            for (const feature of section.features) list.appendChild(featureRow(feature));
+          });
         };
 
         filter.addEventListener("input", paintRows);
         paintRows();
+        body.appendChild(jumpNavWrap);
         body.appendChild(list);
 
         const actions = document.createElement("div");
@@ -549,6 +942,8 @@
 
       function settingsContentRoot() {
         return (
+          document.querySelector(".main-surface .scrollbar-stable") ??
+          document.querySelector(".main-surface") ??
           document.querySelector("main.main-surface .scrollbar-stable") ??
           document.querySelector("main.main-surface")
         );
@@ -590,7 +985,7 @@
 
       function maybeUpdateSettingsPanel(force = false) {
         if (disposed) return;
-        const onSettings = global.location?.pathname?.includes(SETTINGS_ROUTE);
+        const onSettings = getAppRoutePathname().includes(SETTINGS_ROUTE);
         if (!onSettings) {
           unmountSettingsPanel();
           return;
@@ -710,18 +1105,26 @@
           }
 
           try {
+            const overrides = await readPersistedOverrides(hostId);
             const apiFeatures = await listExperimentalFeatures(hostId);
             if (disposed) return;
-            const features =
+            let features =
               apiFeatures?.length
                 ? mergeFeatures(apiFeatures)
                 : await loadFeaturesFromFallback(hostId);
+            features = overlayConfigOverrides(features, overrides).map(enrichFeatureRequirements);
             state = {
               loading: false,
               error: null,
               hostId,
               features,
               updatedAt: new Date(),
+            };
+            await rehydratePersistedFlags(hostId, { quiet: true });
+            if (disposed) return;
+            state = {
+              ...state,
+              features: overlayConfigOverrides(state.features, overrides).map(enrichFeatureRequirements),
             };
           } catch (err) {
             if (disposed) return;
@@ -745,7 +1148,7 @@
       }
 
       function onRouteMaybeChanged() {
-        const path = global.location?.pathname ?? "";
+        const path = getAppRoutePathname();
         if (path === lastPathname) return;
         lastPathname = path;
         maybeUpdateSettingsPanel();
@@ -765,8 +1168,17 @@
       }
 
       paintNav();
+      lastPathname = getAppRoutePathname();
       startRouteWatcher();
       maybeUpdateSettingsPanel();
+      void rehydratePersistedFlags(resolveHostId())
+        .then(() => {
+          if (!disposed) {
+            paintNav();
+            maybeUpdateSettingsPanel(true);
+          }
+        })
+        .catch((err) => log.error("persisted flag rehydrate failed", err));
       refresh().catch((err) => log.error("initial refresh failed", err));
       refreshTimer = global.setInterval(() => refresh({ quiet: true }), 60_000);
 
