@@ -158,7 +158,7 @@ export interface BridgeAPI {
   /** Call an AppServer RPC method (falls back to the authenticated HTTP proxy). */
   rpc<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T | null>;
   /** Navigate the renderer to a route path. */
-  navigate(path: string): Promise<unknown>;
+  navigate(path: string, state?: Record<string, unknown>): Promise<unknown>;
   /** Current system theme variant (e.g. `"dark"`). */
   theme(): string;
   /** Subscribe to theme changes; returns an unsubscribe function. */
@@ -293,6 +293,8 @@ export interface ComposerAPI {
   getText(): string;
   /** Insert text at the caret; returns false if blocked (dialog/terminal) or no input. */
   insertText(text: string): boolean;
+  /** Replace the full composer text; returns false if blocked or no input. */
+  setText(text: string): boolean;
 }
 
 // ─── Codex internals ──────────────────────────────────────────────────────
@@ -332,6 +334,62 @@ export interface CodexAPI {
     conversationId: string,
     settings?: ThreadSettingsForNextTurn,
   ): Promise<boolean>;
+}
+
+// ─── Flags / propagation ──────────────────────────────────────────────────
+
+export interface FlagsPropagateOptions {
+  /** Host id — when set, invalidates standard experimental-features and config queries. */
+  hostId?: string;
+  /** Additional React Query keys to invalidate (local cache + broadcast). */
+  queryKeys?: readonly (readonly unknown[])[];
+  /** Statsig gate overrides to apply before notifying subscribers. Use `null` to clear a gate for this plugin. */
+  statsigGates?: Record<string, boolean | null>;
+  /** Skip {@link FlagsAPI.propagate} standard host config invalidation. */
+  skipStandardInvalidation?: boolean;
+  /** Owner id for Statsig overrides (defaults to plugin id when called from plugin setup). */
+  pluginId?: string;
+}
+
+export interface FlagsSetStatsigGateOptions {
+  pluginId?: string;
+  /** When false, batch with {@link FlagsAPI.propagate} and notify once. */
+  notify?: boolean;
+}
+
+export interface FlagsClearStatsigGateOptions {
+  /** Clear only overrides owned by this plugin; omit to clear all. */
+  pluginId?: string;
+}
+
+/**
+ * Propagate config and Statsig changes so Codex React hooks and React Query caches
+ * pick up new values without a full renderer reload.
+ */
+export interface FlagsAPI {
+  /** React Query client from the Codex provider tree, if mounted. */
+  getQueryClient(): unknown | null;
+  /** All Statsig client instances in the renderer. */
+  getStatsigClients(): unknown[];
+  /** Read a gate from localStorage cache, falling back to `checkGate`. */
+  readStatsigGate(gateId: string): boolean | null;
+  /** Apply a local Statsig gate override for one plugin owner. */
+  setStatsigGateOverride(
+    gateId: string,
+    value: boolean | null,
+    options?: FlagsSetStatsigGateOptions,
+  ): boolean;
+  /** Remove Statsig overrides (all, or one plugin's). */
+  clearStatsigGateOverrides(options?: FlagsClearStatsigGateOptions): void;
+  /** Emit Statsig `values_updated` so `useGateValue` hooks recompute. */
+  notifyStatsigValuesUpdated(): void;
+  /** Invalidate React Query keys locally and via `query-cache-invalidate`. */
+  invalidateQueries(queryKeys: readonly (readonly unknown[])[]): Promise<void>;
+  /**
+   * Generic propagation after flag changes: optional Statsig overrides, always
+   * notifies Statsig subscribers, then invalidates standard host queries plus any extras.
+   */
+  propagate(options?: FlagsPropagateOptions): Promise<void>;
 }
 
 // ─── Query ────────────────────────────────────────────────────────────────
@@ -529,6 +587,8 @@ export interface RegisterResult {
 export interface PluginAPI extends ExplodexAPI {
   pluginId: string;
   log: PluginLogger;
+  /** {@link FlagsAPI} with `pluginId` defaulted to this plugin's id. */
+  flags: FlagsAPI;
   waitFor: InjectAPI["waitFor"];
   /** {@link InjectAPI.mount} with `pluginId` pre-bound. */
   mount(
@@ -609,6 +669,7 @@ export interface ExplodexAPI {
   http: HttpAPI;
   composer: ComposerAPI;
   codex: CodexAPI;
+  flags: FlagsAPI;
   query: QueryAPI;
   sidebarNav: SidebarNavAPI;
   ui: UIAPI;

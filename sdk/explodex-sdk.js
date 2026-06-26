@@ -147,7 +147,7 @@
     );
   })();
 
-  const VERSION = "1.1.0";
+  const VERSION = "1.2.0";
   const PLUGIN_ENABLED_KEY = "explodex-plugin-enabled";
   const PLUGIN_RESTART_KEY = "explodex-plugin-restart-pending";
   const STYLE_ID = "explodex-sdk-style";
@@ -564,7 +564,8 @@
       }
       .ex-plugin-list .ex-plugin-row:last-child { border-bottom: 0; }
       .ex-plugin-footer {
-        display: flex; justify-content: flex-end; padding-top: 8px; margin-top: 4px;
+        display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap;
+        padding-top: 8px; margin-top: 4px;
         border-top: 1px solid color-mix(in srgb, currentColor 8%, transparent);
       }
     `;
@@ -644,8 +645,9 @@
       }
     },
 
-    navigate(path) {
-      return bridge.send("navigate-to-route", { path });
+    navigate(path, state) {
+      const payload = state != null ? { path, state } : { path };
+      return bridge.send("navigate-to-route", payload);
     },
 
     theme() {
@@ -800,6 +802,260 @@
     }
     return null;
   }
+
+  const STATSIG_PATCH_STORE_KEY = "__explodexStatsigGatePatchStore";
+
+  function getStatsigClients() {
+    const statsig = global.__STATSIG__;
+    if (!statsig) return [];
+
+    const clients = [];
+    if (statsig.firstInstance) clients.push(statsig.firstInstance);
+    if (statsig.instance) clients.push(statsig.instance);
+    for (const instance of Object.values(statsig.instances ?? {})) {
+      clients.push(instance);
+    }
+
+    return [...new Set(clients)].filter(
+      (client) =>
+        client &&
+        (typeof client.checkGate === "function" ||
+          typeof client.getFeatureGate === "function"),
+    );
+  }
+
+  function ensureStatsigPatchStore(client) {
+    if (!client[STATSIG_PATCH_STORE_KEY]) {
+      client[STATSIG_PATCH_STORE_KEY] = {
+        origCheckGate: client.checkGate?.bind(client),
+        origGetFeatureGate: client.getFeatureGate?.bind(client),
+        origOverrideAdapter: client.overrideAdapter ?? null,
+        gates: new Map(),
+      };
+    }
+    return client[STATSIG_PATCH_STORE_KEY];
+  }
+
+  function reinstallStatsigOverrides(client) {
+    const store = client[STATSIG_PATCH_STORE_KEY];
+    if (!store || store.gates.size === 0) {
+      if (store) {
+        if (store.origCheckGate) client.checkGate = store.origCheckGate;
+        if (store.origGetFeatureGate) client.getFeatureGate = store.origGetFeatureGate;
+        client.overrideAdapter = store.origOverrideAdapter;
+        delete client[STATSIG_PATCH_STORE_KEY];
+      }
+      return;
+    }
+
+    const previous = store.origOverrideAdapter;
+    client.overrideAdapter = {
+      getGateOverride(gate, user, options) {
+        const entry = store.gates.get(gate?.name);
+        if (entry) {
+          return {
+            ...gate,
+            value: entry.value,
+            ruleID: "explodex-override",
+          };
+        }
+        return previous?.getGateOverride?.(gate, user, options) ?? null;
+      },
+      getDynamicConfigOverride: previous?.getDynamicConfigOverride?.bind(previous),
+      getExperimentOverride: previous?.getExperimentOverride?.bind(previous),
+      getLayerOverride: previous?.getLayerOverride?.bind(previous),
+      getParamStoreOverride: previous?.getParamStoreOverride?.bind(previous),
+    };
+
+    const origCheckGate = store.origCheckGate;
+    if (origCheckGate) {
+      client.checkGate = (gate, ...rest) => {
+        const entry = store.gates.get(gate);
+        return entry ? entry.value : origCheckGate(gate, ...rest);
+      };
+    }
+
+    const origGetFeatureGate = store.origGetFeatureGate;
+    if (origGetFeatureGate) {
+      client.getFeatureGate = (gate, ...rest) => {
+        const entry = store.gates.get(gate);
+        if (!entry) return origGetFeatureGate(gate, ...rest);
+        return {
+          name: gate,
+          value: entry.value,
+          ruleID: "explodex-override",
+          idType: "userID",
+          details: { reason: "explodex-override" },
+        };
+      };
+    }
+  }
+
+  function notifyStatsigValuesUpdated(clients = getStatsigClients()) {
+    for (const client of clients) {
+      try {
+        client._memoCache = {};
+        client.$emt?.({
+          name: "values_updated",
+          status: client.loadingStatus ?? "Ready",
+          values: null,
+        });
+      } catch {
+        // ignore emit failures
+      }
+    }
+  }
+
+  function standardConfigQueryKeys(hostId) {
+    return [
+      ["experimental-features", "list", hostId],
+      ["config", "user", hostId],
+      ["user-saved-config"],
+    ];
+  }
+
+  const flags = {
+    getQueryClient,
+
+    getStatsigClients,
+
+    readStatsigGate(gateId) {
+      try {
+        for (let i = 0; i < (global.localStorage?.length ?? 0); i += 1) {
+          const storageKey = global.localStorage.key(i);
+          if (!storageKey?.startsWith("statsig.cached.evaluations.")) continue;
+          const raw = global.localStorage.getItem(storageKey);
+          if (!raw) continue;
+          const envelope = JSON.parse(raw);
+          const data = JSON.parse(envelope.data);
+          const gate = data.feature_gates?.[gateId];
+          if (gate && typeof gate.value === "boolean") return gate.value;
+        }
+      } catch {
+        // ignore parse errors
+      }
+
+      const clients = getStatsigClients();
+      if (!clients.length) return null;
+      try {
+        return clients[0].checkGate?.(gateId);
+      } catch {
+        return null;
+      }
+    },
+
+    setStatsigGateOverride(
+      gateId,
+      value,
+      { pluginId = "explodex", notify = true } = {},
+    ) {
+      const clients = getStatsigClients();
+      if (!clients.length || !gateId) return false;
+
+      for (const client of clients) {
+        const store = ensureStatsigPatchStore(client);
+        if (value == null) {
+          const entry = store.gates.get(gateId);
+          if (entry) {
+            entry.owners.delete(pluginId);
+            if (entry.owners.size === 0) store.gates.delete(gateId);
+          }
+        } else {
+          const entry = store.gates.get(gateId) ?? { value, owners: new Set() };
+          entry.value = value;
+          entry.owners.add(pluginId);
+          store.gates.set(gateId, entry);
+        }
+        reinstallStatsigOverrides(client);
+      }
+
+      if (notify) notifyStatsigValuesUpdated(clients);
+      return true;
+    },
+
+    clearStatsigGateOverrides({ pluginId } = {}) {
+      const clients = getStatsigClients();
+      for (const client of clients) {
+        const store = client[STATSIG_PATCH_STORE_KEY];
+        if (!store) continue;
+
+        if (pluginId) {
+          for (const [gateId, entry] of [...store.gates.entries()]) {
+            entry.owners.delete(pluginId);
+            if (entry.owners.size === 0) store.gates.delete(gateId);
+          }
+        } else {
+          store.gates.clear();
+        }
+        reinstallStatsigOverrides(client);
+      }
+
+      if (clients.length) notifyStatsigValuesUpdated(clients);
+    },
+
+    notifyStatsigValuesUpdated,
+
+    async invalidateQueries(queryKeys = []) {
+      const normalized = queryKeys
+        .map((queryKey) => (Array.isArray(queryKey) ? queryKey : null))
+        .filter(Boolean);
+      if (!normalized.length) return;
+
+      const queryClient = getQueryClient();
+      if (queryClient) {
+        await Promise.all(
+          normalized.map((queryKey) =>
+            queryClient.invalidateQueries({ queryKey }).catch(() => {}),
+          ),
+        );
+      }
+
+      const electron = global.electronBridge;
+      if (!electron?.sendMessageFromView) return;
+
+      await Promise.all(
+        normalized.map((queryKey) =>
+          electron
+            .sendMessageFromView({ type: "query-cache-invalidate", queryKey })
+            .catch(() => {}),
+        ),
+      );
+    },
+
+    async propagate({
+      hostId,
+      queryKeys = [],
+      statsigGates,
+      skipStandardInvalidation = false,
+      pluginId = "explodex",
+    } = {}) {
+      if (statsigGates && typeof statsigGates === "object") {
+        for (const [gateId, value] of Object.entries(statsigGates)) {
+          flags.setStatsigGateOverride(gateId, value, { pluginId, notify: false });
+        }
+      }
+
+      notifyStatsigValuesUpdated();
+
+      const keys = [...queryKeys];
+      if (!skipStandardInvalidation && hostId) {
+        keys.push(...standardConfigQueryKeys(hostId));
+      }
+
+      const unique = [];
+      const seen = new Set();
+      for (const key of keys) {
+        const signature = JSON.stringify(key);
+        if (seen.has(signature)) continue;
+        seen.add(signature);
+        unique.push(key);
+      }
+
+      if (unique.length) {
+        await flags.invalidateQueries(unique);
+      }
+    },
+  };
 
   function codexGlobalStateQueryKey(key) {
     return ["vscode", "get-global-state", JSON.stringify({ key })];
@@ -1022,13 +1278,21 @@
       return input.textContent ?? "";
     },
 
-    insertText(text) {
-      const input = this.getInput();
-      if (!input) return false;
-
+    _composerBlocked() {
       const dialogOpen = document.querySelector('[role="dialog"][data-state="open"]');
       const terminalActive = document.querySelector("[data-codex-terminal]:focus-within");
-      if (dialogOpen || terminalActive) return false;
+      return Boolean(dialogOpen || terminalActive);
+    },
+
+    _dispatchComposerInput(input, text, inputType = "insertText") {
+      input.dispatchEvent(
+        new InputEvent("input", { bubbles: true, inputType, data: text }),
+      );
+    },
+
+    insertText(text) {
+      const input = this.getInput();
+      if (!input || this._composerBlocked()) return false;
 
       input.focus();
 
@@ -1037,17 +1301,37 @@
         const end = input.selectionEnd ?? input.value.length;
         input.value = `${input.value.slice(0, start)}${text}${input.value.slice(end)}`;
         input.selectionStart = input.selectionEnd = start + text.length;
-        input.dispatchEvent(
-          new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }),
-        );
+        this._dispatchComposerInput(input, text);
         return true;
       }
 
-      // ProseMirror contenteditable
       const inserted = document.execCommand("insertText", false, text);
-      input.dispatchEvent(
-        new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }),
-      );
+      this._dispatchComposerInput(input, text);
+      return inserted || true;
+    },
+
+    setText(text) {
+      const input = this.getInput();
+      if (!input || this._composerBlocked()) return false;
+
+      input.focus();
+
+      if (input instanceof HTMLTextAreaElement || input instanceof HTMLInputElement) {
+        input.value = text;
+        input.selectionStart = input.selectionEnd = text.length;
+        this._dispatchComposerInput(input, text, "insertReplacementText");
+        return true;
+      }
+
+      const selection = global.getSelection();
+      if (selection) {
+        const range = document.createRange();
+        range.selectNodeContents(input);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+      const inserted = document.execCommand("insertText", false, text);
+      this._dispatchComposerInput(input, text, "insertReplacementText");
       return inserted || true;
     },
   };
@@ -1842,6 +2126,17 @@
       ...api,
       pluginId: id,
       log: log.plugin(id),
+      flags: {
+        ...flags,
+        propagate: (opts = {}) => flags.propagate({ ...opts, pluginId: opts.pluginId ?? id }),
+        setStatsigGateOverride: (gateId, value, opts = {}) =>
+          flags.setStatsigGateOverride(gateId, value, {
+            ...opts,
+            pluginId: opts.pluginId ?? id,
+          }),
+        clearStatsigGateOverrides: (opts = {}) =>
+          flags.clearStatsigGateOverrides({ ...opts, pluginId: opts.pluginId ?? id }),
+      },
       waitFor: inject.waitFor,
       mount: (zoneId, nodeOrFactory, opts = {}) =>
         inject.mount(zoneId, nodeOrFactory, { ...opts, pluginId: id }),
@@ -2011,6 +2306,7 @@
   };
 
   function destroy() {
+    flags.clearStatsigGateOverrides();
     for (const id of [...plugins.keys()]) {
       if (!pluginCatalog.get(id)?.builtin) unregisterPlugin(id);
     }
@@ -2082,6 +2378,7 @@
     http,
     composer,
     codex,
+    flags,
     query,
     sidebarNav,
     ui,
@@ -2116,8 +2413,42 @@
       dynamicUnloadable: false,
     },
     (ctx) => {
-      const { observeZone: observe, components: c, plugins: pm, sidebarNav: nav, ui: overlay } = ctx;
+      const { observeZone: observe, components: c, plugins: pm, sidebarNav: nav, ui: overlay, bridge, composer } =
+        ctx;
       let shellOpen = false;
+
+      const CREATE_PLUGIN_LIVE_PROMPT = `Use $explodex-live-plugins to help me create and debug a new Explodex plugin in this repo.
+
+Plugin goal: [describe what the plugin should do — sidebar item, composer hook, settings panel, bridge RPC, etc.]
+
+If the goal is still a placeholder, ask one clarifying question, then scaffold under plugins/<id>/ and run the live loop: bun run validate → bun run package && bun run inject → verify in the Codex renderer via Chrome DevTools MCP at http://127.0.0.1:9333.`;
+
+      function sleep(ms) {
+        return new Promise((resolve) => global.setTimeout(resolve, ms));
+      }
+
+      async function prepopulateComposer(text, { attempts = 40, intervalMs = 100 } = {}) {
+        for (let i = 0; i < attempts; i += 1) {
+          if (composer.setText(text)) {
+            composer.focus();
+            return true;
+          }
+          await sleep(intervalMs);
+        }
+        return false;
+      }
+
+      async function startCreatePluginLiveThread() {
+        overlay.closePopover();
+        shellOpen = false;
+
+        await bridge.navigate("/", { focusComposerNonce: Date.now() });
+
+        const ok = await prepopulateComposer(CREATE_PLUGIN_LIVE_PROMPT);
+        if (!ok) {
+          c.statusToast("Composer not ready — copy prompt from Explodex menu and retry");
+        }
+      }
 
       async function openUserPluginsFolder() {
         const metaPaths = global.__EXPLODEX_PATHS__ ?? {};
@@ -2217,11 +2548,33 @@
             footer.className = "ex-plugin-footer";
             footer.appendChild(
               c.button({
+                label: "Create Plugin Live",
+                color: "primary",
+                size: "composerSm",
+                onClick: () => {
+                  void startCreatePluginLiveThread();
+                },
+              }),
+            );
+            footer.appendChild(
+              c.button({
                 label: "Open Plugins Folder",
                 color: "secondary",
                 size: "composerSm",
                 onClick: () => {
                   void openUserPluginsFolder();
+                },
+              }),
+            );
+            footer.appendChild(
+              c.button({
+                label: "Restart",
+                color: "ghost",
+                size: "composerSm",
+                onClick: () => {
+                  overlay.closePopover();
+                  shellOpen = false;
+                  void pm.restartWrapped({ reason: "menu-restart" });
                 },
               }),
             );

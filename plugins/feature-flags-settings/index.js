@@ -2,9 +2,10 @@
  * Explodex plugin: Feature Flags (Settings)
  *
  * Surfaces experimental feature flags (list-experimental-features when AppServer
- * is captured; otherwise statsig snapshot + get-configuration). Toggles persist via
- * batch-write-config-value or set-configuration RPC fallback. Sidebar popover +
- * optional General Settings panel injection.
+ * is captured; otherwise statsig snapshot + get-configuration). Toggles persist
+ * via batch-write-config-value or set-configuration RPC fallback, then
+ * Explodex.flags.propagate() refreshes Codex caches and Statsig hooks. Sidebar
+ * popover + optional General Settings panel injection.
  */
 (function registerFeatureFlagsSettings(global) {
   const Explodex = global.Explodex;
@@ -22,10 +23,6 @@
   const DEFAULT_HOST_ID = "local";
 
   const STATSIG_SNAPSHOT_KEY = "statsig_default_enable_features";
-  const STATSIG_GATE_REFERRALS = "1823918333";
-  const STATSIG_GATE_REFERRALS_ALT = "3502353992";
-  const STATSIG_GATE_CHRONICLE_PERSONALIZATION = "2574306096";
-  const CHRONICLE_GATE_PATCH_FLAG = "__explodexChronicleGatePatched";
 
   const EXPERIMENTAL_FEATURES_QUERY_KEY = "experimental-features";
   const CONFIG_USER_QUERY_KEY = "config";
@@ -51,20 +48,18 @@
     "skills",
     "shell_snapshot",
     "js_repl",
-    "referrals",
-    "referral_system",
   ];
 
   Explodex.plugins.register(
     {
       id: PLUGIN_ID,
       name: "Feature Flags",
-      version: "1.0.5",
+      version: "1.1.0",
       dynamicLoadable: true,
       dynamicUnloadable: true,
     },
     (api) => {
-      const { bridge, components: c, inject, log, sidebarNav, ui } = api;
+      const { bridge, components: c, flags, inject, log, sidebarNav, ui } = api;
 
       let disposed = false;
       let navButton = null;
@@ -108,94 +103,6 @@
         return out;
       }
 
-      function reactFiber(node) {
-        if (!node || typeof node !== "object") return null;
-        const key = Object.keys(node).find((name) => name.startsWith("__reactFiber"));
-        return key ? node[key] : null;
-      }
-
-      function getQueryClient() {
-        let fiber = reactFiber(document.querySelector("nav") ?? document.documentElement);
-        for (let depth = 0; depth < 200 && fiber; depth += 1) {
-          const client = fiber.memoizedProps?.value;
-          if (client?.getQueryCache && client?.setQueryData) return client;
-          fiber = fiber.return;
-        }
-        return null;
-      }
-
-      function readStatsigGate(gateId) {
-        if (
-          gateId === STATSIG_GATE_CHRONICLE_PERSONALIZATION &&
-          global[CHRONICLE_GATE_PATCH_FLAG]
-        ) {
-          return true;
-        }
-        try {
-          for (let i = 0; i < (global.localStorage?.length ?? 0); i += 1) {
-            const storageKey = global.localStorage.key(i);
-            if (!storageKey?.startsWith("statsig.cached.evaluations.")) continue;
-            const raw = global.localStorage.getItem(storageKey);
-            if (!raw) continue;
-            const envelope = JSON.parse(raw);
-            const data = JSON.parse(envelope.data);
-            const gate = data.feature_gates?.[gateId];
-            if (gate && typeof gate.value === "boolean") return gate.value;
-          }
-        } catch {
-          // ignore parse errors
-        }
-        return null;
-      }
-
-      const statsigGatePatchStoreKey = "__explodexChronicleGatePatchStore";
-
-      function restoreStatsigClientGate() {
-        const client = global.__STATSIG__?.firstInstance;
-        const store = client?.[statsigGatePatchStoreKey];
-        if (!client || !store) return;
-
-        if (store.checkGate) client.checkGate = store.checkGate;
-        if (store.getFeatureGate) client.getFeatureGate = store.getFeatureGate;
-        delete client[CHRONICLE_GATE_PATCH_FLAG];
-        delete client[statsigGatePatchStoreKey];
-        delete global[CHRONICLE_GATE_PATCH_FLAG];
-      }
-
-      function patchStatsigClientGate(gateId, value) {
-        const client = global.__STATSIG__?.firstInstance;
-        if (!client || client[CHRONICLE_GATE_PATCH_FLAG]) return false;
-
-        const origCheckGate = client.checkGate?.bind(client);
-        const origGetFeatureGate = client.getFeatureGate?.bind(client);
-        if (!origCheckGate) return false;
-
-        client[statsigGatePatchStoreKey] = {
-          checkGate: client.checkGate,
-          getFeatureGate: client.getFeatureGate,
-        };
-
-        client.checkGate = (gate, ...rest) =>
-          gate === gateId ? value : origCheckGate(gate, ...rest);
-
-        if (origGetFeatureGate) {
-          client.getFeatureGate = (gate, ...rest) => {
-            if (gate !== gateId) return origGetFeatureGate(gate, ...rest);
-            return {
-              name: gate,
-              value,
-              ruleID: "explodex-override",
-              idType: "userID",
-              details: { reason: "explodex-override" },
-            };
-          };
-        }
-
-        client[CHRONICLE_GATE_PATCH_FLAG] = true;
-        global[CHRONICLE_GATE_PATCH_FLAG] = true;
-        return true;
-      }
-
       function experimentalFeaturesQueryKey(hostId) {
         return [EXPERIMENTAL_FEATURES_QUERY_KEY, "list", hostId];
       }
@@ -205,41 +112,11 @@
       }
 
       function loadFeaturesFromQueryCache(hostId) {
-        const queryClient = getQueryClient();
+        const queryClient = flags.getQueryClient();
         if (!queryClient) return null;
         const list = queryClient.getQueryData(experimentalFeaturesQueryKey(hostId));
         if (!Array.isArray(list) || list.length === 0) return null;
-        return augmentReferralFeatures(mergeFeatures(list));
-      }
-
-      function augmentReferralFeatures(features) {
-        const referralsPrimary = readStatsigGate(STATSIG_GATE_REFERRALS);
-        const referralsAlt = readStatsigGate(STATSIG_GATE_REFERRALS_ALT);
-        const referralsEnabled =
-          referralsPrimary === true || referralsAlt === true
-            ? true
-            : referralsPrimary === false && referralsAlt === false
-              ? false
-              : referralsPrimary ?? referralsAlt;
-        const byName = new Map(features.map((feature) => [feature.name, feature]));
-
-        for (const name of ["referrals", "referral_system"]) {
-          if (byName.has(name)) continue;
-          if (referralsEnabled == null) continue;
-          byName.set(name, {
-            name,
-            enabled: referralsEnabled,
-            stage: "statsig",
-            label: "Referral system",
-            description:
-              "Statsig-gated invite/referral UI (gates 1823918333 / 3502353992; not a config.toml feature).",
-            source: "statsig-gate",
-          });
-        }
-
-        return Array.from(byName.values()).sort((left, right) =>
-          left.name.localeCompare(right.name),
-        );
+        return mergeFeatures(list);
       }
 
       function updateFeatureInConfig(config, featureName, enabled) {
@@ -247,25 +124,8 @@
         return { ...config, features };
       }
 
-      async function invalidateCodexQueryCaches(hostId, featureName) {
-        const electron = global.electronBridge;
-        if (!electron?.sendMessageFromView) return;
-
-        const invalidations = [
-          { queryKey: experimentalFeaturesQueryKey(hostId) },
-          { queryKey: configUserQueryKey(hostId) },
-          { queryKey: ["user-saved-config"] },
-        ];
-
-        await Promise.all(
-          invalidations.map((payload) =>
-            electron.sendMessageFromView({ type: "query-cache-invalidate", ...payload }).catch(() => {}),
-          ),
-        );
-      }
-
       async function syncCodexCaches(hostId, featureName, enabled) {
-        const queryClient = getQueryClient();
+        const queryClient = flags.getQueryClient();
         if (!queryClient) return;
 
         const expKey = experimentalFeaturesQueryKey(hostId);
@@ -289,7 +149,7 @@
           };
         });
 
-        await invalidateCodexQueryCaches(hostId, featureName);
+        await flags.propagate({ hostId });
       }
 
       function stateKey() {
@@ -365,7 +225,7 @@
             source,
           });
         }
-        return augmentReferralFeatures(features);
+        return features;
       }
 
       async function listExperimentalFeatures(hostId) {
@@ -405,10 +265,6 @@
 
       async function setFeatureEnabled(hostId, featureName, enabled) {
         if (!bridge.isAvailable()) throw new Error("Bridge unavailable");
-        if (featureName === "referrals" || featureName === "referral_system") {
-          throw new Error("Referral system is Statsig-gated (not a config.toml feature flag)");
-        }
-
         let persisted = false;
         if (hasAppServer()) {
           const res = await bridge.send("batch-write-config-value", {
@@ -436,10 +292,6 @@
           await syncCodexCaches(hostId, featureName, enabled);
         }
 
-        if (featureName === "chronicle" && enabled) {
-          patchStatsigClientGate(STATSIG_GATE_CHRONICLE_PERSONALIZATION, true);
-        }
-
         if (featureName === "remote_control") {
           await applyRemoteControlSideEffects(hostId, enabled);
         }
@@ -455,37 +307,13 @@
       function stageLabel(feature) {
         if (feature.stage) return feature.stage;
         if (feature.source === "config") return "config";
-        if (feature.source === "statsig-gate") return "statsig";
         if (feature.source === "statsig") return "default";
         if (feature.source === "catalog") return "catalog";
         return "unknown";
       }
 
-      function chroniclePersonalizationHint(feature) {
-        const gate = readStatsigGate(STATSIG_GATE_CHRONICLE_PERSONALIZATION);
-        const parts = [];
-
-        if (!feature?.enabled) {
-          parts.push("Enable this flag first.");
-        }
-        if (gate === false || gate == null) {
-          parts.push(
-            "Personalization also requires Statsig gate 2574306096 (Chronicle rollout; not in your evaluations).",
-          );
-        }
-        parts.push(
-          "The row also needs a local Chronicle sidecar and macOS accessibility/screen-recording permissions after it appears.",
-        );
-        if (feature?.enabled && (gate === false || gate == null)) {
-          parts.push(
-            "Reload Codex after enabling Chronicle so Personalization can pick up the rollout gate.",
-          );
-        }
-        return parts.join(" ");
-      }
-
       function isToggleDisabled(feature) {
-        return toggling.has(feature.name) || feature.source === "statsig-gate";
+        return toggling.has(feature.name);
       }
 
       function makeToggle(feature, onChange) {
@@ -544,18 +372,6 @@
             "font:12px/1.45 system-ui,-apple-system,sans-serif;" +
             "color:color-mix(in srgb, currentColor 68%, transparent)";
           copy.appendChild(description);
-        }
-
-        if (feature.name === "chronicle") {
-          const hint = chroniclePersonalizationHint(feature);
-          if (hint) {
-            const note = document.createElement("div");
-            note.textContent = hint;
-            note.style.cssText =
-              "font:11px/1.45 system-ui,-apple-system,sans-serif;" +
-              "color:color-mix(in srgb, currentColor 60%, transparent)";
-            copy.appendChild(note);
-          }
         }
 
         const status = document.createElement("div");
@@ -898,7 +714,7 @@
             if (disposed) return;
             const features =
               apiFeatures?.length
-                ? augmentReferralFeatures(mergeFeatures(apiFeatures))
+                ? mergeFeatures(apiFeatures)
                 : await loadFeaturesFromFallback(hostId);
             state = {
               loading: false,
@@ -974,7 +790,7 @@
       return () => {
         disposed = true;
         log.info("teardown");
-        restoreStatsigClientGate();
+        flags.clearStatsigGateOverrides();
         if (refreshTimer != null) global.clearInterval(refreshTimer);
         stopRouteWatcher();
         unsubscribeSidebar?.();

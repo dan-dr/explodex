@@ -11,7 +11,7 @@ surface and the `.d.ts` as the type contract.
 | | |
 |---|---|
 | **Global** | `window.Explodex` (alias `Explodex`) after injection |
-| **Version** | `Explodex.version` — currently `1.1.0` |
+| **Version** | `Explodex.version` — currently `1.2.0` |
 | **Reload-safe** | Re-injecting calls `destroy()` on the previous runtime first |
 | **Types** | `/// <reference path="../../sdk/explodex-sdk.d.ts" />` + `// @ts-check` in plugins |
 
@@ -31,6 +31,7 @@ surface and the `.d.ts` as the type contract.
 - [`codex` — thread settings (React fiber)](#codex--thread-settings-react-fiber)
 - [`bridge` — Codex IPC / AppServer](#bridge--codex-ipc--appserver)
 - [`http` — authenticated backend proxy](#http--authenticated-backend-proxy)
+- [`flags` — config / Statsig propagation](#flags--config--statsig-propagation)
 - [`storage` — persistence](#storage--persistence)
 - [`query` — DOM lookups](#query--dom-lookups)
 - [`log` — logging](#log--logging)
@@ -395,10 +396,12 @@ composer.getInput(): HTMLElement | null   // ProseMirror, textarea, or null
 composer.focus(): boolean                 // false if no input
 composer.getText(): string                // current text
 composer.insertText(text): boolean        // insert at caret
+composer.setText(text): boolean           // replace full composer text
 ```
 
-`insertText` returns `false` if there is no input, or if a dialog/terminal is
-focused. It dispatches a proper `InputEvent` so Codex's editor state updates.
+`insertText` and `setText` return `false` if there is no input, or if a
+dialog/terminal is focused. They dispatch a proper `InputEvent` so Codex's
+editor state updates.
 
 ---
 
@@ -434,7 +437,7 @@ uses. Returns `true` on success, `false` if the setter wasn't found.
 bridge.isAvailable(): boolean
 bridge.send(type, payload?): Promise<unknown | null | undefined>
 bridge.rpc(method, params?): Promise<unknown | null>
-bridge.navigate(path): Promise<unknown | null | undefined>
+bridge.navigate(path, state?): Promise<unknown | null | undefined>
 bridge.theme(): string                                  // e.g. "dark"
 bridge.onThemeChange(cb): () => void
 bridge.on(type, handler): () => void                    // listen for window messages
@@ -480,6 +483,42 @@ http.post(url, body?, options?): Promise<unknown | null>
 transport failure. `body` is JSON-stringified automatically. `signal` supports
 `AbortController`. Default headers include `OAI-Language: en` and
 `originator: Codex Desktop`.
+
+---
+
+## `flags` — config / Statsig propagation
+
+Codex keeps **config.toml `features.*`** and **Statsig gates** separate. Writing
+config does not automatically refresh `useGateValue` hooks or dependent React
+Query caches. After changing flags, call `flags.propagate()`.
+
+```ts
+// After persisting a config feature (plugin API defaults pluginId to your plugin)
+await flags.propagate({ hostId });
+
+// Optional Statsig gate overrides (numeric gate ids or named gates)
+await flags.propagate({
+  hostId,
+  statsigGates: { "2574306096": true },
+  queryKeys: [["vscode", "chronicle-permissions"]],
+});
+
+flags.readStatsigGate(gateId): boolean | null
+flags.setStatsigGateOverride(gateId, value): boolean   // value null clears for this plugin
+flags.clearStatsigGateOverrides(): void
+flags.invalidateQueries(queryKeys): Promise<void>
+flags.getQueryClient(): unknown | null
+```
+
+`propagate()` always emits Statsig `values_updated` (so hooks recompute), then
+invalidates standard host queries when `hostId` is set:
+
+- `["experimental-features", "list", hostId]`
+- `["config", "user", hostId]`
+- `["user-saved-config"]`
+
+Plus any extra `queryKeys`. Statsig overrides are tracked per plugin owner and
+cleared on plugin teardown or `Explodex.destroy()`.
 
 ---
 
