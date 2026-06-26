@@ -38,6 +38,38 @@ Re-inject after editing SDK or plugins:
 bun run inject
 ```
 
+### Layout snapshot (sidebar / shell landmarks)
+
+After `bun run dev` (or any session with CDP on `9333`), capture a JSON layout
+report for debugging selector drift:
+
+```sh
+bun scripts/cdp-layout-snapshot.ts
+# optional explicit output path:
+EXPLODEX_LAYOUT_SNAPSHOT_OUT=./layout.json bun scripts/cdp-layout-snapshot.ts
+```
+
+Default write path: `~/.explodex/snapshots/layout-<timestamp>.json`. The snapshot
+includes sidebar testids, nav `aria-label`s, profile footer button, zone portal
+presence, `data-app-action-sidebar-*` counts, and a short React fiber chain when
+the DevTools hook is present.
+
+### React layout probe via CDP
+
+Codex ships production React. `cdp-react-devtools.ts` installs the DevTools global
+hook (for reload) and immediately walks `__reactFiber$*` chains on sidebar DOM
+nodes — no reload required for the fiber report:
+
+```sh
+bun run react-devtools
+# optional: also attempt react-devtools-inline backend eval (needs renderer reload for UI)
+EXPLODEX_REACT_DEVTOOLS_BACKEND=1 bun run react-devtools
+```
+
+Pair with `bun run layout:snapshot` when Codex changes layout between releases.
+
+`bun run inject` (`--inject-only`) connects to whatever is listening on the debug port — including an SSH tunnel to a remote Codex. The **Explodex.app launcher** is stricter: it only takes the “inject into existing instance” fast path when **local** Codex owns port `9333` (or the process is otherwise identifiable as `Codex.app/Contents/MacOS/Codex`). If another process (e.g. `ssh -L 9333:…`) holds the port, the launcher reports a port conflict instead of falsely claiming injection into a running local Codex.
+
 ## Install to /Applications
 
 ```sh

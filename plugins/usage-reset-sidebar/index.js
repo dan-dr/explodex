@@ -470,9 +470,13 @@
         } else {
           setNavButtonLabel(label);
         }
-        const mounted = nav.insertBefore(["Settings"], navButton, "usage-reset-sidebar");
+        const mounted = nav.insertBefore(
+          ["Settings", "Profile", "Account"],
+          navButton,
+          "usage-reset-sidebar",
+        );
         if (!mounted) {
-          log.warn("sidebar mount deferred — Settings anchor not found yet");
+          log.warn("sidebar mount deferred — profile footer anchor not found yet");
         } else {
           log.debug("sidebar item mounted");
         }

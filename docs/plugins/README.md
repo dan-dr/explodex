@@ -13,7 +13,15 @@ Explodex plugins live in `plugins/<id>/` and include:
 | `command-menu-thread-search` | Threads first in Cmd+K palette (Cmd+G merge) | [README.md](../../plugins/command-menu-thread-search/README.md) |
 | `reasoning-effort-prefix` | Prefix-driven one-message reasoning effort | [README.md](../../plugins/reasoning-effort-prefix/README.md) |
 | `pin-scope-menu` | Global vs project pin scope menu | [README.md](../../plugins/pin-scope-menu/README.md) |
-| `usage-reset-sidebar` | View-only usage/reset sidebar status | [README.md](../../plugins/usage-reset-sidebar/README.md) |
+| `usage-reset-sidebar` | View-only usage/reset sidebar status (anchors above profile footer) | [README.md](../../plugins/usage-reset-sidebar/README.md) |
+| `feature-flags-settings` | All experimental feature flags with persistent toggles | — |
+
+## User plugins directory
+
+Install custom plugins under `~/.explodex/plugins/<id>/` (same `plugin.json` +
+`index.js` layout as bundled plugins). A folder with the same `id` overrides the
+bundled copy. Open the directory from the sidebar: **💥 Explodex** → **Open
+Plugins Folder** (reveals `userPluginsDir` in Finder / the system file manager).
 
 ## Review Checklist
 

@@ -205,7 +205,9 @@
 
       function sidebarNavRoot() {
         return (
-          document.querySelector('nav[aria-label="Automation folders"]') ??
+          document.querySelector('nav[aria-label*="Scheduled task" i]') ??
+          document.querySelector('nav[aria-label*="Automation folders" i]') ??
+          document.querySelector("nav.sidebar-foreground-muted") ??
           document.querySelector("nav")
         );
       }

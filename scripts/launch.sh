@@ -67,6 +67,38 @@ codex_main_running() {
     pgrep -f "Codex.app/Contents/MacOS/Codex" >/dev/null 2>&1
 }
 
+debug_port_pids() {
+    lsof -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null | sort -u
+}
+
+debug_port_owned_by_codex() {
+    local pid args
+    for pid in $(debug_port_pids); do
+        args=$(ps -p "$pid" -o args= 2>/dev/null) || continue
+        if [[ "$args" == *"Codex.app/Contents/MacOS/Codex"* ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+debug_port_owner_label() {
+    local pid comm args
+    pid=$(debug_port_pids | head -1)
+    [[ -n "$pid" ]] || { echo "unknown"; return 0; }
+    comm=$(ps -p "$pid" -o comm= 2>/dev/null | sed 's/^[[:space:]]*//')
+    args=$(ps -p "$pid" -o args= 2>/dev/null)
+    if [[ "$args" == *"Codex.app"* ]]; then
+        echo "Codex"
+    else
+        echo "${comm:-unknown} (pid $pid)"
+    fi
+}
+
+local_codex_debug_ready() {
+    port_listening && { debug_port_owned_by_codex || codex_main_running; }
+}
+
 find_codex() {
     if [[ -n "$CODEX_BIN" && -x "$CODEX_BIN" ]]; then
         echo "$CODEX_BIN"
@@ -121,12 +153,19 @@ if [[ -z "$REAL_CODEX" ]]; then
     exit 1
 fi
 
-if port_listening; then
-    echo "Debug port $PORT already listening."
+if local_codex_debug_ready; then
+    echo "Debug port $PORT already listening (local Codex)."
     if [[ "$INJECT" -eq 1 ]]; then
         run_injector
     fi
     exit 0
+fi
+
+if port_listening; then
+    owner="$(debug_port_owner_label)"
+    echo "Port $PORT is in use by $owner, not local Codex." >&2
+    echo "Free the port, set EXPLODEX_DEBUG_PORT, or use --inject-only to inject without launching." >&2
+    exit 1
 fi
 
 if codex_main_running; then

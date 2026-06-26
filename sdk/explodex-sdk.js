@@ -90,6 +90,63 @@
     };
   })();
 
+  // open-in-targets returns icon paths like `apps/cursor.png` (relative). On nested
+  // routes (/settings/apps, /settings/personalization, …) the browser resolves those
+  // against the current path → 404. thread-app-shell onError then sets `apps/vscode.png`
+  // (also relative) which can loop. Rewrite bundle-relative apps/* to /apps/*.
+  (function installAppIconPathFix() {
+    if (global.__explodexAppIconPathFixInstalled) return;
+    global.__explodexAppIconPathFixInstalled = true;
+
+    const RELATIVE_APPS_RE = /^apps\/[A-Za-z0-9._-]+\.(?:png|svg)$/;
+
+    const toAbsoluteAppIcon = (value) => {
+      if (typeof value !== "string") return value;
+      if (!RELATIVE_APPS_RE.test(value)) return value;
+      try {
+        return new URL(`/${value}`, global.location?.href ?? `/${value}`).href;
+      } catch {
+        return `/${value}`;
+      }
+    };
+
+    const fixBrokenResolvedSrc = (src) => {
+      // e.g. app://-/settings/apps/apps/cursor.png → app://-/apps/cursor.png
+      const match = src.match(/\/apps\/(apps\/[A-Za-z0-9._-]+\.(?:png|svg))$/);
+      if (!match) return null;
+      try {
+        return new URL(`/${match[1]}`, global.location?.href ?? `/${match[1]}`).href;
+      } catch {
+        return `/${match[1]}`;
+      }
+    };
+
+    const proto = global.HTMLImageElement?.prototype;
+    const srcDesc = proto && Object.getOwnPropertyDescriptor(proto, "src");
+    if (srcDesc?.set) {
+      const nativeSet = srcDesc.set;
+      Object.defineProperty(proto, "src", {
+        ...srcDesc,
+        set(value) {
+          nativeSet.call(this, toAbsoluteAppIcon(value));
+        },
+      });
+    }
+
+    global.document?.addEventListener?.(
+      "error",
+      (ev) => {
+        const img = ev.target;
+        if (!img || img.tagName !== "IMG") return;
+        const fixed = fixBrokenResolvedSrc(img.currentSrc || img.src || "");
+        if (!fixed) return;
+        img.onerror = null;
+        img.src = fixed;
+      },
+      true,
+    );
+  })();
+
   const VERSION = "1.1.0";
   const PLUGIN_ENABLED_KEY = "explodex-plugin-enabled";
   const PLUGIN_RESTART_KEY = "explodex-plugin-restart-pending";
@@ -289,8 +346,10 @@
       id: "sidebar",
       description: "Left sidebar / floating panel",
       selectors: [
+        'aside[data-testid="app-shell-floating-left-panel"]',
         '[data-testid="app-shell-floating-left-panel"]',
         "aside.app-shell-left-panel",
+        '[data-pip-obstacle="app-shell-floating-left-panel"] aside',
         "[data-explodex-sidebar]",
       ],
       mount: "append",
@@ -431,18 +490,40 @@
         pointer-events: none;
       }
       .ex-nav-row { width: 100%; -webkit-app-region: no-drag; }
-      .ex-nav-row-above-footer { padding: 0 8px 4px; box-sizing: border-box; }
+      .ex-sidebar-footer-plugins {
+        display: flex; flex-direction: column; gap: 0; width: 100%;
+        padding: 4px var(--padding-row-x, 8px) 2px; box-sizing: border-box;
+        background: transparent;
+        color: var(--color-token-foreground, inherit);
+        border-top: 0.5px solid color-mix(in srgb, var(--color-token-foreground, currentColor) 10%, transparent);
+      }
+      .ex-nav-row-above-footer { padding: 0; width: 100%; }
       .ex-nav-btn {
         box-sizing: border-box; display: flex; align-items: center; gap: 8px;
-        width: 100%; padding: 6px 8px; border: 0; border-radius: 8px;
-        background: transparent; color: inherit; font: 14px/18px system-ui, -apple-system, sans-serif;
+        width: 100%; min-height: var(--height-token-row, 30px);
+        padding: var(--padding-row-y, 4px) var(--padding-row-cell-x, var(--padding-row-x, 8px));
+        border: 0; border-radius: var(--radius-token-row, 10px);
+        background: transparent;
+        color: var(--color-token-foreground, inherit);
+        font: 445 14px/1.43 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         text-align: left; cursor: pointer; -webkit-app-region: no-drag;
+        outline: none;
       }
-      .ex-nav-btn:hover { background: color-mix(in srgb, currentColor 8%, transparent); }
-      .ex-nav-btn[aria-current="page"] { background: color-mix(in srgb, currentColor 10%, transparent); }
+      .ex-nav-btn:hover {
+        background: var(--color-token-list-hover-background, color-mix(in srgb, currentColor 8%, transparent));
+      }
+      .ex-nav-btn:focus-visible {
+        outline: 2px solid var(--color-token-border, color-mix(in srgb, currentColor 20%, transparent));
+        outline-offset: 1px;
+      }
+      .ex-nav-btn[aria-current="page"] {
+        background: var(--color-token-list-hover-background, color-mix(in srgb, currentColor 10%, transparent));
+      }
       .ex-nav-btn-compact {
-        font: 11px/15px ui-monospace, SFMono-Regular, Menlo, monospace;
-        letter-spacing: -0.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        font: 445 13px/1.43 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        color: var(--color-token-text-secondary, inherit);
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
       }
       .ex-nav-icon { width: 16px; text-align: center; flex-shrink: 0; opacity: 0.85; }
       .ex-popover-backdrop {
@@ -1300,26 +1381,58 @@
     return resolveZoneAnchor("sidebar");
   }
 
+  const FOOTER_REFERENCE_LABELS = new Set(["settings", "profile", "account"]);
+
   function elementLabel(el) {
     return (el?.textContent ?? "").replace(/\s+/g, " ").trim();
   }
 
+  function buttonAccessibleLabel(el) {
+    if (!el) return "";
+    const aria = el.getAttribute?.("aria-label")?.trim();
+    if (aria) return aria;
+    return elementLabel(el);
+  }
+
+  function isFooterReference(labels) {
+    return labels.some((label) => FOOTER_REFERENCE_LABELS.has(String(label).toLowerCase()));
+  }
+
   function labelMatchesNav(text, label, { exact = false } = {}) {
     if (!text || !label) return false;
-    if (exact) return text === label || text.startsWith(`${label} `);
-    return text === label || text.startsWith(`${label} `) || text.includes(label);
+    const hay = text.toLowerCase();
+    const needle = label.toLowerCase();
+    if (exact) return hay === needle || hay.startsWith(`${needle} `);
+    return hay === needle || hay.startsWith(`${needle} `) || hay.includes(needle);
+  }
+
+  function findProfileFooterButton(root) {
+    if (!root) return null;
+    const buttons = root.querySelectorAll("button[aria-label]");
+    for (const btn of buttons) {
+      const aria = (btn.getAttribute("aria-label") ?? "").toLowerCase();
+      if (aria.includes("settings") || aria.includes("open settings")) return btn;
+    }
+    const footerHost = root.querySelector('[class*="absolute"][class*="bottom-0"]');
+    return footerHost?.querySelector("button") ?? null;
   }
 
   function findNavByLabels(labels, { exact = false, fromEnd = false } = {}) {
     const root = sidebarRoot();
     if (!root) return null;
     const wanted = labels.map((l) => l.toLowerCase());
+
+    if (isFooterReference(labels)) {
+      const profile = findProfileFooterButton(root);
+      if (profile) return profile;
+    }
+
     const nodes = Array.from(
       root.querySelectorAll("button, a, [role='button'], [role='menuitem']"),
     );
     const ordered = fromEnd ? nodes.reverse() : nodes;
     for (const node of ordered) {
-      const text = elementLabel(node).toLowerCase();
+      const text = buttonAccessibleLabel(node).toLowerCase();
       if (!text) continue;
       for (const label of wanted) {
         if (labelMatchesNav(text, label, { exact })) return node;
@@ -1338,9 +1451,53 @@
     );
   }
 
+  function findSidebarFooterHost(root = sidebarRoot()) {
+    if (!root) return null;
+    const btn = findProfileFooterButton(root);
+    if (btn) {
+      const host = btn.closest('[class*="absolute"][class*="bottom-0"]');
+      if (host) return host;
+    }
+    return root.querySelector('[class*="absolute"][class*="bottom-0"]');
+  }
+
+  function footerProfileRow(root = sidebarRoot()) {
+    const host = findSidebarFooterHost(root);
+    if (!host) return null;
+    const btn = findProfileFooterButton(host);
+    if (!btn) return null;
+    return (
+      btn.closest("div.relative") ||
+      btn.closest('[class*="px-row-x"]') ||
+      btn.parentElement
+    );
+  }
+
+  function ensureFooterPluginStrip(root = sidebarRoot()) {
+    const host = findSidebarFooterHost(root);
+    if (!host) return null;
+
+    const existing = host.querySelector("[data-explodex-footer-plugins]");
+    if (existing) return existing;
+
+    const strip = document.createElement("div");
+    strip.className = "ex-sidebar-footer-plugins sidebar-foreground-muted";
+    strip.setAttribute("data-explodex-footer-plugins", "true");
+
+    const profileRow = footerProfileRow(root);
+    if (profileRow?.parentElement) {
+      profileRow.parentElement.insertBefore(strip, profileRow);
+    } else {
+      host.insertBefore(strip, host.firstChild);
+    }
+    return strip;
+  }
+
   function footerRowFor(node) {
     if (!node) return null;
     const footerRow =
+      node.closest('[class*="absolute"][class*="bottom-0"]') ||
+      node.closest("div.flex.items-center.gap-3") ||
       node.closest("div.flex.items-center.gap-2") ||
       node.closest("div.flex.items-center.gap-px") ||
       node.closest("[class*='profile-footer' i]") ||
@@ -1376,19 +1533,24 @@
 
     insertBefore(referenceLabels, elementOrFactory, key = "nav-before") {
       const labels = Array.isArray(referenceLabels) ? referenceLabels : [referenceLabels];
-      const footerTarget = labels.some((l) => String(l).toLowerCase() === "settings");
+      const footerTarget = isFooterReference(labels);
       const ref = findNavByLabels(labels, { exact: footerTarget, fromEnd: footerTarget });
-      const row = footerTarget ? footerRowFor(ref) : navRowFor(ref);
-      if (!row?.parentElement) return false;
       const mount = ensureNavMount(key);
-      if (footerTarget) {
-        mount.classList.add("ex-nav-row-above-footer");
-      } else {
-        mount.classList.remove("ex-nav-row-above-footer");
-      }
       const node =
         typeof elementOrFactory === "function" ? elementOrFactory({ mount }) : elementOrFactory;
       mount.replaceChildren(node);
+
+      if (footerTarget) {
+        const strip = ensureFooterPluginStrip();
+        if (!strip) return false;
+        mount.classList.add("ex-nav-row-above-footer");
+        strip.appendChild(mount);
+        return true;
+      }
+
+      mount.classList.remove("ex-nav-row-above-footer");
+      const row = navRowFor(ref);
+      if (!row?.parentElement) return false;
       row.parentElement.insertBefore(mount, row);
       return true;
     },
@@ -1631,6 +1793,7 @@
       "usage-reset-sidebar": true,
       "reasoning-effort-prefix": true,
       "pin-scope-menu": true,
+      "feature-flags-settings": true,
     };
   }
 
@@ -1963,11 +2126,10 @@
           c.statusToast("Plugins folder path unavailable");
           return;
         }
-        if (bridge.isAvailable()) {
+        const params = { path: dir, cwd: dir, target: "fileManager" };
+        if (http.isAvailable()) {
           try {
-            const res = await bridge.send("open-file", {
-              params: { path: dir, target: "fileManager" },
-            });
+            const res = await http.post("vscode://codex/open-file", params);
             if (res?.success !== false) return;
           } catch (err) {
             console.warn("[Explodex] open-file plugins folder failed", err);

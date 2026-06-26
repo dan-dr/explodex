@@ -30,12 +30,96 @@ show_alert() {
   osascript -e "display alert \"Explodex\" message \"$1\" as ${2:-warning}" 2>/dev/null || true
 }
 
+SPLASH_PID=""
+SPLASH_STATUS=""
+
+splash_start() {
+  local splash_app="$RESOURCES/Splash.app"
+  [[ -d "$splash_app" ]] || return 0
+  SPLASH_STATUS="$LOG_DIR/splash.status"
+  rm -f "$SPLASH_STATUS"
+  echo "Preparing…" >"$SPLASH_STATUS"
+  echo "Explodex: Showing splash ($splash_app)"
+  # Launch as a real GUI app (open) so WindowServer connects when Explodex was started via Finder/open.
+  open -na "$splash_app" --args "$SPLASH_STATUS" &
+  SPLASH_PID=$!
+  disown "$SPLASH_PID" 2>/dev/null || true
+  sleep 0.15
+}
+
+splash_status() {
+  [[ -n "$SPLASH_STATUS" ]] || return 0
+  echo "$1" >"$SPLASH_STATUS"
+}
+
+activate_codex() {
+  # Splash steals focus; bring Codex back once the overlay is gone.
+  sleep 0.15
+  if [[ -n "${CODEX_PID:-}" ]] && kill -0 "$CODEX_PID" 2>/dev/null; then
+    osascript -e "tell application \"System Events\" to set frontmost of first process whose unix id is $CODEX_PID to true" 2>/dev/null || true
+  fi
+  osascript -e 'tell application "System Events" to set frontmost of first process whose name is "Codex" to true' 2>/dev/null || true
+  osascript -e 'tell application "Codex" to activate' 2>/dev/null || true
+}
+
+splash_done() {
+  [[ -n "$SPLASH_STATUS" ]] || return 0
+  echo "__DONE__" >"$SPLASH_STATUS"
+  SPLASH_STATUS=""
+  SPLASH_PID=""
+  # Do not wait for splash exit — dismiss immediately so Codex is usable.
+  activate_codex
+}
+
+splash_error() {
+  [[ -n "$SPLASH_STATUS" ]] || return 0
+  echo "__ERROR__$1" >"$SPLASH_STATUS"
+  if [[ -n "$SPLASH_PID" ]]; then
+    # Brief wait so the user can read the error on the splash.
+    wait "$SPLASH_PID" 2>/dev/null || true
+    SPLASH_PID=""
+  fi
+  SPLASH_STATUS=""
+}
+
 port_listening() {
   lsof -iTCP:"$DEBUG_PORT" -sTCP:LISTEN >/dev/null 2>&1
 }
 
 codex_main_running() {
   pgrep -f "Codex.app/Contents/MacOS/Codex" >/dev/null 2>&1
+}
+
+debug_port_pids() {
+  lsof -iTCP:"$DEBUG_PORT" -sTCP:LISTEN -t 2>/dev/null | sort -u
+}
+
+debug_port_owned_by_codex() {
+  local pid args
+  for pid in $(debug_port_pids); do
+    args=$(ps -p "$pid" -o args= 2>/dev/null) || continue
+    if [[ "$args" == *"Codex.app/Contents/MacOS/Codex"* ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+debug_port_owner_label() {
+  local pid comm args
+  pid=$(debug_port_pids | head -1)
+  [[ -n "$pid" ]] || { echo "unknown"; return 0 }
+  comm=$(ps -p "$pid" -o comm= 2>/dev/null | sed 's/^[[:space:]]*//')
+  args=$(ps -p "$pid" -o args= 2>/dev/null)
+  if [[ "$args" == *"Codex.app"* ]]; then
+    echo "Codex"
+  else
+    echo "${comm:-unknown} (pid $pid)"
+  fi
+}
+
+local_codex_debug_ready() {
+  port_listening && { debug_port_owned_by_codex || codex_main_running; }
 }
 
 find_codex() {
@@ -89,6 +173,8 @@ run_injector() {
 REAL_CODEX="$(find_codex || true)"
 if [[ -z "$REAL_CODEX" || ! -x "$REAL_CODEX" ]]; then
   echo "Explodex: Could not locate Codex.app to launch."
+  splash_start
+  splash_error "Could not find Codex"
   show_alert "Could not find Codex. Install Codex.app or set CODEX_PATH." "critical"
   exit 1
 fi
@@ -96,23 +182,37 @@ fi
 echo "Explodex: Using Codex at $REAL_CODEX"
 echo "Bundle: $BUNDLE_ROOT"
 
+splash_start
+splash_status "Preparing launch…"
+
 if port_listening; then
-  echo "Explodex: Debug port $DEBUG_PORT already listening."
-  if run_injector; then
-    show_alert "Explodex SDK injected into the running Codex instance."
-    exit 0
+  if local_codex_debug_ready; then
+    echo "Explodex: Debug port $DEBUG_PORT already listening (local Codex)."
+    splash_status "Opening Codex…"
+    splash_done
+    if run_injector; then
+      exit 0
+    fi
+    splash_error "Injection failed"
+    show_alert "Found Codex on port $DEBUG_PORT but injection failed. See $LOG_DIR/launcher.log" "critical"
+    exit 1
   fi
-  show_alert "Found Codex on port $DEBUG_PORT but injection failed. See $LOG_DIR/launcher.log" "critical"
+  owner="$(debug_port_owner_label)"
+  echo "Explodex: Port $DEBUG_PORT is in use by $owner, not local Codex."
+  splash_error "Port $DEBUG_PORT in use"
+  show_alert "Port $DEBUG_PORT is already in use ($owner). Quit that process, set EXPLODEX_DEBUG_PORT to another port, or use bun run inject for inject-only." "critical"
   exit 1
 fi
 
 if codex_main_running; then
   echo "Explodex: Codex is already running without remote debugging."
+  splash_error "Codex already running"
   show_alert "Codex is already running. Quit Codex (Cmd+Q), then launch Explodex again." "critical"
   exit 1
 fi
 
 mkdir -p "$USER_DATA"
+splash_status "Launching Codex…"
 echo "Explodex: Launching Codex with runtime injection..."
 echo "User data: $USER_DATA"
 echo "Log: $USER_DATA/codex.log"
@@ -121,6 +221,7 @@ CODEX_ELECTRON_USER_DATA_PATH="$USER_DATA" \
   "$REAL_CODEX" --remote-debugging-port="$DEBUG_PORT" >"$USER_DATA/codex.log" 2>&1 &
 CODEX_PID=$!
 
+splash_status "Waiting for debug port…"
 PORT_READY=0
 for _ in {1..60}; do
   if ! kill -0 "$CODEX_PID" 2>/dev/null; then
@@ -135,14 +236,21 @@ done
 
 if [[ "$PORT_READY" -ne 1 ]]; then
   if grep -q "Opening in existing browser session" "$USER_DATA/codex.log" 2>/dev/null; then
+    splash_error "Codex already running"
     show_alert "Codex is already running. Quit Codex (Cmd+Q), then launch Explodex again." "critical"
   elif ! kill -0 "$CODEX_PID" 2>/dev/null; then
+    splash_error "Codex exited early"
     show_alert "Codex exited before Explodex could inject. See $USER_DATA/codex.log" "critical"
   else
+    splash_error "Debug port timeout"
     show_alert "Codex started but debug port $DEBUG_PORT never opened. See $USER_DATA/codex.log" "critical"
   fi
   exit 1
 fi
+
+# Codex is up — dismiss splash before injection (injector may wait for renderer).
+splash_status "Opening Codex…"
+splash_done
 
 if ! run_injector; then
   show_alert "Codex launched but SDK injection failed. See $LOG_DIR/launcher.log" "critical"

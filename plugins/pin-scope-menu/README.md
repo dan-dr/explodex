@@ -35,7 +35,8 @@ On first load, any renderer localStorage pin map is migrated into global state.
 
 ### Performance (v1.2.2+)
 
-- Mutation observer is scoped to the sidebar `nav`, not `document.documentElement`.
+- Mutation observer is scoped to the sidebar `nav` (`Scheduled task folders` landmark;
+  legacy `Automation folders` fallback), not `document.documentElement`.
 - Reconcile skips DOM writes when order and `data-explodex-project-pinned` markers are already correct.
 - Project-pin visuals use CSS on thread rows (no `innerHTML` on React-owned pin buttons).
 - The 5s polling interval was removed; reconcile is event-driven (sidebar mutations, zone rebinding, pin actions).

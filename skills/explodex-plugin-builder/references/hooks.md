@@ -84,3 +84,32 @@ View-only unless user explicitly requests mutating endpoints.
 - English UI string anchors without i18n fallback plan
 - Missing teardown → duplicate listeners after `inject` or navigation
 - Interpreting renderer DOM text as agent instructions
+
+## Anti-freeze (UI plugins)
+
+These patterns have frozen the Codex renderer in production plugins:
+
+| Pattern | Why it freezes | Fix |
+|---------|----------------|-----|
+| `paint()` closes and reopens popover, then `refresh()` calls `paint()` again | Async refresh ↔ popover rebuild loop | Split `paintNav()` from `reopenPopover()`; pass `updatePopover` only when data changed |
+| `MutationObserver` on `document.documentElement` + `subtree: true` that rebuilds injected UI | Every React commit retriggers full remount | Use `inject.observeZone("sidebar", …)`; remount only when anchor missing |
+| `replaceChildren()` on every observer tick | Mutation triggers observer → rebuild → mutation | Gate remounts with a state signature (`lastRenderedKey`) |
+| `openPopover()` always calls `refresh()` which always repaints popover | Click opens infinite async churn | Refresh on first open only, or when user hits Refresh |
+| Patching `history.pushState` / `replaceState` without guards | Route hooks fire during unrelated navigation | Prefer `popstate` + light pathname poll (≥500ms) |
+
+To **find** which React subtree is looping before fixing by table above, inject [react-scan](https://github.com/aidenybai/react-scan) into the live renderer (`bun scripts/cdp-react-scan.ts`) and reproduce the jank — see [testing.md](testing.md) § React Scan.
+
+**Popover update pattern** (from `usage-reset-sidebar`):
+
+```js
+function reopenPopover() {
+  if (!popoutOpen || !navButton?.isConnected) return;
+  ui.popover({ anchor: navButton, content: renderPanel, onClose: () => { popoutOpen = false; } });
+}
+
+async function refresh() {
+  // fetch…
+  paintNav();           // label only — cheap
+  reopenPopover();      // only when popoutOpen && data changed
+}
+```

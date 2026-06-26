@@ -1,7 +1,7 @@
 # Codex Desktop Architecture Reference
 
-> Reverse-engineered from `vendor/Codex.app/Contents/Resources/app.asar` (v26.609.41114, build 3888, Electron 42.1.0).  
-> Extraction lives in `extracted/`. All patching experiments target `vendor/Codex.app` only — never `/Applications/Codex.app`.
+> Reverse-engineered from `vendor/Codex.app/Contents/Resources/app.asar` (v26.623.31921, build 4452, Electron 42.1.0).  
+> Extraction is local-only under `extracted/` when present. All patching experiments target `vendor/Codex.app` only — never `/Applications/Codex.app`.
 
 ---
 
@@ -49,8 +49,8 @@ app.asar/
 
 | Field | Value |
 |-------|-------|
-| App version | `26.609.41114` |
-| Build number | `3888` |
+| App version | `26.623.31921` |
+| Build number | `4452` |
 | Electron | `42.1.0` |
 | Chromium | `149.0.7827.54` |
 | Vite | `8.0.3` |
@@ -76,7 +76,8 @@ app.asar/
 | `dialog-layout-DyzgPiHE.js` | Radix Dialog wrapper |
 | `composer-DhWyK5QW.js` | Composer orchestration |
 | `composer-controller-DSr1Xyxe.js` | ProseMirror editor controller |
-| `app-shell-CPw_WmZQ.js` | App shell layout |
+| `app-initial~app-main~remote-conversation-page~new-thread-panel-page~projects-index-page~app~ovcriy74-*.js` | App shell layout (floating + docked left panel) |
+| `app-initial~app-main~automations-page-*.js` | Sidebar chrome (threads, profile footer, route nav) |
 | `thread-scroll-layout-CQlmRS86.js` | Thread scroll + footer portal |
 | `setting-storage-II74UqER.js` | Settings React Query bridge |
 | `persisted-signal-C9s53PEH.js` | Persisted atom store |
@@ -138,7 +139,12 @@ app.asar/
 
 ## 4. Renderer layout & panels
 
-### App shell (`app-shell-CPw_WmZQ.js`)
+### App shell (v26.623+)
+
+Left panel can be **docked** (`aside.app-shell-left-panel`) or **floating**
+(`aside[data-testid="app-shell-floating-left-panel"]` inside
+`[data-pip-obstacle="app-shell-floating-left-panel"]`). Both host the same
+sidebar chrome.
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
@@ -152,6 +158,59 @@ app.asar/
 │          │                                      │  timeline)    │
 └──────────┴─────────────────────────────────────┴───────────────┘
 ```
+
+### Sidebar chrome (v26.623+ layout change)
+
+Thread sidebar (`hK` / automations chunk) is now a **column with a pinned profile
+footer**, not a flat list ending in a “Settings” nav row.
+
+```
+┌─────────────────────────────┐
+│ Browser search (electron)   │
+├─────────────────────────────┤
+│ nav[aria-label=Scheduled    │
+│   task folders]             │
+│  ├─ mode switch             │
+│  └─ scroll [data-app-action-│
+│       sidebar-scroll]       │
+│       ├─ route nav (Library,│
+│       │   Automations,      │
+│       │   Plugins/Skills,   │
+│       │   Pull requests)    │
+│       └─ thread/project     │
+│           sections          │
+├─────────────────────────────┤
+│ absolute bottom footer      │
+│  ├─ import status           │
+│  └─ profile footer button   │
+│      aria-label=Open settings│
+│      (shows user name/email) │
+└─────────────────────────────┘
+```
+
+**Plugin anchoring implications:**
+
+| Old anchor | v26.623+ behavior |
+|------------|-------------------|
+| `insertBefore(["Settings"], …)` | Target **profile footer** (`button[aria-label*="settings"]`), not a “Settings” text nav row |
+| `insertAfter(["Plugins"], …)` | Still valid — desktop route nav lives in scroll `topContent` |
+| `nav[aria-label="Automation folders"]` | Renamed to **“Scheduled task folders”** — keep legacy fallback |
+
+**Sidebar `data-app-action-sidebar-*` attrs (thread chrome):**
+
+| Attribute | Purpose |
+|-----------|---------|
+| `data-app-action-sidebar-scroll` | Scroll container for thread/project lists |
+| `data-app-action-sidebar-section` | Collapsible section wrapper |
+| `data-app-action-sidebar-section-heading` | Section title row |
+| `data-app-action-sidebar-section-toggle` | Section collapse control |
+| `data-app-action-sidebar-thread-id` | Thread row identity |
+| `data-app-action-sidebar-thread-row` | Thread row container |
+| `data-app-action-sidebar-thread-pinned` | Pin state (`"true"` / `"false"`) |
+| `data-app-action-sidebar-project-id` | Project group identity |
+| `data-app-action-sidebar-project-row` | Project row container |
+
+Capture live values with `bun scripts/cdp-layout-snapshot.ts` after each Codex upgrade.
 
 **Layout modes** (`data-app-shell-main-content-layout`):
 - `default`, `full-bleed`, `thread-edge-scroll`, `floating`
@@ -224,7 +283,7 @@ Radix Dialog + Codex overlay. Width presets:
 
 | Zone ID | Selectors (priority order) |
 |---------|---------------------------|
-| `sidebar` | `[data-testid="app-shell-floating-left-panel"]`, `aside`, `[aria-label*="sidebar" i]`, `[class*="sidebar" i]` |
+| `sidebar` | `aside[data-testid="app-shell-floating-left-panel"]`, `aside.app-shell-left-panel`, `[data-pip-obstacle="app-shell-floating-left-panel"] aside` |
 | `composerActions` | `.ProseMirror` parent form/shell, `[class*="composer" i]` |
 | `appHeader` | `.app-header-tint`, header landmark |
 | `statusOverlay` | `document.body` (fixed position, z-index max) |

@@ -14,6 +14,8 @@
     "build:icon": "zsh scripts/build-icon.sh",
     "clean": "zsh scripts/clean.sh",
     "sync": "bun scripts/package-app.ts",
-    "validate": "./scripts/validate.sh"
+    "validate": "./scripts/validate.sh",
+    "layout:snapshot": "bun scripts/cdp-layout-snapshot.ts",
+    "react-devtools": "bun scripts/cdp-react-devtools.ts"
   }
 }

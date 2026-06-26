@@ -1,5 +1,36 @@
 # Explodex Current Findings
 
+Date: 2026-06-26 (sidebar layout refresh for Codex v26.623.31921)
+
+## Sidebar layout change (v26.623+)
+
+Compared against `vendor/Codex.app` ASAR (build **4452**, SHA-256
+`04287710b058bc0977031481c21f5ab69cfb2bcf4fa5c1919b9b590c38960543`):
+
+- **Settings moved to profile footer** — bottom `button[aria-label="Open settings"]`
+  (`codex.profileFooter.openSettings`) shows user name/email; no dedicated
+  “Settings” nav row at the sidebar bottom.
+- **Thread list landmark renamed** — `nav[aria-label="Scheduled task folders"]`
+  (legacy: `Automation folders`).
+- **Scroll region** — `[data-app-action-sidebar-scroll]` with bottom padding via
+  CSS var `--sidebar-footer-height` (measured by ResizeObserver).
+- **New section attrs** — `data-app-action-sidebar-section`,
+  `data-app-action-sidebar-section-heading`, `data-app-action-sidebar-section-toggle`, …
+- **Route nav stays in scroll top** — Library / Automations / Plugins|Skills / Pull
+  requests remain text nav buttons in `topContent`, not the profile footer.
+
+**Explodex updates (this session):**
+
+- SDK `sidebarNav.insertBefore(["Settings"], …)` resolves profile footer by
+  `aria-label` (fallback labels: `Profile`, `Account`).
+- `plugins/pin-scope-menu` nav root accepts new aria-label + `nav.sidebar-foreground-muted`.
+- Tooling: `bun scripts/cdp-layout-snapshot.ts` (DOM landmark JSON),
+  `bun scripts/cdp-react-devtools.ts` (inject DevTools backend via CDP).
+
+See [codex-architecture.md](./codex-architecture.md) §4 sidebar chrome for the diagram.
+
+---
+
 Date: 2026-06-17
 
 ## Safety boundary
@@ -280,7 +311,7 @@ The standalone `poc/` harness and built-in `explodex-demo` plugin were removed. 
 - [x] Inject SDK into webview/index.html + relax for local use
 - [x] Repack + remove asar integrity key
 - [ ] Launch patched vendor copy + validate zones in real DOM
-- [ ] Capture live DOM landmarks from sidebar/composer and harden selectors
+- [x] Capture live DOM landmarks from sidebar/composer and harden selectors (`cdp-layout-snapshot.ts`)
 - [ ] Iterate on plugin surface (more zones, better mount APIs)
 - [ ] Explore preload / module-level hooks only after DOM zones are proven stable
 
@@ -292,6 +323,14 @@ The standalone `poc/` harness and built-in `explodex-demo` plugin were removed. 
 - DevTools may be gated by `allowDevtools`; if unavailable, a local loader patch is the best next step.
 - React state integration is limited. Plugins mount DOM and hook official bridge paths where possible.
 - Official/internal plugin chunks exist, but their scope and stability are unknown.
+
+## App icon paths (`apps/*.png` relative URLs)
+
+Bridge RPC `open-in-targets` returns editor/target icons as **relative** paths (`apps/cursor.png`, `apps/vscode.png`, …). Bundled assets live at `webview/apps/*.png` and should load from absolute `/apps/*.png`.
+
+On nested routes (`app://-/settings/apps`, `app://-/settings/personalization`, …) the browser resolves `apps/cursor.png` against the current path → `.../settings/apps/apps/cursor.png` (404). `thread-app-shell-chrome-*.js` then sets `onError` → `apps/vscode.png` (also relative), which can loop on `.../settings/apps/vscode.png`.
+
+Explodex SDK mitigates via `installAppIconPathFix()` in `sdk/explodex-sdk.js`: rewrites any `apps/*.(png|svg)` `img.src` assignment to `new URL('/apps/…', location.href)` and repairs already-broken resolved URLs on image error.
 
 ## Strong recommendation
 

@@ -376,8 +376,11 @@ sidebarNav.remove(key): void
 
 - `referenceLabels` is matched against sidebar nav text (case-insensitive). Pass
   multiple labels as fallbacks, e.g. `["Plugins", "Skills"]`.
-- `insertBefore(["Settings"], …)` is special-cased to target the **profile
-  footer** row at the bottom of the sidebar.
+- `insertBefore(["Settings"], …)` appends into a **`data-explodex-footer-plugins`**
+  strip inside Codex's `absolute bottom-0` footer host (above the profile row), so
+  `--sidebar-footer-height` expands and items do not overlap the profile button.
+  Fallback reference labels: `["Profile", "Account"]`. For route nav anchors
+  (Plugins, Library, …), use `insertAfter(["Plugins", "Skills"], …)`.
 - `elementOrFactory` is a `Node` or `({ mount }) => Node`.
 - `key` namespaces the mount so it can be `remove(key)`d and isn't duplicated.
 - Returns `false` if the reference row can't be found. Re-run inside a `sidebar`
@@ -453,6 +456,12 @@ bridge.usesOwlShell(): boolean
 Use known Codex message `type`s — see
 [docs/codex-architecture.md](codex-architecture.md) §9 IPC and
 [docs/composer-message-lifecycle.md](composer-message-lifecycle.md).
+
+**Opening paths in the system file manager:** Codex's `open-file` handler is
+reached via `http.post('vscode://codex/open-file', { path, cwd, target:
+'fileManager' })`, not `bridge.send('open-file', …)`. The built-in Explodex
+shell plugin uses this RPC for **Open Plugins Folder**
+(`window.__EXPLODEX_PATHS__.userPluginsDir`, default `~/.explodex/plugins`).
 
 ---
 

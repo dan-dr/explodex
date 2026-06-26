@@ -67,7 +67,7 @@ my-plugin/
 })(window);
 ```
 
-Install user plugins under `~/.explodex/plugins/` (same layout). They override bundled plugins with the same id. Open the folder from the Explodex sidebar → **Open Plugins Folder**.
+Install user plugins under `~/.explodex/plugins/` (same layout). They override bundled plugins with the same id. In the sidebar, open **💥 Explodex** → **Open Plugins Folder** to reveal that directory in Finder (or your system file manager).
 
 **SDK reference:** [docs/sdk-api.md](docs/sdk-api.md) — complete API for agents and humans, with signatures, failure modes, and examples.
 
