@@ -25,6 +25,7 @@ I wanted something like BetterDiscord/Legcord for codex, being able to modify th
 | [reasoning-effort-prefix](plugins/reasoning-effort-prefix/) | Set reasoning effort from composer prefixes like `!m` or `!xh` |
 | [pin-scope-menu](plugins/pin-scope-menu/) | Pin threads under project instead of globally |
 | [usage-reset-sidebar](plugins/usage-reset-sidebar/) | Always visible usage stats (plus reset expiration) |
+| [feature-flags-settings](plugins/feature-flags-settings/) | All experimental Codex feature flags with live state and persistent toggles in Settings |
 
 The built-in **💥 Explodex** sidebar menu item opens the plugin manager (enable/disable, open plugins folder).
 
