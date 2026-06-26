@@ -11,6 +11,7 @@
     "launch": "./scripts/launch.sh",
     "package": "bun scripts/package-app.ts",
     "install:app": "bun scripts/install-app.ts",
+    "link:app": "bun scripts/link-app.ts",
     "build:icon": "zsh scripts/build-icon.sh",
     "clean": "zsh scripts/clean.sh",
     "sync": "bun scripts/package-app.ts",

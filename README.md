@@ -101,12 +101,14 @@ Use those locally, but do not commit them.
 ```sh
 git clone https://github.com/dan-dr/explodex.git
 cd explodex
-bun run install:app
+bun run link:app
 ```
 
-This builds `dist/Explodex.app`, copies it to `/Applications/Explodex.app`, and creates `~/.explodex/plugins` for your plugins.
+This builds `dist/Explodex.app`, symlinks `/Applications/Explodex.app` to it, and creates `~/.explodex/plugins` for your plugins. After that, `bun run package` updates the installed app without reinstalling.
 
-To build without installing:
+For a copied release install (no repo symlink): `bun run install:app`.
+
+To run from dist only:
 
 ```sh
 bun run package
@@ -156,7 +158,8 @@ Then run `bun run inject` after editing plugin source.
 | `bun run dev` | Package, launch, and attach chrome-devtools-mcp |
 | `bun run inject` | Re-inject SDK + plugins into a running debug session |
 | `bun run package` | Build `dist/Explodex.app` only |
-| `bun run install:app` | Package and install to `/Applications/Explodex.app` |
+| `bun run link:app` | Package and symlink `/Applications/Explodex.app` → `dist/` |
+| `bun run install:app` | Package and copy to `/Applications/Explodex.app` (release) |
 | `bun run launch` | Launch Codex directly with injection (no packaging) |
 | `bun run validate` | Syntax, manifest, and TypeScript definition checks |
 

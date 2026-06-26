@@ -72,11 +72,21 @@ Pair with `bun run layout:snapshot` when Codex changes layout between releases.
 
 ## Install to /Applications
 
+**Local dev (recommended):** symlink once, then `bun run package` updates the app in place.
+
+```sh
+bun run link:app
+```
+
+Creates `dist/Explodex.app` and symlinks `/Applications/Explodex.app` → `dist/Explodex.app`. Re-run `link:app` only if you replaced the `/Applications` install with a copy.
+
+**Release / offline install:** copy a self-contained bundle (no repo project-root marker).
+
 ```sh
 bun run install:app
 ```
 
-Packages `dist/Explodex.app` (release build, no repo project-root marker), copies repo `plugins/` into `Contents/Resources/plugins/`, installs to `/Applications/Explodex.app`, and creates `~/.explodex/plugins` for user-managed plugins. Bundled plugins load automatically on launch; user plugins override bundled plugins with the same ID.
+Both commands bundle repo `plugins/` into `Contents/Resources/plugins/` and create `~/.explodex/plugins` for user-managed plugins. User plugins override bundled plugins with the same ID.
 
 ## Validate
 
