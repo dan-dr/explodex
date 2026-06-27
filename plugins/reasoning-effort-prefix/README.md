@@ -1,5 +1,7 @@
 # Reasoning Effort Prefix
 
+![Reasoning effort prefix](../../docs/plugins/screenshots/reasoning-effort-prefix.png)
+
 ## Purpose
 
 Set Codex reasoning effort for the next message by typing a leading prefix:

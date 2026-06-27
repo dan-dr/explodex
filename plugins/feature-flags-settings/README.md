@@ -1,5 +1,7 @@
 # Feature Flags (Settings)
 
+![Feature flags settings](../../docs/plugins/screenshots/feature-flags-settings.png)
+
 ## Purpose
 
 Surface all Codex experimental feature flags with live on/off state, persistent toggles, and optional injection into **General Settings**. Opens from the sidebar **Feature Flags** row (popover) or the embedded panel on `/settings/general-settings`.

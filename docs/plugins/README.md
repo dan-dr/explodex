@@ -16,6 +16,30 @@ Explodex plugins live in `plugins/<id>/` and include:
 | `usage-reset-sidebar` | View-only usage/reset sidebar status (anchors above profile footer) | [README.md](../../plugins/usage-reset-sidebar/README.md) |
 | `feature-flags-settings` | All experimental feature flags with persistent toggles | [README.md](../../plugins/feature-flags-settings/README.md) |
 
+Screenshots live in [screenshots/](screenshots/) and are embedded in each plugin README.
+
+### Previews
+
+**command-menu-thread-search** — matching threads appear at the top of Cmd+K while you type:
+
+![Command menu thread search](screenshots/command-menu-thread-search.png)
+
+**reasoning-effort-prefix** — `!m` opens the thinking-levels hint and live-applies medium effort:
+
+![Reasoning effort prefix](screenshots/reasoning-effort-prefix.png)
+
+**pin-scope-menu** — project threads get a Global / Project pin chooser:
+
+![Pin scope menu](screenshots/pin-scope-menu.png)
+
+**usage-reset-sidebar** — compact usage row above Settings with a detail popover:
+
+![Usage & resets sidebar](screenshots/usage-reset-sidebar.png)
+
+**feature-flags-settings** — sidebar popover and Settings panel for experimental flags:
+
+![Feature flags settings](screenshots/feature-flags-settings.png)
+
 ## User plugins directory
 
 Install custom plugins under `~/.explodex/plugins/<id>/` (same `plugin.json` +

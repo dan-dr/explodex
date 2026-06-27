@@ -1,5 +1,7 @@
 # Pin Scope Menu
 
+![Pin scope menu](../../docs/plugins/screenshots/pin-scope-menu.png)
+
 ## Purpose
 
 When a thread belongs to a project, replace the native pin click with a small menu:

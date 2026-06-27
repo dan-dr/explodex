@@ -1,5 +1,7 @@
 # Command Menu Thread Search
 
+![Command menu thread search](../../docs/plugins/screenshots/command-menu-thread-search.png)
+
 ## Purpose
 
 Merge Cmd+G-style thread search into the Cmd+K command palette. When you open the command menu, threads appear **first** under a **Threads** header; commands follow unchanged.

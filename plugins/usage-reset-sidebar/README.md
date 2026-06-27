@@ -1,5 +1,7 @@
 # Usage & Resets Sidebar
 
+![Usage & resets sidebar](../../docs/plugins/screenshots/usage-reset-sidebar.png)
+
 ## Purpose
 
 Show a compact, view-only usage and reset-credit status row above Settings in the Codex sidebar.

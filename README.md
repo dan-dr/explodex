@@ -27,6 +27,16 @@ I wanted something like BetterDiscord/Legcord for codex, being able to modify th
 | [usage-reset-sidebar](plugins/usage-reset-sidebar/) | Always visible usage stats (plus reset expiration) |
 | [feature-flags-settings](plugins/feature-flags-settings/) | All experimental Codex feature flags with live state and persistent toggles in Settings |
 
+### Plugin previews
+
+| Plugin | Screenshot |
+|--------|------------|
+| [command-menu-thread-search](plugins/command-menu-thread-search/) | ![Threads first in Cmd+K](docs/plugins/screenshots/command-menu-thread-search.png) |
+| [reasoning-effort-prefix](plugins/reasoning-effort-prefix/) | ![Composer prefix hint](docs/plugins/screenshots/reasoning-effort-prefix.png) |
+| [pin-scope-menu](plugins/pin-scope-menu/) | ![Global vs project pin](docs/plugins/screenshots/pin-scope-menu.png) |
+| [usage-reset-sidebar](plugins/usage-reset-sidebar/) | ![Usage & resets popover](docs/plugins/screenshots/usage-reset-sidebar.png) |
+| [feature-flags-settings](plugins/feature-flags-settings/) | ![Feature flags popover](docs/plugins/screenshots/feature-flags-settings.png) |
+
 The built-in **💥 Explodex** sidebar menu item opens the plugin manager (enable/disable, open plugins folder).
 
 ## Write a plugin
