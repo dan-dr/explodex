@@ -26,7 +26,7 @@ I wanted something like BetterDiscord/Legcord for codex, being able to modify th
 | [pin-scope-menu](plugins/pin-scope-menu/) | Pin threads under project instead of globally | <img src="docs/plugins/screenshots/pin-scope-menu.png" alt="Global vs project pin" width="400" /> |
 | [usage-reset-sidebar](plugins/usage-reset-sidebar/) | Always visible usage stats (plus reset expiration) | <img src="docs/plugins/screenshots/usage-reset-sidebar.png" alt="Usage & resets popover" width="400" /> |
 | [feature-flags-settings](plugins/feature-flags-settings/) | All experimental Codex feature flags with live state and persistent toggles in Settings | <img src="docs/plugins/screenshots/feature-flags-settings.png" alt="Feature flags popover" width="400" /> |
-| [project-folder-colors](plugins/project-folder-colors/) | Color-code project folders and threads in the sidebar (cmux/iTerm2 style) | |
+| [project-folder-colors](plugins/project-folder-colors/) | Color-code project folders and threads in the sidebar (cmux/iTerm2 style) | <img src="docs/plugins/screenshots/project-folder-colors.png" alt="Project folder colors in sidebar" width="400" /> |
 
 The built-in **💥 Explodex** sidebar item opens the Explodex settings page (enable/disable plugins, manifest details, per-plugin options).
 

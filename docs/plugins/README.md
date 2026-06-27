@@ -41,6 +41,10 @@ Screenshots live in [screenshots/](screenshots/) and are embedded in each plugin
 
 ![Feature flags settings](screenshots/feature-flags-settings.png)
 
+**project-folder-colors** — full-width tint on project folders with picker and settings:
+
+![Project folder colors](screenshots/project-folder-colors.png)
+
 ## User plugins directory
 
 Install custom plugins under `~/.explodex/plugins/<id>/` (same `plugin.json` +

@@ -1,5 +1,7 @@
 # Project Folder Colors
 
+![Project folder colors](../../docs/plugins/screenshots/project-folder-colors.png)
+
 Color-code project folders and threads in the Codex sidebar.
 
 ## Behavior
