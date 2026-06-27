@@ -26,18 +26,19 @@ I wanted something like BetterDiscord/Legcord for codex, being able to modify th
 | [pin-scope-menu](plugins/pin-scope-menu/) | Pin threads under project instead of globally |
 | [usage-reset-sidebar](plugins/usage-reset-sidebar/) | Always visible usage stats (plus reset expiration) |
 | [feature-flags-settings](plugins/feature-flags-settings/) | All experimental Codex feature flags with live state and persistent toggles in Settings |
+| [project-folder-colors](plugins/project-folder-colors/) | Color-code project folders and threads in the sidebar (cmux/iTerm2 style) |
 
 ### Plugin previews
 
 | Plugin | Screenshot |
 |--------|------------|
-| [command-menu-thread-search](plugins/command-menu-thread-search/) | ![Threads first in Cmd+K](docs/plugins/screenshots/command-menu-thread-search.png) |
-| [reasoning-effort-prefix](plugins/reasoning-effort-prefix/) | ![Composer prefix hint](docs/plugins/screenshots/reasoning-effort-prefix.png) |
-| [pin-scope-menu](plugins/pin-scope-menu/) | ![Global vs project pin](docs/plugins/screenshots/pin-scope-menu.png) |
-| [usage-reset-sidebar](plugins/usage-reset-sidebar/) | ![Usage & resets popover](docs/plugins/screenshots/usage-reset-sidebar.png) |
-| [feature-flags-settings](plugins/feature-flags-settings/) | ![Feature flags popover](docs/plugins/screenshots/feature-flags-settings.png) |
+| [command-menu-thread-search](plugins/command-menu-thread-search/) | <img src="docs/plugins/screenshots/command-menu-thread-search.png" alt="Threads first in Cmd+K" width="400" /> |
+| [reasoning-effort-prefix](plugins/reasoning-effort-prefix/) | <img src="docs/plugins/screenshots/reasoning-effort-prefix.png" alt="Composer prefix hint" width="400" /> |
+| [pin-scope-menu](plugins/pin-scope-menu/) | <img src="docs/plugins/screenshots/pin-scope-menu.png" alt="Global vs project pin" width="400" /> |
+| [usage-reset-sidebar](plugins/usage-reset-sidebar/) | <img src="docs/plugins/screenshots/usage-reset-sidebar.png" alt="Usage & resets popover" width="400" /> |
+| [feature-flags-settings](plugins/feature-flags-settings/) | <img src="docs/plugins/screenshots/feature-flags-settings.png" alt="Feature flags popover" width="400" /> |
 
-The built-in **💥 Explodex** sidebar menu item opens the plugin manager (enable/disable, open plugins folder).
+The built-in **💥 Explodex** sidebar item opens the Explodex settings page (enable/disable plugins, manifest details, per-plugin options).
 
 ## Write a plugin
 
