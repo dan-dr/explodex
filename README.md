@@ -196,8 +196,4 @@ Codex internals can change between releases. See [docs/sdk-fragility.md](docs/sd
 | [docs/sdk-fragility.md](docs/sdk-fragility.md) | What breaks across Codex updates |
 | [docs/plugins/README.md](docs/plugins/README.md) | Bundled plugin notes |
 
-
-## Is the readme accurate
-idk
-
 When changing SDK behavior, update [docs/sdk-api.md](docs/sdk-api.md) and [sdk/explodex-sdk.d.ts](sdk/explodex-sdk.d.ts) in the same change.
