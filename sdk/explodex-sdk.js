@@ -167,6 +167,7 @@
   const plugins = new Map();
   const pluginCatalog = new Map();
   const pluginTeardowns = new Map();
+  const pluginOptionsHandlers = new Map();
   const pluginSources = new Map();
   const navMounts = new Map();
   let activePopover = null;
@@ -570,6 +571,48 @@
         display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap;
         padding-top: 8px; margin-top: 4px;
         border-top: 1px solid color-mix(in srgb, currentColor 8%, transparent);
+      }
+      .ex-explodex-page {
+        position: absolute; inset: 0; z-index: 24; overflow: auto;
+        background: var(--color-bg-primary, #111); color: inherit;
+        font: 13px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      .ex-explodex-page-inner {
+        max-width: 720px; margin: 0 auto; padding: 28px 20px 48px;
+        display: flex; flex-direction: column; gap: 16px;
+      }
+      .ex-explodex-page-header h1 {
+        margin: 0; font-size: 22px; line-height: 1.25; font-weight: 600;
+      }
+      .ex-explodex-page-header p {
+        margin: 6px 0 0;
+        color: var(--color-text-tertiary, color-mix(in srgb, currentColor 55%, transparent));
+        font-size: 13px; line-height: 1.4;
+      }
+      .ex-explodex-plugin-section {
+        border: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+        border-radius: 12px; background: color-mix(in srgb, currentColor 3%, transparent);
+        overflow: hidden;
+      }
+      .ex-explodex-plugin-section > summary {
+        list-style: none; cursor: pointer; padding: 12px 14px;
+        display: flex; align-items: flex-start; gap: 10px;
+        border-bottom: 1px solid transparent;
+      }
+      .ex-explodex-plugin-section > summary::-webkit-details-marker { display: none; }
+      .ex-explodex-plugin-section[open] > summary {
+        border-bottom-color: color-mix(in srgb, currentColor 10%, transparent);
+      }
+      .ex-explodex-plugin-section-body {
+        padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 12px;
+      }
+      .ex-explodex-plugin-meta {
+        font-size: 11px; line-height: 1.4;
+        color: var(--color-text-tertiary, color-mix(in srgb, currentColor 55%, transparent));
+      }
+      .ex-explodex-page-actions {
+        display: flex; flex-wrap: wrap; gap: 8px; padding-top: 4px;
+        border-top: 1px solid color-mix(in srgb, currentColor 10%, transparent);
       }
     `;
     document.head.appendChild(style);
@@ -2081,6 +2124,7 @@
       "reasoning-effort-prefix": true,
       "pin-scope-menu": true,
       "feature-flags-settings": true,
+      "project-folder-colors": true,
     };
   }
 
@@ -2143,6 +2187,11 @@
       waitFor: inject.waitFor,
       mount: (zoneId, nodeOrFactory, opts = {}) =>
         inject.mount(zoneId, nodeOrFactory, { ...opts, pluginId: id }),
+      registerOptions: (handlers) => {
+        if (handlers && typeof handlers.render === "function") {
+          pluginOptionsHandlers.set(id, handlers);
+        }
+      },
     };
 
     const pluginLog = log.plugin(id);
@@ -2182,6 +2231,7 @@
     }
     inject.unmount(id);
     sidebarNav.remove(`plugin-${id}`);
+    pluginOptionsHandlers.delete(id);
     plugins.delete(id);
   }
 
@@ -2306,12 +2356,13 @@
     unload: unloadPlugin,
     initFromCatalog,
     restartWrapped,
+    getOptionsHandler: (id) => pluginOptionsHandlers.get(id) ?? null,
   };
 
   function destroy() {
     flags.clearStatsigGateOverrides();
     for (const id of [...plugins.keys()]) {
-      if (!pluginCatalog.get(id)?.builtin) unregisterPlugin(id);
+      unregisterPlugin(id);
     }
     ui.closePopover();
     for (const node of mounted.values()) node.remove();
@@ -2323,6 +2374,7 @@
     plugins.clear();
     pluginCatalog.clear();
     pluginTeardowns.clear();
+    pluginOptionsHandlers.clear();
     pluginSources.clear();
     messageHandlers.clear();
     document.getElementById(STYLE_ID)?.remove();
@@ -2418,13 +2470,18 @@
     (ctx) => {
       const { observeZone: observe, components: c, plugins: pm, sidebarNav: nav, ui: overlay, bridge, composer } =
         ctx;
-      let shellOpen = false;
+      const EXPLODEX_ROUTE = "/explodex";
+      const PAGE_ID = "explodex-settings-page";
+      const ROUTE_POLL_MS = 500;
+      let pageVisible = false;
+      let routePollId = null;
+      let lastRoutePath = "";
 
-      const CREATE_PLUGIN_LIVE_PROMPT = `Use $explodex-live-plugins to help me create and debug a new Explodex plugin in this repo.
+      const CREATE_PLUGIN_LIVE_PROMPT = `Use $explodex-live-plugins to help me create and debug a new Explodex plugin in this repo. If that skill is not installed, read and follow skills/explodex-live-plugins/SKILL.md from this checkout for this turn.
 
 Plugin goal: [describe what the plugin should do — sidebar item, composer hook, settings panel, bridge RPC, etc.]
 
-If the goal is still a placeholder, ask one clarifying question, then scaffold under plugins/<id>/ and run the live loop: bun run validate → bun run package && bun run inject → verify in the Codex renderer via Chrome DevTools MCP at http://127.0.0.1:9333.`;
+If the goal is still a placeholder, ask one clarifying question, then scaffold durable files under plugins/<id>/ and run the same-instance live loop: bun run validate → bun run inject → verify, interact, and unload/reload in the Codex renderer via Chrome DevTools MCP at http://127.0.0.1:9333. Package only when I ask to bundle or export it.`;
 
       function sleep(ms) {
         return new Promise((resolve) => global.setTimeout(resolve, ms));
@@ -2441,9 +2498,269 @@ If the goal is still a placeholder, ask one clarifying question, then scaffold u
         return false;
       }
 
+      function reactFiber(node) {
+        if (!node || typeof node !== "object") return null;
+        const key = Object.keys(node).find((name) => name.startsWith("__reactFiber"));
+        return key ? node[key] : null;
+      }
+
+      function getAppRoutePathname() {
+        const start =
+          document.querySelector('nav[aria-label="Settings"]') ??
+          document.querySelector("nav") ??
+          document.documentElement;
+        let fiber = reactFiber(start);
+        for (let depth = 0; depth < 200 && fiber; depth += 1) {
+          const loc = fiber.memoizedProps?.location ?? fiber.memoizedProps?.value?.location;
+          if (loc?.pathname) return loc.pathname;
+          fiber = fiber.return;
+        }
+        return global.location?.pathname ?? "";
+      }
+
+      function isExplodexRoute() {
+        const path = getAppRoutePathname();
+        return path === EXPLODEX_ROUTE || global.location?.pathname === EXPLODEX_ROUTE;
+      }
+
+      function pageViewport() {
+        return (
+          document.querySelector(".app-shell-main-content-viewport") ??
+          document.querySelector(".app-shell-main-content-frame") ??
+          document.querySelector("[data-app-shell-main-content-layout]") ??
+          document.querySelector(".main-surface")?.parentElement ??
+          null
+        );
+      }
+
+      function hideExplodexPage() {
+        document.getElementById(PAGE_ID)?.remove();
+        pageVisible = false;
+        if (global.location?.pathname === EXPLODEX_ROUTE) {
+          try {
+            history.replaceState({}, "", "/");
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+
+      function stopRouteWatch() {
+        if (routePollId != null) {
+          global.clearInterval(routePollId);
+          routePollId = null;
+        }
+      }
+
+      function startRouteWatch() {
+        if (routePollId != null) return;
+        lastRoutePath = getAppRoutePathname();
+        routePollId = global.setInterval(() => {
+          const path = getAppRoutePathname();
+          if (path === lastRoutePath) return;
+          lastRoutePath = path;
+          if (pageVisible && path !== EXPLODEX_ROUTE) hideExplodexPage();
+        }, ROUTE_POLL_MS);
+      }
+
+      function onPopState() {
+        if (pageVisible && !isExplodexRoute()) hideExplodexPage();
+      }
+
+      function pluginEnableCheckbox(id, manifest) {
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = pm.isEnabled(id);
+        checkbox.disabled =
+          manifest.dynamicLoadable === false && manifest.dynamicUnloadable === false;
+        checkbox.addEventListener("click", (event) => event.stopPropagation());
+        checkbox.addEventListener("change", () => {
+          const next = checkbox.checked;
+          const entry = pm.get(id);
+          const needsRestart =
+            (next && entry?.dynamicLoadable === false) ||
+            (!next && entry?.dynamicUnloadable === false);
+          if (needsRestart) {
+            checkbox.checked = pm.isEnabled(id);
+          }
+          if (next) pm.enable(id);
+          else pm.disable(id);
+          if (!needsRestart) {
+            global.setTimeout(() => {
+              checkbox.checked = pm.isEnabled(id);
+              renderExplodexPage(document.getElementById(PAGE_ID));
+            }, 0);
+          }
+        });
+        return checkbox;
+      }
+
+      function renderPluginOptions(id, host) {
+        host.replaceChildren();
+        const handler = pm.getOptionsHandler(id);
+        if (!handler) {
+          const empty = document.createElement("div");
+          empty.className = "ex-explodex-plugin-meta";
+          empty.textContent = "No configurable options for this plugin.";
+          host.appendChild(empty);
+          return;
+        }
+        if (!pm.list().includes(id)) {
+          const empty = document.createElement("div");
+          empty.className = "ex-explodex-plugin-meta";
+          empty.textContent = "Enable this plugin to configure options.";
+          host.appendChild(empty);
+          return;
+        }
+        const panel = document.createElement("div");
+        panel.className = "ex-explodex-plugin-options";
+        host.appendChild(panel);
+        handler.render(panel, {
+          pluginId: id,
+          refresh: () => renderExplodexPage(document.getElementById(PAGE_ID)),
+        });
+      }
+
+      function renderExplodexPage(root) {
+        if (!root) return;
+        root.replaceChildren();
+
+        const inner = document.createElement("div");
+        inner.className = "ex-explodex-page-inner";
+
+        const header = document.createElement("div");
+        header.className = "ex-explodex-page-header";
+        const title = document.createElement("h1");
+        title.textContent = "Explodex";
+        const subtitle = document.createElement("p");
+        subtitle.textContent = "Manage bundled and user plugins. Expand a plugin to view details and options.";
+        header.appendChild(title);
+        header.appendChild(subtitle);
+        inner.appendChild(header);
+
+        const ids = pm.listCatalog().filter((id) => id !== "explodex-shell");
+        if (!ids.length) {
+          const empty = document.createElement("div");
+          empty.className = "ex-explodex-plugin-meta";
+          empty.textContent = "No plugins in catalog.";
+          inner.appendChild(empty);
+        }
+
+        for (const id of ids) {
+          const manifest = pm.get(id);
+          if (!manifest) continue;
+
+          const section = document.createElement("details");
+          section.className = "ex-explodex-plugin-section";
+          section.open = pm.getOptionsHandler(id) != null;
+
+          const summary = document.createElement("summary");
+          summary.appendChild(pluginEnableCheckbox(id, manifest));
+
+          const titleCol = document.createElement("div");
+          titleCol.style.flex = "1";
+          const name = document.createElement("div");
+          name.style.fontWeight = "600";
+          name.textContent = manifest.name ?? id;
+          const meta = document.createElement("div");
+          meta.className = "ex-explodex-plugin-meta";
+          const flags = [];
+          if (manifest.dynamicLoadable === false) flags.push("load: restart");
+          if (manifest.dynamicUnloadable === false) flags.push("unload: restart");
+          const loaded = pm.list().includes(id);
+          meta.textContent = [
+            `v${manifest.version ?? "?"}`,
+            loaded ? "loaded" : "not loaded",
+            flags.length ? flags.join(" · ") : null,
+          ]
+            .filter(Boolean)
+            .join(" — ");
+          titleCol.appendChild(name);
+          titleCol.appendChild(meta);
+          summary.appendChild(titleCol);
+          section.appendChild(summary);
+
+          const body = document.createElement("div");
+          body.className = "ex-explodex-plugin-section-body";
+          if (manifest.description) {
+            const desc = document.createElement("div");
+            desc.textContent = manifest.description;
+            body.appendChild(desc);
+          }
+          const optionsHost = document.createElement("div");
+          body.appendChild(optionsHost);
+          renderPluginOptions(id, optionsHost);
+          section.appendChild(body);
+          inner.appendChild(section);
+        }
+
+        const actions = document.createElement("div");
+        actions.className = "ex-explodex-page-actions";
+        actions.appendChild(
+          c.button({
+            label: "Create Plugin Live",
+            color: "primary",
+            size: "composerSm",
+            onClick: () => {
+              void startCreatePluginLiveThread();
+            },
+          }),
+        );
+        actions.appendChild(
+          c.button({
+            label: "Open Plugins Folder",
+            color: "secondary",
+            size: "composerSm",
+            onClick: () => {
+              void openUserPluginsFolder();
+            },
+          }),
+        );
+        actions.appendChild(
+          c.button({
+            label: "Restart",
+            color: "ghost",
+            size: "composerSm",
+            onClick: () => {
+              void pm.restartWrapped({ reason: "explodex-page-restart" });
+            },
+          }),
+        );
+        inner.appendChild(actions);
+        root.appendChild(inner);
+      }
+
+      function showExplodexPage() {
+        const host = pageViewport();
+        if (!host) {
+          c.statusToast("Main viewport not found");
+          return;
+        }
+        if (getComputedStyle(host).position === "static") {
+          host.style.position = "relative";
+        }
+
+        let page = document.getElementById(PAGE_ID);
+        if (!page) {
+          page = document.createElement("div");
+          page.id = PAGE_ID;
+          page.className = "ex-explodex-page";
+          page.setAttribute("data-explodex-plugin", "explodex-shell");
+          host.appendChild(page);
+        }
+
+        pageVisible = true;
+        renderExplodexPage(page);
+        try {
+          history.pushState({ explodexPage: true }, "", EXPLODEX_ROUTE);
+        } catch {
+          /* ignore */
+        }
+        startRouteWatch();
+      }
+
       async function startCreatePluginLiveThread() {
-        overlay.closePopover();
-        shellOpen = false;
+        hideExplodexPage();
 
         await bridge.navigate("/", { focusComposerNonce: Date.now() });
 
@@ -2472,121 +2789,6 @@ If the goal is still a placeholder, ask one clarifying question, then scaffold u
         c.statusToast(dir);
       }
 
-      function renderPluginManager(anchor) {
-        const ids = pm.listCatalog();
-        overlay.popover({
-          anchor,
-          title: "Explodex plugins",
-          width: 400,
-          onClose: () => {
-            shellOpen = false;
-          },
-          content: () => {
-            const body = document.createElement("div");
-            const list = document.createElement("div");
-            list.className = "ex-plugin-list";
-            const pluginIds = ids.filter((id) => id !== "explodex-shell");
-            if (!pluginIds.length) {
-              const empty = document.createElement("div");
-              empty.textContent = "No plugins in catalog.";
-              list.appendChild(empty);
-            }
-            for (const id of pluginIds) {
-              const manifest = pm.get(id);
-              if (!manifest) continue;
-              const row = document.createElement("div");
-              row.className = "ex-plugin-row";
-
-              const checkbox = document.createElement("input");
-              checkbox.type = "checkbox";
-              checkbox.checked = pm.isEnabled(id);
-              checkbox.disabled =
-                manifest.dynamicLoadable === false && manifest.dynamicUnloadable === false;
-              checkbox.addEventListener("change", () => {
-                const next = checkbox.checked;
-                const manifest = pm.get(id);
-                const needsRestart =
-                  (next && manifest?.dynamicLoadable === false) ||
-                  (!next && manifest?.dynamicUnloadable === false);
-                if (needsRestart) {
-                  checkbox.checked = pm.isEnabled(id);
-                }
-                if (next) pm.enable(id);
-                else pm.disable(id);
-                if (!needsRestart) {
-                  global.setTimeout(() => {
-                    checkbox.checked = pm.isEnabled(id);
-                  }, 0);
-                }
-              });
-
-              const metaCol = document.createElement("div");
-              metaCol.style.flex = "1";
-              const title = document.createElement("div");
-              title.style.fontWeight = "600";
-              title.textContent = manifest.name ?? id;
-              const detail = document.createElement("div");
-              detail.style.cssText =
-                "font-size:11px;color:var(--color-text-tertiary,color-mix(in srgb,currentColor 55%,transparent))";
-              const flags = [];
-              if (manifest.dynamicLoadable === false) flags.push("load: restart");
-              if (manifest.dynamicUnloadable === false) flags.push("unload: restart");
-              const loaded = pm.list().includes(id);
-              detail.textContent = [
-                `v${manifest.version ?? "?"} · ${loaded ? "loaded" : "not loaded"}`,
-                flags.length ? flags.join(" · ") : null,
-              ]
-                .filter(Boolean)
-                .join(" — ");
-              metaCol.appendChild(title);
-              metaCol.appendChild(detail);
-
-              row.appendChild(checkbox);
-              row.appendChild(metaCol);
-              list.appendChild(row);
-            }
-            body.appendChild(list);
-
-            const footer = document.createElement("div");
-            footer.className = "ex-plugin-footer";
-            footer.appendChild(
-              c.button({
-                label: "Create Plugin Live",
-                color: "primary",
-                size: "composerSm",
-                onClick: () => {
-                  void startCreatePluginLiveThread();
-                },
-              }),
-            );
-            footer.appendChild(
-              c.button({
-                label: "Open Plugins Folder",
-                color: "secondary",
-                size: "composerSm",
-                onClick: () => {
-                  void openUserPluginsFolder();
-                },
-              }),
-            );
-            footer.appendChild(
-              c.button({
-                label: "Restart",
-                color: "ghost",
-                size: "composerSm",
-                onClick: () => {
-                  overlay.closePopover();
-                  shellOpen = false;
-                  void pm.restartWrapped({ reason: "menu-restart" });
-                },
-              }),
-            );
-            body.appendChild(footer);
-            return body;
-          },
-        });
-      }
-
       function mountShellNav() {
         if (document.querySelector('[data-explodex-nav="explodex-shell"]')?.isConnected) {
           return true;
@@ -2594,13 +2796,10 @@ If the goal is still a placeholder, ask one clarifying question, then scaffold u
         const btn = overlay.navItem({
           icon: "💥",
           label: "Explodex",
-          onClick: (event) => {
-            shellOpen = !shellOpen;
-            if (!shellOpen) {
-              overlay.closePopover();
-              return;
-            }
-            renderPluginManager(event.currentTarget);
+          onClick: () => {
+            if (pageVisible && document.getElementById(PAGE_ID)?.isConnected) return;
+            pageVisible = false;
+            showExplodexPage();
           },
         });
         return nav.insertAfter(["Plugins", "Skills"], btn, "explodex-shell");
@@ -2608,6 +2807,15 @@ If the goal is still a placeholder, ask one clarifying question, then scaffold u
 
       mountShellNav();
       observe("sidebar", mountShellNav, { includeMutations: true });
+      global.addEventListener("popstate", onPopState);
+      startRouteWatch();
+
+      return () => {
+        hideExplodexPage();
+        stopRouteWatch();
+        global.removeEventListener("popstate", onPopState);
+        nav.remove("explodex-shell");
+      };
     },
   );
 

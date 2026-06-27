@@ -220,6 +220,7 @@ Everything on `Explodex`, plus:
 | `log` | `PluginLogger` | Scoped logger (`[Explodex:<id>]`). |
 | `waitFor` | `InjectAPI["waitFor"]` | Same as `inject.waitFor`. |
 | `mount` | `InjectAPI["mount"]` | `inject.mount` with `pluginId` pre-bound. |
+| `registerOptions` | `(handlers) => void` | Options panel on Explodex settings page (`handlers.render`). |
 
 **Legacy aliases** (deprecated): `mount`, `waitFor`,
 `waitForZone`, `observeZone`, `registerPlugin`, `insertIntoComposer`,
@@ -591,7 +592,20 @@ plugins.load(id): boolean                     // run declared source
 plugins.unload(id): boolean                   // false for builtins / non-unloadable
 plugins.initFromCatalog(): void
 plugins.restartWrapped({ reason? }?): Promise<boolean>
+plugins.getOptionsHandler(id): { render } | null
 ```
+
+**Plugin options** (Explodex settings page at `/explodex`, opened from sidebar **💥 Explodex**):
+
+```js
+api.registerOptions({
+  render(container, { pluginId, refresh }) {
+    container.appendChild(/* toggles, palette editor, etc. */);
+  },
+});
+```
+
+Call `registerOptions` from the plugin `setup` callback. The built-in `explodex-shell` plugin renders collapsible sections per catalog entry; options panels appear when the plugin is loaded.
 
 **Reload a plugin during dev** (after `bun run package && bun run inject`):
 

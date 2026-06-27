@@ -15,6 +15,7 @@ Explodex plugins live in `plugins/<id>/` and include:
 | `pin-scope-menu` | Global vs project pin scope menu | [README.md](../../plugins/pin-scope-menu/README.md) |
 | `usage-reset-sidebar` | View-only usage/reset sidebar status (anchors above profile footer) | [README.md](../../plugins/usage-reset-sidebar/README.md) |
 | `feature-flags-settings` | All experimental feature flags with persistent toggles | [README.md](../../plugins/feature-flags-settings/README.md) |
+| `project-folder-colors` | Color-code project folders and threads in the sidebar | [README.md](../../plugins/project-folder-colors/README.md) |
 
 Screenshots live in [screenshots/](screenshots/) and are embedded in each plugin README.
 

@@ -38,6 +38,10 @@ Re-inject after editing SDK or plugins:
 bun run inject
 ```
 
+The injector publishes the refreshed plugin catalog before evaluating the SDK.
+The SDK initializes from that catalog during startup, so one injection both adds
+new plugins and removes deleted plugin IDs without reloading the renderer.
+
 ### Layout snapshot (sidebar / shell landmarks)
 
 After `bun run dev` (or any session with CDP on `9333`), capture a JSON layout

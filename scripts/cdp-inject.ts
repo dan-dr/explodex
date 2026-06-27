@@ -473,9 +473,12 @@ async function main(): Promise<void> {
 
   const pluginEntries = discoverPlugins();
   const catalogSource = buildCatalogBootstrap(pluginEntries);
+  // Publish the fresh catalog before SDK startup. The SDK calls initFromCatalog()
+  // during boot; evaluating it first would resurrect entries removed since the
+  // previous injection until a second injection replaced the stale global.
   const sources: Array<[string, string]> = [
-    ["explodex-sdk.js", sdkSource],
     ["explodex-plugin-catalog.js", catalogSource],
+    ["explodex-sdk.js", sdkSource],
   ];
   for (const plugin of pluginEntries) {
     console.log(`Cataloged plugin ${plugin.id} (${plugin.path})`);

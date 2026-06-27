@@ -1,0 +1,10 @@
+{
+  "id": "project-folder-colors",
+  "name": "Project Folder Colors",
+  "version": "1.4.0",
+  "entry": "index.js",
+  "docs": "README.md",
+  "description": "Color-code project folders and their threads in the sidebar (cmux/iTerm2 style).",
+  "dynamicLoadable": true,
+  "dynamicUnloadable": true
+}

@@ -584,6 +584,19 @@ export interface RegisterResult {
  * {@link ExplodexAPI} plus the plugin's own id, a scoped logger, and `mount`
  * pre-bound to the plugin id.
  */
+/** Context passed to a plugin options panel renderer. */
+export interface PluginOptionsRenderContext {
+  pluginId: string;
+  /** Re-render the Explodex settings page (e.g. after option changes). */
+  refresh(): void;
+}
+
+/** Handlers registered via {@link PluginAPI.registerOptions}. */
+export interface PluginOptionsHandlers {
+  /** Render plugin-specific options into `container`. */
+  render(container: HTMLElement, ctx: PluginOptionsRenderContext): void;
+}
+
 export interface PluginAPI extends ExplodexAPI {
   pluginId: string;
   log: PluginLogger;
@@ -596,6 +609,8 @@ export interface PluginAPI extends ExplodexAPI {
     nodeOrFactory: Node | ((ctx: MountContext) => Node),
     options?: Omit<MountOptions, "pluginId">,
   ): boolean;
+  /** Register an options panel for the Explodex settings page. */
+  registerOptions(handlers: PluginOptionsHandlers): void;
 }
 
 /** Optional teardown returned from a plugin setup callback. */
@@ -633,6 +648,8 @@ export interface PluginManagerAPI {
   initFromCatalog(): void;
   /** Relaunch the wrapped Codex app (for restart-required toggles). */
   restartWrapped(options?: { reason?: string }): Promise<boolean>;
+  /** Options panel renderer registered by a loaded plugin, if any. */
+  getOptionsHandler(id: string): PluginOptionsHandlers | null;
 }
 
 // ─── Meta ─────────────────────────────────────────────────────────────────

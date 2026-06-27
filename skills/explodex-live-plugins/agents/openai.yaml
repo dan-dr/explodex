@@ -1,0 +1,14 @@
+interface:
+  display_name: "Explodex Live Plugin Creator"
+  short_description: "Live-build and ship Explodex plugins"
+  default_prompt: "Use $explodex-live-plugins to create or edit an Explodex plugin in this live Codex instance, iterate through Chrome DevTools MCP, and keep durable plugin artifacts."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "chrome-devtools"
+      description: "Inspect and interact with the live Codex renderer on the Explodex debug port"
+      transport: "stdio"
+
+policy:
+  allow_implicit_invocation: true
