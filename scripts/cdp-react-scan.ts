@@ -10,9 +10,16 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import {
+  CDP_HOST,
+  CDP_PORT,
+  CdpSession,
+  getTargets,
+  injectablePages,
+  targetLabel,
+  waitForPort,
+} from "./cdp-client.ts";
 
-const PORT = Number(process.env.EXPLODEX_DEBUG_PORT ?? "9333");
-const HOST = "127.0.0.1";
 const REACT_SCAN_CDN =
   process.env.EXPLODEX_REACT_SCAN_CDN ??
   "https://unpkg.com/react-scan/dist/auto.global.js";
@@ -50,31 +57,6 @@ const CONFIGURE_EXPR = `(() => {
   return finish({ ok: true, api: typeof api, options });
 })()`;
 
-type Target = {
-  id?: string;
-  type?: string;
-  url?: string;
-  title?: string;
-  webSocketDebuggerUrl?: string;
-};
-
-type CdpResponse = {
-  id?: number;
-  result?: {
-    result?: { value?: unknown };
-    exceptionDetails?: { text?: string; exception?: { description?: string } };
-  };
-  error?: { message?: string };
-};
-
-function chunkSource(source: string, size: number): string[] {
-  const chunks: string[] = [];
-  for (let i = 0; i < source.length; i += size) {
-    chunks.push(source.slice(i, i + size));
-  }
-  return chunks;
-}
-
 async function fetchReactScanSource(): Promise<string> {
   if (process.env.EXPLODEX_REACT_SCAN_SKIP_CACHE !== "1") {
     try {
@@ -100,136 +82,30 @@ async function fetchReactScanSource(): Promise<string> {
   return source;
 }
 
-async function waitForPort(host: string, port: number, timeout = 30_000): Promise<boolean> {
-  const start = Date.now();
-  while (Date.now() - start < timeout) {
-    try {
-      const res = await fetch(`http://${host}:${port}/json/version`, { signal: AbortSignal.timeout(1000) });
-      if (res.ok) return true;
-    } catch {
-      await Bun.sleep(500);
-    }
-  }
-  return false;
-}
-
-async function getTargets(): Promise<Target[]> {
-  try {
-    const res = await fetch(`http://${HOST}:${PORT}/json/list`, { signal: AbortSignal.timeout(3000) });
-    return (await res.json()) as Target[];
-  } catch {
-    return [];
-  }
-}
-
-function isInjectablePage(target: Target): boolean {
-  if (target.type !== "page" || !target.webSocketDebuggerUrl) return false;
-  const url = (target.url ?? "").toLowerCase();
-  const title = (target.title ?? "").toLowerCase();
-  if (url.includes("devtools") || title.includes("devtools")) return false;
-  return url.includes("codex") || title.includes("codex") || !url.includes("localhost");
-}
-
-function injectablePages(targets: Target[]): Target[] {
-  const matching = targets.filter(isInjectablePage);
-  if (matching.length) return matching;
-  return targets.filter(
-    (t) => t.type === "page" && t.webSocketDebuggerUrl && !(t.url ?? "").toLowerCase().includes("devtools"),
-  );
-}
-
-function targetLabel(target: Target): string {
-  return target.url || target.title || target.id || "untitled page";
-}
-
-function cdpException(resp: CdpResponse): string | null {
-  const details = resp.result?.exceptionDetails;
-  if (!details) return null;
-  return details.exception?.description ?? details.text ?? "CDP evaluate exception";
-}
-
 async function injectReactScan(wsUrl: string, bundleSource: string): Promise<unknown> {
-  const ws = new WebSocket(wsUrl);
-  await new Promise<void>((resolve, reject) => {
-    ws.onopen = () => resolve();
-    ws.onerror = () => reject(new Error("WebSocket connect failed"));
-  });
-
+  const session = await CdpSession.connect(wsUrl);
   try {
-    let msgId = 0;
-    const send = (method: string, params: Record<string, unknown>, timeoutMs = 60_000) =>
-      new Promise<CdpResponse>((resolve) => {
-        msgId += 1;
-        const id = msgId;
-        const timer = setTimeout(() => resolve({ id }), timeoutMs);
-        const handler = (ev: MessageEvent) => {
-          try {
-            const data = JSON.parse(String(ev.data)) as CdpResponse;
-            if (data.id === id) {
-              clearTimeout(timer);
-              ws.removeEventListener("message", handler);
-              resolve(data);
-            }
-          } catch {
-            /* ignore */
-          }
-        };
-        ws.addEventListener("message", handler);
-        ws.send(JSON.stringify({ id, method, params }));
-      });
-
-    const evaluate = async (
-      expression: string,
-      opts: { allowUnsafeEvalBlockedByCSP?: boolean; awaitPromise?: boolean } = {},
-    ) => {
-      const resp = await send("Runtime.evaluate", {
-        expression,
-        returnByValue: true,
-        awaitPromise: opts.awaitPromise ?? false,
-        allowUnsafeEvalBlockedByCSP: opts.allowUnsafeEvalBlockedByCSP ?? false,
-      });
-      if (resp.error?.message) throw new Error(resp.error.message);
-      const err = cdpException(resp);
-      if (err) throw new Error(err);
-      return resp;
-    };
-
-    const already = await evaluate(
-      `!!(window.__explodexReactScanLoaded && window.reactScan)`,
-    );
-    if (already.result?.result?.value === true) {
-      const configured = await evaluate(CONFIGURE_EXPR);
-      return configured.result?.result?.value ?? { ok: true, already: true };
+    const already = await session.evaluate(`!!(window.__explodexReactScanLoaded && window.reactScan)`);
+    if (already === true) {
+      const configured = await session.evaluate(CONFIGURE_EXPR);
+      return configured ?? { ok: true, already: true };
     }
 
-    await evaluate(`window.__explodexReactScanChunks = []`);
+    await session.evaluateChunks(bundleSource, {
+      chunkKey: "__explodexReactScanChunks",
+      chunkChars: CHUNK_CHARS,
+    });
 
-    const chunks = chunkSource(bundleSource, CHUNK_CHARS);
-    for (let i = 0; i < chunks.length; i += 1) {
-      const chunkJson = JSON.stringify(chunks[i]);
-      await evaluate(`window.__explodexReactScanChunks.push(${chunkJson})`);
-    }
-
-    await evaluate(
-      `(() => {
-        const src = window.__explodexReactScanChunks.join("");
-        delete window.__explodexReactScanChunks;
-        (0, eval)(src);
-        return { loaded: typeof window.reactScan };
-      })()`,
-      { allowUnsafeEvalBlockedByCSP: true },
-    );
-
-    const configured = await evaluate(CONFIGURE_EXPR);
-    return configured.result?.result?.value ?? null;
+    const configured = await session.evaluate(CONFIGURE_EXPR);
+    return configured ?? null;
   } finally {
-    ws.close();
+    session.close();
   }
 }
 
 async function main(): Promise<void> {
-  if (!(await waitForPort(HOST, PORT))) {
-    console.error(`ERROR: CDP not reachable at http://${HOST}:${PORT}`);
+  if (!(await waitForPort(CDP_HOST, CDP_PORT))) {
+    console.error(`ERROR: CDP not reachable at http://${CDP_HOST}:${CDP_PORT}`);
     console.error("Start Explodex with remote debugging (bun run dev) first.");
     process.exit(1);
   }
@@ -237,7 +113,7 @@ async function main(): Promise<void> {
   console.log(`Fetching react-scan from ${REACT_SCAN_CDN}`);
   const bundleSource = await fetchReactScanSource();
 
-  const pages = injectablePages(await getTargets());
+  const pages = injectablePages(await getTargets(CDP_HOST, CDP_PORT));
   if (!pages.length) {
     console.error("ERROR: No injectable renderer page found.");
     process.exit(1);

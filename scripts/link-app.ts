@@ -4,31 +4,16 @@
  * After the one-time link, `bun run package` updates the installed app in place.
  */
 
-import { access, chmod, constants, mkdir, readdir, realpath, rm, symlink } from "node:fs/promises";
+import { chmod, mkdir, readdir, realpath, rm, symlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { spawn } from "bun";
 import { packageApp } from "./package-app.ts";
+import { pathExists, run } from "./utils.ts";
 
 const ROOT = join(import.meta.dir, "..");
 const DIST = resolve(ROOT, "dist", "Explodex.app");
 const INSTALL_PATH = "/Applications/Explodex.app";
 const USER_PLUGINS = join(homedir(), ".explodex", "plugins");
-
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await access(path, constants.F_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function run(cmd: string[]): Promise<void> {
-  const proc = spawn(cmd, { cwd: ROOT, stdout: "inherit", stderr: "inherit" });
-  const code = await proc.exited;
-  if (code !== 0) throw new Error(`${cmd.join(" ")} failed with exit code ${code}`);
-}
 
 async function installPathResolvesToDist(): Promise<boolean> {
   try {

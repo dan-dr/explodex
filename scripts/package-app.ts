@@ -4,9 +4,9 @@
  * Local dev script — Bun TypeScript. Bundled app contents stay shell-only.
  */
 
-import { access, chmod, cp, constants, mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { spawn } from "bun";
+import { pathExists, run } from "./utils.ts";
 
 const ROOT = join(import.meta.dir, "..");
 const TEMPLATE = join(ROOT, "templates", "explodex-app");
@@ -17,21 +17,6 @@ const SPLASH_APP = join(RES, "Splash.app");
 const PLUGINS_SRC = join(ROOT, "plugins");
 const PLUGINS_DST = join(RES, "plugins");
 const ICON_SRC = join(ROOT, "assets", "icon", "Explodex.icns");
-
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await access(path, constants.F_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function run(cmd: string[], cwd = ROOT): Promise<void> {
-  const proc = spawn(cmd, { cwd, stdout: "inherit", stderr: "inherit" });
-  const code = await proc.exited;
-  if (code !== 0) throw new Error(`${cmd.join(" ")} failed with exit code ${code}`);
-}
 
 export async function packageApp(): Promise<string> {
   if (!(await pathExists(TEMPLATE))) {

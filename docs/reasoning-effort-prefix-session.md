@@ -15,7 +15,7 @@
 - Plugin: [`plugins/reasoning-effort-prefix/index.js`](../plugins/reasoning-effort-prefix/index.js)
 - Plugin docs: [`plugins/reasoning-effort-prefix/README.md`](../plugins/reasoning-effort-prefix/README.md)
 - SDK: [`sdk/explodex-sdk.js`](../sdk/explodex-sdk.js) (`bridge.send`, `composer.*`)
-- Deploy: `./scripts/sync-wrapper.sh` → `Explodex.app`
+- Deploy: `bun run package` (which runs `scripts/package-app.ts`) → `Explodex.app`
 
 ---
 
