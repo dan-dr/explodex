@@ -76,10 +76,20 @@ jobs:
           VERSION="${{ steps.check.outputs.version }}"
           echo "Package name: $PACKAGE_NAME, Version: $VERSION"
           
-          # Query npm registry
+          # Query npm registry (404 responses are JSON errors, not empty output)
           NPM_INFO=$(npm view "${PACKAGE_NAME}@${VERSION}" --json 2>/dev/null || true)
+          VERSION_EXISTS=$(echo "$NPM_INFO" | node -e "
+            const fs = require('fs');
+            const input = fs.readFileSync(0, 'utf-8').trim();
+            if (!input) {
+              process.stdout.write('false');
+              process.exit(0);
+            }
+            const data = JSON.parse(input);
+            process.stdout.write(data.error ? 'false' : 'true');
+          ")
           
-          if [ -z "$NPM_INFO" ]; then
+          if [ "$VERSION_EXISTS" != "true" ]; then
             echo "Version $VERSION is not found on npm. Will publish."
             echo "action=publish" >> "$GITHUB_OUTPUT"
           else
@@ -117,18 +127,19 @@ jobs:
           for i in {1..10}; do
             echo "Attempt $i to fetch registry status..."
             NPM_INFO=$(npm view "${PACKAGE_NAME}@${VERSION}" --json 2>/dev/null || true)
-            if [ -n "$NPM_INFO" ]; then
-              GIT_HEAD=$(echo "$NPM_INFO" | node -e "
-                const fs = require('fs');
-                const data = JSON.parse(fs.readFileSync(0, 'utf-8'));
-                console.log(data.gitHead || '');
-              ")
-              if [ "$GIT_HEAD" = "$EXPECTED_SHA" ]; then
-                echo "Successfully verified: version $VERSION is live on npm with gitHead $EXPECTED_SHA."
-                exit 0
-              else
-                echo "Found version $VERSION but gitHead was '$GIT_HEAD' (expected '$EXPECTED_SHA')."
-              fi
+            GIT_HEAD=$(echo "$NPM_INFO" | node -e "
+              const fs = require('fs');
+              const input = fs.readFileSync(0, 'utf-8').trim();
+              if (!input) process.exit(1);
+              const data = JSON.parse(input);
+              if (data.error) process.exit(1);
+              console.log(data.gitHead || '');
+            " 2>/dev/null || true)
+            if [ -n "$GIT_HEAD" ] && [ "$GIT_HEAD" = "$EXPECTED_SHA" ]; then
+              echo "Successfully verified: version $VERSION is live on npm with gitHead $EXPECTED_SHA."
+              exit 0
+            elif [ -n "$GIT_HEAD" ]; then
+              echo "Found version $VERSION but gitHead was '$GIT_HEAD' (expected '$EXPECTED_SHA')."
             else
               echo "Version $VERSION not yet visible on npm."
             fi
