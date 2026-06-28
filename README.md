@@ -2,7 +2,7 @@
 
 **Mod the Codex desktop app.**
 
-Explodex is an extension SDK for OpenAI's [Codex](https://openai.com/codex) desktop app — color-code your projects, keep usage and reset countdowns on screen, set reasoning effort with a keystroke, [or build your own by prompting Codex](#build-your-own-plugin).
+Explodex (**Ex**tension **pl**ugins for C**odex**) is an extension SDK for OpenAI's [Codex](https://openai.com/codex) desktop app — color-code your projects, keep usage and reset countdowns on screen, set reasoning effort with a keystroke, [or build your own by prompting Codex](#build-your-own-plugin).
 
 [**Install in 30 seconds**](#install) · [Included plugins](#included-plugins) · [Build a plugin](#build-your-own-plugin) · [Docs](#docs)
 
