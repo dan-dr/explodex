@@ -18,8 +18,5 @@
     "validate": "./scripts/validate.sh",
     "layout:snapshot": "bun scripts/cdp-layout-snapshot.ts",
     "react-devtools": "bun scripts/cdp-react-devtools.ts"
-  },
-  "dependencies": {
-    "dockview": "^7.0.2"
   }
 }

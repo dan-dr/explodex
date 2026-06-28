@@ -215,19 +215,6 @@ Capture live values with `bun scripts/cdp-layout-snapshot.ts` after each Codex u
 **Layout modes** (`data-app-shell-main-content-layout`):
 - `default`, `full-bleed`, `thread-edge-scroll`, `floating`
 
-### App-shell panel topology
-
-The built-in tab controller (`app-shell-tab-controller-*`) creates two fixed
-controllers only: `panelId: "right"` and `panelId: "bottom"`. Tabs support open,
-close, reorder, and `onMove` between those hosts. `thread-panel-state-*` hard-codes
-the same `['right', 'bottom']` target list. Codex also bundles dnd-kit
-(`core.esm-*` / `sortable.esm-*`) for sortable UI, but no arbitrary dock tree or
-workspace serializer is exposed to injected plugins.
-
-The Views plugin therefore reuses Codex data and bridge surfaces, not this private
-layout controller. Its main-area layout is a vendored vanilla Dockview instance;
-see [plugins/views/README.md](../plugins/views/README.md).
-
 **Tab kinds** (`data-tab-id`):
 - `browser`, `diff`, `mcp-app`, `sandbox`, `timeline`
 - Legacy: `artifact:*`, `automation:*`

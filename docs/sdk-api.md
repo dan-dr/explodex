@@ -646,7 +646,6 @@ Call `registerOptions` from the plugin `setup` callback. The built-in `explodex-
 | `reasoning-effort-prefix` | `explodex-reasoning-effort-prefix` | `enabledPrefixes[]`, `showHint`, `stripOnSend`, `restoreAfterSend` |
 | `usage-reset-sidebar` | `explodex-usage-reset-sidebar` | `compactTemplate`, `refreshIntervalSec`, `refreshPreset` |
 | `feature-flags-settings` | `explodex-feature-flags-settings` | `showSidebarShortcut`, `embedInGeneralSettings` |
-| `views` | `explodex-views-settings` | `showSidebar`, `projectViewThreadCount`, `showProjectContextMenu` |
 | `project-folder-colors` | `explodex-project-colors` | palette, visuals, overrides (see plugin) |
 
 **Reload a plugin during dev** (after `bun run package && bun run inject`):
