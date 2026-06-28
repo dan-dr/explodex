@@ -19,7 +19,7 @@ for script in scripts/*.sh; do
   fi
 done
 
-for ts in scripts/cdp-inject.ts scripts/dev.ts scripts/package-app.ts; do
+for ts in scripts/cdp-inject.ts scripts/dev.ts scripts/package-app.ts scripts/build-npm.ts; do
   bun -e "import './${ts}'"
 done
 
@@ -32,5 +32,7 @@ for json in package.json .mcp.json plugins/*/plugin.json; do
 done
 
 bunx --bun tsc -p sdk/tsconfig.json
+bun run build:npm
+bun test
 
 echo "validate ok"

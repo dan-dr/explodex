@@ -11,7 +11,9 @@ Explodex is a source-first repo. Keep proprietary Codex bundles and extracted re
 | `plugins/<id>/index.js` | Plugin runtime entrypoint |
 | `scripts/cdp-inject.ts` | CDP injector (Bun TypeScript; shell entry `cdp-inject.sh`) |
 | `scripts/dev.ts` | Local dev: package + chrome-devtools-mcp + launch |
-| `scripts/package-app.ts` | Build `dist/Explodex.app` from `templates/explodex-app/` |
+| `scripts/package-app.ts` | Build the source-development `dist/Explodex.app` |
+| `lib/launcher-bundle.mjs` | Generate/repair the lightweight npm-installed launcher |
+| `lib/platform/macos.mjs` | Installed-mode macOS launch state adapter |
 | `scripts/launch.sh` | Launch Codex with remote debugging and inject Explodex |
 | `templates/explodex-app/` | Tracked shell launcher template for the wrapper app |
 | `dist/` | Ignored generated output (`dist/Explodex.app`) |
@@ -74,23 +76,9 @@ Pair with `bun run layout:snapshot` when Codex changes layout between releases.
 
 `bun run inject` (`--inject-only`) connects to whatever is listening on the debug port — including an SSH tunnel to a remote Codex. The **Explodex.app launcher** is stricter: it only takes the “inject into existing instance” fast path when **local** Codex owns port `9333` (or the process is otherwise identifiable as `Codex.app/Contents/MacOS/Codex`). If another process (e.g. `ssh -L 9333:…`) holds the port, the launcher reports a port conflict instead of falsely claiming injection into a running local Codex.
 
-## Install to /Applications
+## Distribution boundary
 
-**Local dev (recommended):** symlink once, then `bun run package` updates the app in place.
-
-```sh
-bun run link:app
-```
-
-Creates `dist/Explodex.app` and symlinks `/Applications/Explodex.app` → `dist/Explodex.app`. Re-run `link:app` only if you replaced the `/Applications` install with a copy.
-
-**Release / offline install:** copy a self-contained bundle (no repo project-root marker).
-
-```sh
-bun run install:app
-```
-
-Both commands bundle repo `plugins/` into `Contents/Resources/plugins/` and create `~/.explodex/plugins` for user-managed plugins. User plugins override bundled plugins with the same ID.
+Production distribution is through the npm registry and supports global installation with pnpm, Bun, npm, or Yarn. The generated user launcher is documented in [installation.md](./installation.md). `bun run package` and `dist/Explodex.app` remain source-development tools only.
 
 ## Validate
 
@@ -98,7 +86,7 @@ Both commands bundle repo `plugins/` into `Contents/Resources/plugins/` and crea
 bun run validate
 ```
 
-Checks shell syntax, Bun/TS syntax, JS entrypoints, and JSON manifests.
+Checks shell syntax, Bun/TS syntax, JS entrypoints, JSON manifests, npm injector build, and launcher tests.
 
 ## Plugin Development
 
@@ -110,6 +98,22 @@ Checks shell syntax, Bun/TS syntax, JS entrypoints, and JSON manifests.
 6. Run `bun run inject` (or `bun run dev` for a fresh session).
 
 Keep plugin state keys namespaced with `explodex-`. When renaming old keys, read legacy keys and write the new key on the next update.
+
+### Use your local `plugins/` checkout
+
+To run the plugins in your working copy instead of the bundled copies, either symlink your checkout into the user plugins directory (user plugins override bundled plugins with the same id):
+
+```sh
+ln -sf "$(pwd)/plugins" ~/.explodex/plugins
+```
+
+or point the user plugins directory at your repo:
+
+```sh
+export EXPLODEX_USER_PLUGINS_DIR="$(pwd)/plugins"
+```
+
+Then run `bun run inject` after editing plugin source.
 
 ## Browser Verification
 

@@ -49,7 +49,7 @@ async function linkApp(): Promise<void> {
     await run(["zsh", iconScript]);
   }
 
-  await packageApp({ release: false });
+  await packageApp();
 
   const bundledPlugins = join(DIST, "Contents", "Resources", "plugins");
   const bundledIds = (await readdir(bundledPlugins)).sort();
@@ -70,17 +70,6 @@ async function linkApp(): Promise<void> {
   }
 
   await chmod(join(DIST, "Contents", "MacOS", "Explodex"), 0o755);
-
-  try {
-    await run(["xattr", "-cr", DIST]);
-  } catch {
-    /* optional */
-  }
-  try {
-    await run(["codesign", "--force", "--deep", "-s", "-", DIST]);
-  } catch {
-    /* optional */
-  }
 
   console.log("");
   console.log("Dev install: /Applications/Explodex.app symlinks to dist/Explodex.app");

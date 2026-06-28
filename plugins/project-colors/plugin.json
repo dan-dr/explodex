@@ -1,0 +1,10 @@
+{
+  "id": "project-colors",
+  "name": "Project Colors",
+  "version": "1.5.0",
+  "entry": "index.js",
+  "documentation": "README.md",
+  "description": "Color-code projects and their threads in the sidebar so you can tell them apart at a glance.",
+  "dynamicLoadable": true,
+  "dynamicUnloadable": true
+}

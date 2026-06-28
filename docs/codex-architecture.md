@@ -356,6 +356,18 @@ Defaults: `color="primary"`, `size="default"`. Uses `no-drag` for Electron title
 
 Controller instance is **not** exposed on `window` — DOM insertion via `document.execCommand('insertText')` or InputEvent is the practical SDK path.
 
+### Selected-text attachments
+
+Assistant Markdown blocks expose `data-selected-text-overlay-target`
+(`markdown-DuQ7-Xtp.js`). Selecting text mounts Codex's native overlay with an
+`onAddSelectedText(selectedText)` React callback (`composer-DhWyK5QW.js`). The
+callback appends a string to composer state field `selectedTextAttachments`;
+Codex renders one aggregate pill (`1 selection`, `2 selections`, …), includes
+the array in local composer context, and clears it after submit. Codex also
+ships a native annotation mode (`annotation-mode-button-*.js`) for attaching
+notes to selections. The DOM attribute is stable; discovering the callback
+through React fiber is fragile.
+
 ### Settings (`setting-storage-II74UqER.js`)
 
 ```typescript
@@ -656,6 +668,10 @@ Patches `webview/index.html`, relaxes CSP, removes `ElectronAsarIntegrity` from 
 
 Paste `sdk/explodex-sdk.js` into console (lost on reload unless CDP pre-inject).
 
+#### npm-installed launcher
+
+Installed mode generates `~/Applications/Explodex.app` locally. Its zsh entry resolves the current global `explodex --from-app` through a login shell; the npm package starts unmodified Codex with `--remote-debugging-port`, injects the packaged SDK/plugins, activates Codex, then exits. It does not run a daemon or override Codex user data. See [installation.md](./installation.md) and [local-development.md](./local-development.md).
+
 ---
 
 ## 12. Risks & stability
@@ -758,7 +774,7 @@ Explodex SDK exposes this as `Explodex.http.get("/wham/usage")`.
 
 ### Explodex plugin: usage sidebar
 
-`plugins/usage-reset-sidebar/index.js` mounts a **view-only** panel at the **top of the left sidebar** showing:
+`plugins/usage-reset-glance/index.js` mounts a **view-only** panel at the **top of the left sidebar** showing:
 
 - Available reset credit count + credit titles (display only — no redeem/consume)
 - Primary/secondary window usage % and reset dates

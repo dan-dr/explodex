@@ -1,22 +1,54 @@
 {
   "name": "explodex",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.2.0",
   "description": "A plugin SDK for extending the Codex desktop app.",
   "types": "sdk/explodex-sdk.d.ts",
+  "bin": {
+    "explodex": "bin/explodex.mjs"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "sdk/explodex-sdk.js",
+    "sdk/explodex-sdk.d.ts",
+    "plugins/",
+    "assets/icon/Explodex.icns"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "os": [
+    "darwin"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dan-dr/explodex.git"
+  },
+  "homepage": "https://github.com/dan-dr/explodex#readme",
+  "bugs": {
+    "url": "https://github.com/dan-dr/explodex/issues"
+  },
+  "keywords": [
+    "codex",
+    "openai",
+    "electron",
+    "plugins",
+    "macos"
+  ],
   "scripts": {
     "dev": "bun scripts/dev.ts",
     "docs:list": "find docs -maxdepth 2 -type f -name '*.md' | sort",
     "inject": "./scripts/launch.sh --inject-only",
     "launch": "./scripts/launch.sh",
     "package": "bun scripts/package-app.ts",
-    "install:app": "bun scripts/install-app.ts",
-    "link:app": "bun scripts/link-app.ts",
     "build:icon": "zsh scripts/build-icon.sh",
     "clean": "zsh scripts/clean.sh",
     "sync": "bun scripts/package-app.ts",
     "validate": "./scripts/validate.sh",
     "layout:snapshot": "bun scripts/cdp-layout-snapshot.ts",
-    "react-devtools": "bun scripts/cdp-react-devtools.ts"
+    "react-devtools": "bun scripts/cdp-react-devtools.ts",
+    "test": "bun test",
+    "build:npm": "bun scripts/build-npm.ts",
+    "prepack": "bun run build:npm"
   }
 }

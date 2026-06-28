@@ -1,0 +1,9 @@
+{
+  "id": "command-menu-threads",
+  "name": "Threads in Command Menu",
+  "version": "1.1.0",
+  "entry": "index.js",
+  "description": "Find any thread from ⌘K — including threads inside collapsed projects, listed first.",
+  "dynamicLoadable": true,
+  "dynamicUnloadable": true
+}

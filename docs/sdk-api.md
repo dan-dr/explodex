@@ -345,15 +345,22 @@ Up/down buttons reorder items (first/last disable at edges).
 
 ---
 
-## `format` — string templates
+## `format` — string templates & time labels
 
 ```ts
 format.template(template, context, { fallback? }?): string
+format.countdown(unixSeconds, { fallback?, past?, ceilMinutes?, includeMinuteRemainder?, dayThresholdHours? }?): string
+format.datetimeCountdown(unixSeconds, { fallback?, pastLabel?, separator?, ceilMinutes?, includeMinuteRemainder?, dayThresholdHours? }?): string
 ```
 
-Replaces `{dot.path}` and `{arr[0].field}` placeholders from a plain object.
+`template` replaces `{dot.path}` and `{arr[0].field}` placeholders from a plain object.
 Unknown paths use `fallback` (default `—`). Used by **Usage & Resets** for the
 compact sidebar row label.
+
+`countdown` and `datetimeCountdown` share one relative-duration helper: minutes under
+an hour, hours under 48 hours (configurable via `dayThresholdHours`), then days.
+`countdown` is compact (`3d`, `5h30m`); `datetimeCountdown` prefixes a locale date/time
+(`Jun 28, 3:45 PM · in 3d`).
 
 ---
 
@@ -642,11 +649,11 @@ Call `registerOptions` from the plugin `setup` callback. The built-in `explodex-
 
 | Plugin | Key | Notable fields |
 |--------|-----|----------------|
-| `command-menu-thread-search` | `explodex-cmdk-thread-search` | `maxThreads`, `minChars` (default 2), `sortBy[]`, `showRecentOnOpen` |
-| `reasoning-effort-prefix` | `explodex-reasoning-effort-prefix` | `enabledPrefixes[]`, `showHint`, `stripOnSend`, `restoreAfterSend` |
-| `usage-reset-sidebar` | `explodex-usage-reset-sidebar` | `compactTemplate`, `refreshIntervalSec`, `refreshPreset` |
-| `feature-flags-settings` | `explodex-feature-flags-settings` | `showSidebarShortcut`, `embedInGeneralSettings` |
-| `project-folder-colors` | `explodex-project-colors` | palette, visuals, overrides (see plugin) |
+| `command-menu-threads` | `explodex-command-menu-threads` | `maxThreads`, `minChars` (default 2), `sortBy[]`, `showRecentOnOpen` |
+| `effort-shortcuts` | `explodex-effort-shortcuts` | `enabledPrefixes[]`, `showHint`, `stripOnSend`, `restoreAfterSend` |
+| `usage-reset-glance` | `explodex-usage-reset-glance` | `compactTemplate`, `refreshIntervalSec`, `refreshPreset` |
+| `feature-flags-playground` | `explodex-feature-flags-playground` | `showSidebarShortcut`, `embedInGeneralSettings` |
+| `project-colors` | `explodex-project-colors` | palette, visuals, overrides (see plugin) |
 
 **Reload a plugin during dev** (after `bun run package && bun run inject`):
 

@@ -20,4 +20,4 @@ tmp_extracted/
 # JavaScript
 node_modules/
 coverage/
-
+tmp

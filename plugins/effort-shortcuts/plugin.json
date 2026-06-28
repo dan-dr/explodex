@@ -1,0 +1,10 @@
+{
+  "id": "effort-shortcuts",
+  "name": "Effort Shortcuts",
+  "version": "2.3.0",
+  "entry": "index.js",
+  "documentation": "README.md",
+  "description": "Set reasoning effort from the composer — type !m or !xh, stripped on send, restored after.",
+  "dynamicLoadable": true,
+  "dynamicUnloadable": true
+}

@@ -346,9 +346,41 @@ export interface FormatTemplateOptions {
   fallback?: string;
 }
 
+export interface FormatDurationOptions {
+  /** Shown when the target time is in the past. Default `0m`. */
+  past?: string;
+  /** Round minutes up (compact labels) or down (paired date/time labels). Default `true`. */
+  ceilMinutes?: boolean;
+  /** Append minute remainder for sub-48h values (e.g. `5h30m`). Default `true`. */
+  includeMinuteRemainder?: boolean;
+  /** Switch to day units at or above this hour count. Default `48`. */
+  dayThresholdHours?: number;
+}
+
+export interface FormatCountdownOptions extends FormatDurationOptions {
+  /** Returned when `unixSeconds` is null/undefined. Default `—`. */
+  fallback?: string;
+}
+
+export interface FormatDatetimeCountdownOptions extends FormatDurationOptions {
+  /** Returned when `unixSeconds` is null/undefined or invalid. Default `—`. */
+  fallback?: string;
+  /** Suffix when the target time has passed. Default `(passed)`. */
+  pastLabel?: string;
+  /** Between the clock time and the relative suffix. Default ` · `. */
+  separator?: string;
+}
+
 export interface FormatAPI {
   /** Replace `{dot.path}` and `{arr[0].field}` placeholders from a context object. */
   template(template: string, context: unknown, options?: FormatTemplateOptions): string;
+  /** Compact relative countdown from a unix timestamp (e.g. `3d`, `5h30m`). */
+  countdown(unixSeconds: number | null | undefined, options?: FormatCountdownOptions): string;
+  /** Locale date/time with a relative countdown suffix (e.g. `Jun 28, 3:45 PM · in 3d`). */
+  datetimeCountdown(
+    unixSeconds: number | null | undefined,
+    options?: FormatDatetimeCountdownOptions,
+  ): string;
 }
 
 /** Styled DOM builders that mirror Codex's look and feel. */
@@ -688,6 +720,28 @@ export interface PluginOptionsHandlers {
   render(container: HTMLElement, ctx: PluginOptionsRenderContext): void;
 }
 
+/** Context passed to a {@link PluginMigration.run} callback. */
+export interface MigrationContext {
+  storage: StorageAPI;
+  bridge: BridgeAPI;
+  pluginId: string;
+  log: PluginLogger;
+  /**
+   * Move a persisted localStorage value from `oldKey` to `newKey`. No-op if
+   * `oldKey` is absent; will not overwrite an existing `newKey`. Returns whether
+   * a value was found to move.
+   */
+  renameKey(oldKey: string, newKey: string): boolean;
+}
+
+/** A single data migration registered via {@link PluginAPI.migrate}. */
+export interface PluginMigration {
+  /** Stable unique id; recorded in the ledger so each migration runs once. */
+  id: string;
+  /** Migration body. May be async. */
+  run(ctx: MigrationContext): void | Promise<void>;
+}
+
 export interface PluginAPI extends ExplodexAPI {
   pluginId: string;
   log: PluginLogger;
@@ -702,6 +756,12 @@ export interface PluginAPI extends ExplodexAPI {
   ): boolean;
   /** Register an options panel for the Explodex settings page. */
   registerOptions(handlers: PluginOptionsHandlers): void;
+  /**
+   * Run plugin-authored data migrations exactly once each. Idempotent via a
+   * per-plugin ledger; safe to call at the top of `setup`. Await it before
+   * reading persisted settings so renamed keys are in place.
+   */
+  migrate(migrations: PluginMigration[]): Promise<void>;
 }
 
 /** Optional teardown returned from a plugin setup callback. */

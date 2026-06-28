@@ -10,12 +10,12 @@ Explodex plugins live in `plugins/<id>/` and include:
 
 | Plugin | Purpose | Doc |
 |--------|---------|-----|
-| `command-menu-thread-search` | Threads first in Cmd+K palette (Cmd+G merge) | [README.md](../../plugins/command-menu-thread-search/README.md) |
-| `reasoning-effort-prefix` | Prefix-driven one-message reasoning effort | [README.md](../../plugins/reasoning-effort-prefix/README.md) |
-| `pin-scope-menu` | Global vs project pin scope menu | [README.md](../../plugins/pin-scope-menu/README.md) |
-| `usage-reset-sidebar` | View-only usage/reset sidebar status (anchors above profile footer) | [README.md](../../plugins/usage-reset-sidebar/README.md) |
-| `feature-flags-settings` | All experimental feature flags with persistent toggles | [README.md](../../plugins/feature-flags-settings/README.md) |
-| `project-folder-colors` | Color-code project folders and threads in the sidebar | [README.md](../../plugins/project-folder-colors/README.md) |
+| `command-menu-threads` | Threads first in Cmd+K palette (Cmd+G merge) | [README.md](../../plugins/command-menu-threads/README.md) |
+| `effort-shortcuts` | Prefix-driven one-message reasoning effort | [README.md](../../plugins/effort-shortcuts/README.md) |
+| `project-pins` | Global vs project pin scope menu | [README.md](../../plugins/project-pins/README.md) |
+| `usage-reset-glance` | View-only usage/reset sidebar status (anchors above profile footer) | [README.md](../../plugins/usage-reset-glance/README.md) |
+| `feature-flags-playground` | All experimental feature flags with persistent toggles | [README.md](../../plugins/feature-flags-playground/README.md) |
+| `project-colors` | Color-code project folders and threads in the sidebar | [README.md](../../plugins/project-colors/README.md) |
 
 Screenshots live in [screenshots/](screenshots/) and are embedded in each plugin README.
 
@@ -25,29 +25,29 @@ Screenshots live in [screenshots/](screenshots/) and are embedded in each plugin
 
 ### Previews
 
-**command-menu-thread-search** — matching threads appear at the top of Cmd+K while you type:
+**command-menu-threads** — matching threads appear at the top of Cmd+K while you type:
 
-![Command menu thread search](screenshots/command-menu-thread-search.png)
+![Command menu thread search](screenshots/command-menu-threads.png)
 
-**reasoning-effort-prefix** — `!m` opens the thinking-levels hint and live-applies medium effort:
+**effort-shortcuts** — `!m` opens the thinking-levels hint and live-applies medium effort:
 
-![Reasoning effort prefix](screenshots/reasoning-effort-prefix.png)
+![Reasoning effort prefix](screenshots/effort-shortcuts.png)
 
-**pin-scope-menu** — project threads get a Global / Project pin chooser:
+**project-pins** — project threads get a Global / Project pin chooser:
 
-![Pin scope menu](screenshots/pin-scope-menu.png)
+![Pin scope menu](screenshots/project-pins.png)
 
-**usage-reset-sidebar** — compact usage row above Settings with a detail popover:
+**usage-reset-glance** — compact usage row above Settings with a detail popover:
 
-![Usage & resets sidebar](screenshots/usage-reset-sidebar.png)
+![Usage & resets sidebar](screenshots/usage-reset-glance.png)
 
-**feature-flags-settings** — sidebar popover and Settings panel for experimental flags:
+**feature-flags-playground** — sidebar popover and Settings panel for experimental flags:
 
-![Feature flags settings](screenshots/feature-flags-settings.png)
+![Feature flags settings](screenshots/feature-flags-playground.png)
 
-**project-folder-colors** — full-width tint on project folders with picker and settings:
+**project-colors** — full-width tint on project folders with picker and settings:
 
-![Project folder colors](screenshots/project-folder-colors.png)
+![Project folder colors](screenshots/project-colors.png)
 
 ## User plugins directory
 

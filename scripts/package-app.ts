@@ -18,11 +18,6 @@ const PLUGINS_SRC = join(ROOT, "plugins");
 const PLUGINS_DST = join(RES, "plugins");
 const ICON_SRC = join(ROOT, "assets", "icon", "Explodex.icns");
 
-export type PackageOptions = {
-  /** Omit repo project-root marker (for /Applications installs). */
-  release?: boolean;
-};
-
 async function pathExists(path: string): Promise<boolean> {
   try {
     await access(path, constants.F_OK);
@@ -38,8 +33,7 @@ async function run(cmd: string[], cwd = ROOT): Promise<void> {
   if (code !== 0) throw new Error(`${cmd.join(" ")} failed with exit code ${code}`);
 }
 
-export async function packageApp(options: PackageOptions = {}): Promise<string> {
-  const release = options.release === true;
+export async function packageApp(): Promise<string> {
   if (!(await pathExists(TEMPLATE))) {
     throw new Error(`Missing app template at ${TEMPLATE}`);
   }
@@ -102,22 +96,7 @@ export async function packageApp(options: PackageOptions = {}): Promise<string> 
     await cp(ICON_SRC, join(RES, "Explodex.icns"));
   }
 
-  if (!release) {
-    await writeFile(join(RES, "explodex-project-root"), ROOT);
-  } else {
-    await rm(join(RES, "explodex-project-root"), { force: true });
-  }
-
-  try {
-    await run(["xattr", "-cr", DIST]);
-  } catch {
-    /* optional */
-  }
-  try {
-    await run(["codesign", "--force", "--deep", "-s", "-", DIST]);
-  } catch {
-    /* optional for local dev */
-  }
+  await writeFile(join(RES, "explodex-project-root"), ROOT);
 
   console.log(`Packaged: ${DIST}`);
   console.log(`  SDK      -> ${join(RES, "explodex-sdk.js")}`);

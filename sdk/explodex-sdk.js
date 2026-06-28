@@ -150,6 +150,7 @@
   const VERSION = "1.2.0";
   const PLUGIN_ENABLED_KEY = "explodex-plugin-enabled";
   const PLUGIN_RESTART_KEY = "explodex-plugin-restart-pending";
+  const MIGRATIONS_LEDGER_PREFIX = "explodex-migrations:";
   const STYLE_ID = "explodex-sdk-style";
   const MOUNT_ATTR = "data-explodex-mount";
   const PLUGIN_ATTR = "data-explodex-plugin";
@@ -1583,6 +1584,30 @@
     return current;
   }
 
+  function formatRelativeDuration(
+    diffMs,
+    {
+      past = "0m",
+      ceilMinutes = true,
+      includeMinuteRemainder = true,
+      dayThresholdHours = 48,
+    } = {},
+  ) {
+    if (diffMs <= 0) return past;
+    const mins = ceilMinutes ? Math.ceil(diffMs / 60_000) : Math.floor(diffMs / 60_000);
+    if (mins < 60) return `${mins}m`;
+    const hours = Math.floor(mins / 60);
+    if (hours < dayThresholdHours) {
+      if (includeMinuteRemainder) {
+        const rem = mins % 60;
+        return rem > 0 ? `${hours}h${rem}m` : `${hours}h`;
+      }
+      return `${hours}h`;
+    }
+    const days = Math.floor(hours / 24);
+    return `${days}d`;
+  }
+
   const format = {
     template(template, context, { fallback = "—" } = {}) {
       if (typeof template !== "string" || !template) return "";
@@ -1591,6 +1616,44 @@
         if (value == null || value === "") return fallback;
         return String(value);
       });
+    },
+
+    /** Compact relative countdown from a unix timestamp (e.g. `3d`, `5h30m`). */
+    countdown(unixSeconds, { fallback = "—", past = "0m", ...durationOptions } = {}) {
+      if (unixSeconds == null) return fallback;
+      const diffMs = unixSeconds * 1000 - Date.now();
+      return formatRelativeDuration(diffMs, { past, ...durationOptions });
+    },
+
+    /** Locale date/time with a relative countdown suffix (e.g. `Jun 28, 3:45 PM · in 3d`). */
+    datetimeCountdown(
+      unixSeconds,
+      {
+        fallback = "—",
+        pastLabel = "(passed)",
+        separator = " · ",
+        ...durationOptions
+      } = {},
+    ) {
+      if (unixSeconds == null) return fallback;
+      const date = new Date(unixSeconds * 1000);
+      if (Number.isNaN(date.getTime())) return fallback;
+      const datePart = new Intl.DateTimeFormat(undefined, {
+        month: "short",
+        day: "numeric",
+      }).format(date);
+      const timePart = new Intl.DateTimeFormat(undefined, {
+        timeStyle: "short",
+      }).format(date);
+      const diffMs = date.getTime() - Date.now();
+      if (diffMs <= 0) return `${datePart} ${timePart} ${pastLabel}`;
+      const relative = formatRelativeDuration(diffMs, {
+        past: "0m",
+        ceilMinutes: false,
+        includeMinuteRemainder: false,
+        ...durationOptions,
+      });
+      return `${datePart} ${timePart}${separator}in ${relative}`;
     },
   };
 
@@ -2415,12 +2478,12 @@
 
   function defaultEnabledState() {
     return {
-      "command-menu-thread-search": true,
-      "usage-reset-sidebar": true,
-      "reasoning-effort-prefix": true,
-      "pin-scope-menu": true,
-      "feature-flags-settings": true,
-      "project-folder-colors": true,
+      "command-menu-threads": true,
+      "usage-reset-glance": true,
+      "effort-shortcuts": true,
+      "project-pins": true,
+      "feature-flags-playground": true,
+      "project-colors": true,
     };
   }
 
@@ -2442,6 +2505,59 @@
     const map = readEnabledMap();
     map[id] = enabled;
     writeEnabledMap(map);
+  }
+
+  // Run plugin-authored data migrations exactly once each. Idempotent via a
+  // per-plugin ledger; crash-safe (a failed migration is not recorded, so it
+  // retries on the next load). Synchronous migrations (e.g. renameKey) apply
+  // immediately so callers can read renamed keys on the next line without
+  // awaiting; async migrations are tracked in the returned promise.
+  function runPluginMigrations(pluginId, migrations, pluginLog) {
+    if (!Array.isArray(migrations) || migrations.length === 0) return Promise.resolve();
+    const ledgerKey = `${MIGRATIONS_LEDGER_PREFIX}${pluginId}`;
+    const applied = new Set(storage.persisted.get(ledgerKey, []) ?? []);
+    const record = (id) => {
+      applied.add(id);
+      storage.persisted.set(ledgerKey, [...applied]);
+      pluginLog.info("migration applied", { id });
+    };
+    const ctx = {
+      storage,
+      bridge,
+      pluginId,
+      log: pluginLog,
+      renameKey(oldKey, newKey) {
+        const val = storage.persisted.get(oldKey, undefined);
+        if (val === undefined) return false;
+        if (storage.persisted.get(newKey, undefined) === undefined) {
+          storage.persisted.set(newKey, val);
+        }
+        storage.persisted.remove(oldKey);
+        return true;
+      },
+    };
+    const pending = [];
+    for (const m of migrations) {
+      if (!m || !m.id || typeof m.run !== "function") continue;
+      if (applied.has(m.id)) continue;
+      try {
+        const result = m.run(ctx);
+        if (result && typeof result.then === "function") {
+          pending.push(
+            result.then(
+              () => record(m.id),
+              (err) =>
+                pluginLog.error("migration failed (will retry next load)", { id: m.id, err }),
+            ),
+          );
+        } else {
+          record(m.id);
+        }
+      } catch (err) {
+        pluginLog.error("migration failed (will retry next load)", { id: m.id, err });
+      }
+    }
+    return Promise.all(pending);
   }
 
   function normalizeManifest(manifest = {}) {
@@ -2488,6 +2604,8 @@
           pluginOptionsHandlers.set(id, handlers);
         }
       },
+      migrate: (migrations) =>
+        runPluginMigrations(id, migrations, log.plugin(id)),
     };
 
     const pluginLog = log.plugin(id);

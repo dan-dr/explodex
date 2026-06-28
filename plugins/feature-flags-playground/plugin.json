@@ -1,0 +1,9 @@
+{
+  "id": "feature-flags-playground",
+  "name": "Feature Flags Playground",
+  "version": "1.5.0",
+  "entry": "index.js",
+  "description": "Toggle Codex's experimental feature flags from Settings — changes persist across restarts.",
+  "dynamicLoadable": true,
+  "dynamicUnloadable": true
+}

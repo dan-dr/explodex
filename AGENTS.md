@@ -29,6 +29,8 @@ When you change behavior, discover new Codex internals, or fix a plugin based on
 3. Prefer `extracted/webview/assets/` chunk names and bridge `type` strings that survive minification greps.
 4. Do not duplicate large sections — link and add a short delta.
 
+When changing SDK behavior, update [docs/sdk-api.md](docs/sdk-api.md) and [sdk/explodex-sdk.d.ts](sdk/explodex-sdk.d.ts) in the same change.
+
 ### `research` / `document` requests
 
 When the user says **research**, **document**, **map**, **research/document**, or similar:

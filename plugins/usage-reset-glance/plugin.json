@@ -1,0 +1,11 @@
+{
+  "id": "usage-reset-glance",
+  "name": "Usage and Reset Glance",
+  "version": "1.3.0",
+  "entry": "index.js",
+  "documentation": "README.md",
+  "description": "Always-on usage and credit-reset status in the sidebar — no clicking required.",
+  "viewOnly": true,
+  "dynamicLoadable": true,
+  "dynamicUnloadable": true
+}
