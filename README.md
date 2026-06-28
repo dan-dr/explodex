@@ -6,12 +6,12 @@ Explodex is an extension SDK for OpenAI's [Codex](https://openai.com/codex) desk
 
 [**Install in 30 seconds**](#install) · [Included plugins](#included-plugins) · [Build a plugin](#build-your-own-plugin) · [Docs](#docs)
 
-<video src="https://github.com/user-attachments/assets/7cc60fed-cdc1-4083-8800-c493e2aa8025" width="100%" controls autoplay loop muted></video>
-
 ```sh
 npm install -g explodex
 explodex
 ```
+
+<video src="https://github.com/user-attachments/assets/7cc60fed-cdc1-4083-8800-c493e2aa8025" width="100%" controls autoplay loop muted></video>
 
 ## Why
 
