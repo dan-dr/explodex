@@ -40,8 +40,106 @@
       dynamicUnloadable: true,
     },
     (api) => {
-      const { composer, bridge, codex, ui, components: c, log } = api;
+      const { composer, bridge, codex, ui, components: c, log, storage, registerOptions } = api;
       log.info("setup start (option D)");
+
+      const SETTINGS_KEY = "explodex-reasoning-effort-prefix";
+      const ALL_PREFIXES = LEVEL_CATALOG.map((level) => level.prefix);
+
+      function defaultSettings() {
+        return {
+          enabledPrefixes: [...ALL_PREFIXES],
+          showHint: true,
+          stripOnSend: true,
+          restoreAfterSend: true,
+        };
+      }
+
+      function normalizeSettings(raw) {
+        const base = defaultSettings();
+        if (!raw || typeof raw !== "object") return base;
+        const enabledPrefixes = Array.isArray(raw.enabledPrefixes)
+          ? ALL_PREFIXES.filter((prefix) => raw.enabledPrefixes.includes(prefix))
+          : base.enabledPrefixes;
+        return {
+          enabledPrefixes: enabledPrefixes.length ? enabledPrefixes : base.enabledPrefixes,
+          showHint: raw.showHint !== false,
+          stripOnSend: raw.stripOnSend !== false,
+          restoreAfterSend: raw.restoreAfterSend !== false,
+        };
+      }
+
+      let settings = normalizeSettings(storage.persisted.get(SETTINGS_KEY, null));
+
+      function saveSettings() {
+        storage.persisted.set(SETTINGS_KEY, settings);
+      }
+
+      function loadSettings() {
+        settings = normalizeSettings(storage.persisted.get(SETTINGS_KEY, null));
+      }
+
+      function isPrefixEnabled(prefix) {
+        return settings.enabledPrefixes.includes(prefix);
+      }
+
+      function renderOptionsPanel(container) {
+        container.replaceChildren();
+        const fields = LEVEL_CATALOG.map((level) =>
+          c.checkboxField({
+            label: `!${level.prefix} — ${level.label}`,
+            checked: settings.enabledPrefixes.includes(level.prefix),
+            onChange: (checked) => {
+              const next = new Set(settings.enabledPrefixes);
+              if (checked) next.add(level.prefix);
+              else next.delete(level.prefix);
+              settings.enabledPrefixes = ALL_PREFIXES.filter((prefix) => next.has(prefix));
+              saveSettings();
+            },
+          }),
+        );
+        fields.push(
+          c.checkboxField({
+            label: "Show thinking-level hint",
+            checked: settings.showHint,
+            onChange: (value) => {
+              settings.showHint = value;
+              saveSettings();
+              if (!value && hintOpen) closeHint();
+            },
+          }),
+        );
+        fields.push(
+          c.checkboxField({
+            label: "Strip prefix when sending",
+            checked: settings.stripOnSend,
+            onChange: (value) => {
+              settings.stripOnSend = value;
+              saveSettings();
+              renderOptionsPanel(container);
+            },
+          }),
+        );
+        if (!settings.stripOnSend) {
+          fields.push(
+            c.metaText("Prefix text will remain in the sent message when stripping is disabled."),
+          );
+        }
+        fields.push(
+          c.checkboxField({
+            label: "Restore previous effort after send",
+            checked: settings.restoreAfterSend,
+            onChange: (value) => {
+              settings.restoreAfterSend = value;
+              saveSettings();
+            },
+          }),
+        );
+        container.appendChild(c.fieldStack(fields));
+      }
+
+      registerOptions({ render: renderOptionsPanel });
+      loadSettings();
 
       let modelCache = { at: 0, model: null, effort: null, levels: [], models: [] };
       let hintOpen = false;
@@ -242,6 +340,7 @@
 
         const body = trimmed.slice(1);
         for (const level of PREFIX_ORDER) {
+          if (!isPrefixEnabled(level.prefix)) continue;
           const re = new RegExp(`^${level.prefix}(?:\\s+|$)`, "i");
           if (!re.test(body)) continue;
           const consumed = 1 + level.prefix.length;
@@ -252,6 +351,7 @@
       }
 
       function shouldShowHint(text) {
+        if (!settings.showHint) return false;
         const trimmed = text.trimStart();
         if (!trimmed.startsWith("!")) return false;
         if (trimmed === "!") return true;
@@ -261,7 +361,9 @@
         // the level and is writing their prompt — close the hint popover.
         if (/\s/.test(partial)) return false;
 
-        return PREFIX_ORDER.some((l) => l.prefix.startsWith(partial.toLowerCase()));
+        return PREFIX_ORDER.some(
+          (l) => isPrefixEnabled(l.prefix) && l.prefix.startsWith(partial.toLowerCase()),
+        );
       }
 
       const HINT_WIDTH = 320;
@@ -519,6 +621,7 @@
       }
 
       function scheduleRestoreAfterSubmit() {
+        if (!settings.restoreAfterSend) return;
         markSubmitRestorePending();
         clearRestoreAfterSubmitTimer();
         restoreAfterSubmitTimer = global.setTimeout(() => {
@@ -558,6 +661,7 @@
       }
 
       function stripPrefixForSubmit(prompt) {
+        if (!settings.stripOnSend) return;
         suppressDisarmOnInput = true;
         setComposerText(prompt);
         closeHint();
@@ -607,9 +711,9 @@
           }
         }
 
-        markSubmitRestorePending();
+        if (settings.restoreAfterSend) markSubmitRestorePending();
         stripPrefixForSubmit(parsed.prompt);
-        scheduleRestoreAfterSubmit();
+        if (settings.restoreAfterSend) scheduleRestoreAfterSubmit();
 
         if (needsFlush) {
           allowNativeSubmitOnce = true;
@@ -788,7 +892,7 @@
 
         markSubmitRestorePending();
         stripPrefixForSubmit(parsed.prompt);
-        scheduleRestoreAfterSubmit();
+        if (settings.restoreAfterSend) scheduleRestoreAfterSubmit();
       }
 
       function onPointerDown(event) {
@@ -815,7 +919,7 @@
 
         markSubmitRestorePending();
         stripPrefixForSubmit(parsed.prompt);
-        scheduleRestoreAfterSubmit();
+        if (settings.restoreAfterSend) scheduleRestoreAfterSubmit();
       }
 
       function onInput() {

@@ -270,6 +270,87 @@ export interface StatusToastOptions {
   duration?: number;
 }
 
+export interface FieldRowOptions {
+  label?: string;
+  control?: Node;
+  hint?: string;
+}
+
+export interface CheckboxFieldOptions {
+  label?: string;
+  checked?: boolean;
+  onChange?: (checked: boolean) => void;
+}
+
+export interface RadioFieldOptions {
+  label?: string;
+  name?: string;
+  value?: string;
+  checked?: boolean;
+  onChange?: (value: string | undefined) => void;
+}
+
+export interface NumberFieldOptions {
+  label?: string;
+  value?: number;
+  min?: number;
+  max?: number;
+  onChange?: (value: number) => void;
+}
+
+export interface TextFieldOptions {
+  label?: string;
+  value?: string;
+  placeholder?: string;
+  monospace?: boolean;
+  onChange?: (value: string) => void;
+}
+
+export interface SelectFieldOption {
+  value: string;
+  label?: string;
+}
+
+export interface SelectFieldOptions {
+  label?: string;
+  value?: string;
+  options?: SelectFieldOption[];
+  onChange?: (value: string) => void;
+}
+
+export interface SectionOptions {
+  title?: string;
+  hint?: string;
+  children?: Node | Node[] | (() => Node);
+}
+
+export interface SectionResult {
+  el: HTMLDivElement;
+  body: HTMLDivElement;
+}
+
+export interface SortableListItem {
+  id: string;
+  label?: string;
+}
+
+export interface SortableListOptions {
+  label?: string;
+  items?: SortableListItem[];
+  onReorder?: (ids: string[]) => void;
+  renderLabel?: (item: SortableListItem) => string;
+}
+
+export interface FormatTemplateOptions {
+  /** Substituted when a path resolves to null/undefined/empty. Default `—`. */
+  fallback?: string;
+}
+
+export interface FormatAPI {
+  /** Replace `{dot.path}` and `{arr[0].field}` placeholders from a context object. */
+  template(template: string, context: unknown, options?: FormatTemplateOptions): string;
+}
+
 /** Styled DOM builders that mirror Codex's look and feel. */
 export interface ComponentsAPI {
   button(options?: ButtonOptions): HTMLButtonElement;
@@ -279,6 +360,16 @@ export interface ComponentsAPI {
   panel(options?: PanelOptions): HTMLDivElement;
   /** Show a transient status toast in a fixed overlay. */
   statusToast(message: string, options?: StatusToastOptions): void;
+  metaText(text?: string): HTMLDivElement;
+  fieldRow(options?: FieldRowOptions): HTMLDivElement;
+  checkboxField(options?: CheckboxFieldOptions): HTMLLabelElement;
+  radioField(options?: RadioFieldOptions): HTMLLabelElement;
+  numberField(options?: NumberFieldOptions): HTMLDivElement;
+  textField(options?: TextFieldOptions): HTMLDivElement;
+  selectField(options?: SelectFieldOptions): HTMLDivElement;
+  section(options?: SectionOptions): SectionResult;
+  sortableList(options?: SortableListOptions): HTMLDivElement;
+  fieldStack(children?: Node[]): HTMLDivElement;
 }
 
 // ─── Composer ─────────────────────────────────────────────────────────────
@@ -681,6 +772,7 @@ export interface ExplodexAPI {
   zoneDefinitions: Record<ZoneId, ZoneDefinition>;
   inject: InjectAPI;
   components: ComponentsAPI;
+  format: FormatAPI;
   storage: StorageAPI;
   bridge: BridgeAPI;
   http: HttpAPI;

@@ -35,6 +35,22 @@ Project pin membership is stored in **Codex global state** (`set-global-state`),
 
 On first load, any renderer localStorage pin map is migrated into global state.
 
+### Project pin indicator (v1.2.4+)
+
+Project-pinned threads (not globally pinned) show an always-visible white pushpin in the sidebar status slot (`group-hover:hidden` area). Codex hides action buttons—including pin—inside an `opacity-0 group-hover:opacity-100` wrapper, so button-only CSS cannot keep the icon visible. The plugin injects a small SVG indicator there and hides the default status glyph while pinned. Clicking the indicator opens the same Global / Project pin scope menu as the native pin button. Global pins use Codex's native globe indicator only — Explodex does not add a pushpin for them.
+
+At rest, the filled white pushpin sits beside the thread timestamp with a small gap (v1.2.8+). On hover, Codex hides the timestamp slot natively and the hover action strip shows the native pin button styled white (not the default hollow/muted icon).
+
+### Project pin ordering (v1.2.7+)
+
+Pin-to-project reorders the sidebar immediately (`flushProjectPinReorder`) before persisting `sidebar-project-thread-orders`, instead of waiting only on the debounced mutation reconcile.
+
+### Mutual exclusivity (v1.2.6+)
+
+A thread cannot be globally and project-pinned at the same time. Pinning one scope clears the other. Reconcile also drops stale project-pin map entries when Codex reports the thread as globally pinned.
+
+Global pin/unpin uses the native sidebar pin button (`allowNativePin` bypass) because `set-thread-pinned` RPC from the plugin context returns `success: false` for this Codex build.
+
 ### Performance (v1.2.2+)
 
 - Mutation observer is scoped to the sidebar `nav` (`Scheduled task folders` landmark;

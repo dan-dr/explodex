@@ -33,7 +33,7 @@
     {
       id: "pin-scope-menu",
       name: "Pin Scope Menu",
-      version: "1.2.3",
+      version: "1.2.8",
       dynamicLoadable: true,
       dynamicUnloadable: true,
     },
@@ -232,8 +232,34 @@
         return null;
       }
 
-      function resolvePinContext(pinButton) {
-        const row = sidebarThreadRow(pinButton);
+      function findPinButton(target) {
+        const btn = target?.closest?.("button");
+        if (!btn || btn.disabled) return null;
+        const label = btn.getAttribute("aria-label") ?? "";
+        if (!PIN_LABEL_RE.test(label.trim())) return null;
+        if (!btn.querySelector("svg")) return null;
+        return btn;
+      }
+
+      function findProjectPinIndicator(target) {
+        return target?.closest?.("[data-explodex-project-pin-indicator]") ?? null;
+      }
+
+      function findPinScopeAnchor(target) {
+        return findPinButton(target) ?? findProjectPinIndicator(target);
+      }
+
+      function pinButtonForRow(row) {
+        if (!row) return null;
+        for (const btn of row.querySelectorAll("button")) {
+          if (findPinButton(btn)) return btn;
+        }
+        return null;
+      }
+
+      function resolvePinContext(anchor) {
+        const row =
+          sidebarThreadRow(anchor) ?? anchor?.closest?.("[data-app-action-sidebar-thread-id]");
         const conversationId = row
           ? conversationIdFromThreadRow(row)
           : getActiveConversationId();
@@ -241,15 +267,18 @@
 
         const threadKey = localThreadKey(conversationId);
         const projectId =
-          projectIdFromFiber(row ?? pinButton) ??
-          projectIdFromDomScan(threadKey);
+          projectIdFromFiber(row ?? anchor) ?? projectIdFromDomScan(threadKey);
 
         const globalPinned = row
           ? row.getAttribute("data-app-action-sidebar-thread-pinned") === "true"
           : null;
 
+        const menuAnchor =
+          findPinButton(anchor) ?? findProjectPinIndicator(anchor) ?? anchor;
+
         return {
-          pinButton,
+          pinButton: menuAnchor,
+          nativePinButton: pinButtonForRow(row),
           conversationId,
           threadKey,
           projectId,
@@ -303,16 +332,44 @@
         return Array.isArray(ids) ? ids : [];
       }
 
-      async function isGloballyPinned(threadKey, knownPinned = null) {
-        if (knownPinned != null) return knownPinned;
-        const ids = await listGloballyPinnedIds();
-        return ids.includes(threadKey);
+      function globalPinIdCandidates(threadKey) {
+        const conversationId = normalizeConversationId(threadKey);
+        const candidates = [];
+        if (conversationId) candidates.push(conversationId);
+        if (threadKey) candidates.push(threadKey);
+        if (conversationId) candidates.push(localThreadKey(conversationId));
+        return [...new Set(candidates)];
       }
 
-      async function setGlobalPin(threadKey, pinned) {
-        await bridge.rpc("set-thread-pinned", {
-          params: { threadId: threadKey, pinned },
-        });
+      async function isGloballyPinned(threadKey) {
+        const ids = new Set(await listGloballyPinnedIds());
+        return globalPinIdCandidates(threadKey).some((id) => ids.has(id));
+      }
+
+      async function setGlobalPinState(threadKey, pinned, nativePinButton = null) {
+        const currentlyPinned = await isGloballyPinned(threadKey);
+        if (currentlyPinned === pinned) return;
+
+        const row = document.querySelector(
+          `[data-app-action-sidebar-thread-id="${threadKey}"]`,
+        );
+        const pinButton =
+          nativePinButton?.isConnected ? nativePinButton : pinButtonForRow(row);
+        if (pinButton?.isConnected) {
+          triggerNativePin(pinButton);
+          for (let attempt = 0; attempt < 20; attempt += 1) {
+            await new Promise((resolve) => global.setTimeout(resolve, 50));
+            if ((await isGloballyPinned(threadKey)) === pinned) return;
+          }
+        }
+
+        for (const id of globalPinIdCandidates(threadKey)) {
+          const res = await bridge.rpc("set-thread-pinned", {
+            params: { threadId: id, pinned },
+          });
+          if (res?.success !== false && (await isGloballyPinned(threadKey)) === pinned) return;
+        }
+        throw new Error("set-thread-pinned failed");
       }
 
       async function readProjectOrders() {
@@ -324,15 +381,22 @@
       }
 
       async function writeProjectOrders(orders) {
-        await storage.globalState.set(GLOBAL_STATE_KEYS.projectOrders, orders);
         applySidebarDomReorder(orders);
+        await storage.globalState.set(GLOBAL_STATE_KEYS.projectOrders, orders);
       }
 
+      const PIN_INDICATOR_SVG_PATH =
+        "M12.8636 3.26029C13.9444 1.74708 16.1254 1.56658 17.4403 2.88151L21.1185 6.55974C22.4335 7.87467 22.2529 10.0556 20.7397 11.1364L16.4786 14.1801C16.1638 14.405 16 14.7306 16 15V17.5C16 18.907 15.0409 19.9513 13.976 20.4105C12.9046 20.8724 11.4792 20.8468 10.4568 19.8244L8.02332 17.3909L3.70711 21.7071C3.31658 22.0977 2.68342 22.0977 2.29289 21.7071C1.90237 21.3166 1.90237 20.6835 2.29289 20.2929L6.60911 15.9767L4.17567 13.5433C3.1532 12.5208 3.12762 11.0955 3.58957 10.024C4.04871 8.95911 5.09306 8.00003 6.5 8.00003H9C9.26948 8.00003 9.59505 7.83624 9.81994 7.52139L12.8636 3.26029Z";
+
       const PIN_SCOPE_STYLE_TEXT =
-        'nav [data-app-action-sidebar-thread-pinned="true"] button[aria-label="Unpin chat"],' +
-        'nav [data-explodex-project-pinned="true"] button[aria-label="Pin chat"]{' +
-        "opacity:1!important;color:var(--color-text-primary,#fff)!important}" +
-        'nav [data-explodex-project-pinned="true"] button[aria-label="Pin chat"] svg path{' +
+        'nav [data-explodex-project-pinned="true"] [data-explodex-project-pin-indicator]{' +
+        "display:inline-flex!important;margin-right:6px!important;vertical-align:middle;" +
+        "opacity:1!important;color:#fff!important;cursor:pointer}" +
+        'nav [data-explodex-project-pinned="true"] [class*="group-hover:opacity-100"] button[aria-label="Pin chat"],' +
+        'nav [data-explodex-project-pinned="true"] [class*="group-hover:opacity-100"] button[aria-label="Unpin chat"]{' +
+        "opacity:1!important;color:#fff!important}" +
+        'nav [data-explodex-project-pinned="true"] [class*="group-hover:opacity-100"] button[aria-label="Pin chat"] svg path,' +
+        'nav [data-explodex-project-pinned="true"] [class*="group-hover:opacity-100"] button[aria-label="Unpin chat"] svg path{' +
         "fill:currentColor!important}";
 
       function ensurePinScopeStyles() {
@@ -357,6 +421,105 @@
         return assignedProject === sidebarProject;
       }
 
+      function projectPinStatusSlot(row) {
+        const listItem = row?.closest?.('[role="listitem"]');
+        if (!listItem) return null;
+        for (const candidate of listItem.querySelectorAll("*")) {
+          const className = candidate.className;
+          if (typeof className !== "string" || !className.includes("group-hover:hidden")) {
+            continue;
+          }
+          if (className.includes("group-hover:opacity-100")) continue;
+          return candidate;
+        }
+        return null;
+      }
+
+      function createProjectPinIndicator() {
+        const wrap = document.createElement("span");
+        wrap.setAttribute("data-explodex-project-pin-indicator", "true");
+        wrap.setAttribute("role", "button");
+        wrap.setAttribute("tabindex", "-1");
+        wrap.setAttribute("aria-label", "Pin chat");
+        wrap.className = "inline-flex shrink-0 items-center justify-center cursor-pointer";
+
+        const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        svg.setAttribute("width", "16");
+        svg.setAttribute("height", "16");
+        svg.setAttribute("viewBox", "0 0 24 24");
+        svg.setAttribute("fill", "none");
+        svg.classList.add("icon-2xs", "no-drag", "shrink-0");
+        svg.style.color = "#fff";
+
+        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        path.setAttribute("d", PIN_INDICATOR_SVG_PATH);
+        path.setAttribute("fill", "currentColor");
+        svg.appendChild(path);
+        wrap.appendChild(svg);
+        bindProjectPinIndicator(wrap);
+        return wrap;
+      }
+
+      function bindProjectPinIndicator(wrap) {
+        if (wrap.dataset.explodexPinScopeBound === "true") return;
+        wrap.dataset.explodexPinScopeBound = "true";
+        wrap.addEventListener(
+          "pointerdown",
+          (event) => {
+            void activatePinScopeFromEvent(event);
+          },
+          true,
+        );
+      }
+
+      function ensureProjectPinIndicator(row) {
+        const slot = projectPinStatusSlot(row);
+        if (!slot) return false;
+        const existing = slot.querySelector("[data-explodex-project-pin-indicator]");
+        if (existing) {
+          bindProjectPinIndicator(existing);
+          return false;
+        }
+        slot.prepend(createProjectPinIndicator());
+        return true;
+      }
+
+      function removeProjectPinIndicator(row) {
+        const indicator = projectPinStatusSlot(row)?.querySelector(
+          "[data-explodex-project-pin-indicator]",
+        );
+        if (!indicator) return false;
+        indicator.remove();
+        return true;
+      }
+
+      function shouldShowProjectPinIndicator(row, threadKey) {
+        if (row.getAttribute("data-app-action-sidebar-thread-pinned") === "true") return false;
+        if (!isThreadProjectPinned(threadKey)) return false;
+        return true;
+      }
+
+      async function reconcileExclusivePins() {
+        if (!bridge.isAvailable()) return false;
+        const globalIds = new Set(await listGloballyPinnedIds());
+        const pins = readProjectPins();
+        const nextPins = { ...pins };
+        let changed = false;
+
+        for (const conversationId of Object.keys(pins)) {
+          const candidates = globalPinIdCandidates(localThreadKey(conversationId));
+          if (candidates.some((id) => globalIds.has(id))) {
+            delete nextPins[conversationId];
+            changed = true;
+          }
+        }
+
+        if (!changed) return false;
+        await writeProjectPins(nextPins);
+        log.debug("cleared project pins that conflicted with global pins");
+        return true;
+      }
+
       function syncProjectPinVisuals() {
         ensurePinScopeStyles();
         let changed = false;
@@ -364,13 +527,19 @@
           const threadKey = el.getAttribute("data-app-action-sidebar-thread-id");
           if (!threadKey) continue;
 
-          const shouldPin = isThreadProjectPinned(threadKey);
+          const shouldPin = shouldShowProjectPinIndicator(el, threadKey);
           const isMarked = el.getAttribute("data-explodex-project-pinned") === "true";
           if (shouldPin && !isMarked) {
             el.setAttribute("data-explodex-project-pinned", "true");
+            if (ensureProjectPinIndicator(el)) changed = true;
             changed = true;
           } else if (!shouldPin && isMarked) {
             el.removeAttribute("data-explodex-project-pinned");
+            if (removeProjectPinIndicator(el)) changed = true;
+            changed = true;
+          } else if (shouldPin && isMarked && ensureProjectPinIndicator(el)) {
+            changed = true;
+          } else if (!shouldPin && !isMarked && removeProjectPinIndicator(el)) {
             changed = true;
           }
         }
@@ -552,8 +721,13 @@
         if (disposed || reconcileInFlight || !bridge.isAvailable()) return;
         await hydrateProjectPins();
         if (disposed) return;
+        await reconcileExclusivePins();
+        if (disposed) return;
         const pins = readProjectPins();
-        if (Object.keys(pins).length === 0) return;
+        if (Object.keys(pins).length === 0) {
+          syncProjectPinVisuals();
+          return;
+        }
 
         reconcileInFlight = true;
         try {
@@ -576,16 +750,23 @@
 
       function scheduleProjectPinReconcile() {
         if (disposed) return;
-        const pins = readProjectPins();
-        if (Object.keys(pins).length === 0) {
-          syncProjectPinVisuals();
-          return;
-        }
-        if (reconcileTimer != null) global.clearTimeout(reconcileTimer);
-        reconcileTimer = global.setTimeout(() => {
-          reconcileTimer = null;
-          reconcileProjectPins();
-        }, RECONCILE_DEBOUNCE_MS);
+        void hydrateProjectPins()
+          .then(() => {
+            if (disposed) return;
+            return reconcileExclusivePins();
+          })
+          .then(() => {
+            if (disposed) return;
+            syncProjectPinVisuals();
+            const pins = readProjectPins();
+            if (Object.keys(pins).length === 0) return;
+            if (reconcileTimer != null) global.clearTimeout(reconcileTimer);
+            reconcileTimer = global.setTimeout(() => {
+              reconcileTimer = null;
+              reconcileProjectPins();
+            }, RECONCILE_DEBOUNCE_MS);
+          })
+          .catch((err) => log.warn("project pin schedule failed", err));
       }
 
       function bindSidebarObserver() {
@@ -606,22 +787,35 @@
         });
       }
 
-      async function moveThreadToProjectTop(threadKey, conversationId, projectId) {
+      async function flushProjectPinReorder() {
+        if (!bridge.isAvailable()) return;
+        await hydrateProjectPins();
+        if (disposed) return;
         const pins = readProjectPins();
-        pins[conversationId] = projectId;
+        if (Object.keys(pins).length === 0) {
+          syncProjectPinVisuals();
+          return;
+        }
         const orders = await readProjectOrders();
+        if (disposed) return;
         const next = applyProjectPinOrder(orders, pins);
-        if (next.changed) await writeProjectOrders(next.orders);
+        if (disposed) return;
+        if (next.changed) {
+          await writeProjectOrders(next.orders);
+        } else {
+          applySidebarDomReorder(orders);
+          syncProjectPinVisuals();
+        }
       }
 
-      async function pinToProject(threadKey, conversationId, projectId) {
-        const pins = readProjectPins();
+      async function pinToProject(threadKey, conversationId, projectId, nativePinButton = null) {
         if (await isGloballyPinned(threadKey)) {
-          await setGlobalPin(threadKey, false);
+          await setGlobalPinState(threadKey, false, nativePinButton);
         }
+        const pins = readProjectPins();
         pins[conversationId] = projectId;
         await writeProjectPins(pins);
-        await moveThreadToProjectTop(threadKey, conversationId, projectId);
+        await flushProjectPinReorder();
       }
 
       async function unpinFromProject(conversationId) {
@@ -630,15 +824,6 @@
         delete pins[conversationId];
         await writeProjectPins(pins);
         scheduleProjectPinReconcile();
-      }
-
-      function findPinButton(target) {
-        const btn = target?.closest?.("button");
-        if (!btn || btn.disabled) return null;
-        const label = btn.getAttribute("aria-label") ?? "";
-        if (!PIN_LABEL_RE.test(label.trim())) return null;
-        if (!btn.querySelector("svg")) return null;
-        return btn;
       }
 
       function closeMenu() {
@@ -669,7 +854,10 @@
         return btn;
       }
 
-      function openMenu(anchor, { conversationId, threadKey, projectId, globalPinned, projectPinned }) {
+      function openMenu(
+        anchor,
+        { conversationId, threadKey, projectId, globalPinned, projectPinned, nativePinButton },
+      ) {
         closeMenu();
         menuOpen = true;
 
@@ -695,7 +883,13 @@
             label: "Global",
             active: globalPinned,
             onClick: () =>
-              handleGlobalChoice(conversationId, threadKey, projectId, globalPinned),
+              handleGlobalChoice(
+                conversationId,
+                threadKey,
+                projectId,
+                globalPinned,
+                nativePinButton,
+              ),
           }),
         );
         panel.appendChild(
@@ -703,7 +897,13 @@
             label: "Project",
             active: projectPinned,
             onClick: () =>
-              handleProjectChoice(conversationId, threadKey, projectId, projectPinned),
+              handleProjectChoice(
+                conversationId,
+                threadKey,
+                projectId,
+                projectPinned,
+                nativePinButton,
+              ),
           }),
         );
 
@@ -730,27 +930,43 @@
       function triggerNativePin(pinButton) {
         if (disposed || !pinButton?.isConnected) return;
         allowNativePin = true;
-        suppressNextPinClick = false;
+        suppressNextPinClick = true;
+        pinButton.dispatchEvent(
+          new PointerEvent("pointerdown", {
+            bubbles: true,
+            cancelable: true,
+            button: 0,
+            view: global,
+          }),
+        );
         pinButton.click();
         global.setTimeout(() => {
           allowNativePin = false;
-        }, 0);
+          suppressNextPinClick = false;
+        }, 50);
       }
 
-      async function handleGlobalChoice(conversationId, threadKey, projectId, wasGlobalPinned) {
+      async function handleGlobalChoice(
+        conversationId,
+        threadKey,
+        projectId,
+        wasGlobalPinned,
+        nativePinButton,
+      ) {
         if (!bridge.isAvailable()) {
           c.statusToast("Bridge unavailable");
           return;
         }
         try {
           if (wasGlobalPinned) {
-            await setGlobalPin(threadKey, false);
+            await setGlobalPinState(threadKey, false, nativePinButton);
             c.statusToast("Unpinned globally");
             scheduleProjectPinReconcile();
             return;
           }
           await unpinFromProject(conversationId);
-          await setGlobalPin(threadKey, true);
+          syncProjectPinVisuals();
+          await setGlobalPinState(threadKey, true, nativePinButton);
           c.statusToast("Pinned globally");
           scheduleProjectPinReconcile();
         } catch (err) {
@@ -759,7 +975,13 @@
         }
       }
 
-      async function handleProjectChoice(conversationId, threadKey, projectId, wasProjectPinned) {
+      async function handleProjectChoice(
+        conversationId,
+        threadKey,
+        projectId,
+        wasProjectPinned,
+        nativePinButton,
+      ) {
         if (!bridge.isAvailable()) {
           c.statusToast("Bridge unavailable");
           return;
@@ -771,9 +993,8 @@
             scheduleProjectPinReconcile();
             return;
           }
-          await pinToProject(threadKey, conversationId, projectId);
+          await pinToProject(threadKey, conversationId, projectId, nativePinButton);
           c.statusToast("Pinned to project");
-          scheduleProjectPinReconcile();
         } catch (err) {
           log.error("project pin failed", err);
           c.statusToast("Failed to update project pin");
@@ -796,9 +1017,10 @@
           const projectId = ctx.projectId ?? assignmentProjectId;
           if (!projectId) return false;
 
-          const globalPinned = await isGloballyPinned(ctx.threadKey, ctx.globalPinned);
+          const globalPinned = await isGloballyPinned(ctx.threadKey);
           if (disposed) return false;
           const projectPinned =
+            !globalPinned &&
             isProjectPinned(ctx.conversationId) &&
             projectIdForPinned(ctx.conversationId) === projectId;
 
@@ -808,6 +1030,7 @@
             projectId,
             globalPinned,
             projectPinned,
+            nativePinButton: ctx.nativePinButton,
           });
           return true;
         } catch (err) {
@@ -816,54 +1039,40 @@
         }
       }
 
-      function onPinPointerDown(event) {
-        if (allowNativePin) {
-          allowNativePin = false;
-          return;
-        }
-        if (event.button !== 0) return;
+      async function activatePinScopeFromEvent(event, { fromClick = false } = {}) {
+        if (allowNativePin) return;
+        if (!fromClick && event.button !== 0) return;
         if (menuOpen) return;
 
-        const pinButton = findPinButton(event.target);
-        if (!pinButton) return;
+        const anchor = findPinScopeAnchor(event.target);
+        if (!anchor) return;
 
-        const ctx = resolvePinContext(pinButton);
+        const ctx = resolvePinContext(anchor);
         if (!ctx) return;
 
         event.preventDefault();
         event.stopPropagation();
         event.stopImmediatePropagation?.();
 
-        suppressNextPinClick = true;
-        void openMenuWithFreshState(ctx).then((opened) => {
-          if (!opened) triggerNativePin(pinButton);
-        });
+        if (fromClick) {
+          if (suppressNextPinClick) {
+            suppressNextPinClick = false;
+            return;
+          }
+        } else {
+          suppressNextPinClick = true;
+        }
+
+        const opened = await openMenuWithFreshState(ctx);
+        if (!opened) triggerNativePin(ctx.nativePinButton ?? ctx.pinButton);
+      }
+
+      function onPinPointerDown(event) {
+        void activatePinScopeFromEvent(event);
       }
 
       function onPinClick(event) {
-        if (allowNativePin) {
-          allowNativePin = false;
-          return;
-        }
-
-        const pinButton = findPinButton(event.target);
-        if (!pinButton) return;
-
-        const ctx = resolvePinContext(pinButton);
-        if (!ctx) return;
-
-        event.preventDefault();
-        event.stopPropagation();
-        event.stopImmediatePropagation?.();
-
-        if (suppressNextPinClick) {
-          suppressNextPinClick = false;
-          return;
-        }
-
-        void openMenuWithFreshState(ctx).then((opened) => {
-          if (!opened) triggerNativePin(pinButton);
-        });
+        void activatePinScopeFromEvent(event, { fromClick: true });
       }
 
       function onKeyDown(event) {
@@ -880,12 +1089,16 @@
       bindSidebarObserver();
       unsubscribeSidebar = inject.observeZone("sidebar", () => {
         bindSidebarObserver();
-        scheduleProjectPinReconcile();
+        void flushProjectPinReorder();
       });
       void hydrateProjectPins()
         .then(() => {
           if (disposed) return;
-          scheduleProjectPinReconcile();
+          return reconcileExclusivePins();
+        })
+        .then(() => {
+          if (disposed) return;
+          return flushProjectPinReorder();
         })
         .catch((err) => log.warn("initial project pin hydrate failed", err));
 
@@ -901,6 +1114,9 @@
         global.removeEventListener("pointerdown", onPinPointerDown, true);
         global.removeEventListener("click", onPinClick, true);
         global.removeEventListener("keydown", onKeyDown, true);
+        for (const indicator of document.querySelectorAll("[data-explodex-project-pin-indicator]")) {
+          indicator.remove();
+        }
       };
     },
   );

@@ -13,9 +13,13 @@
 
   BC.log?.info?.("usage-reset-sidebar", "script evaluating");
 
-  const POLL_MS = 60_000;
+  const SETTINGS_KEY = "explodex-usage-reset-sidebar";
+  const DEFAULT_TEMPLATE =
+    "{usage.primary.label}: {usage.primary.left.percent}% {usage.primary.reset.in} • Weekly: {usage.secondary.left.percent}% {usage.secondary.reset.in} • Reset: {resets.count}";
   const PATH_USAGE = "/wham/usage";
   const PATH_RESET_CREDITS = "/wham/rate-limit-reset-credits";
+  const TEMPLATE_VARS_HINT =
+    "Variables: usage.primary.label, usage.primary.left.percent, usage.primary.used.percent, usage.primary.reset.in, usage.primary.reset.at, usage.secondary.*, usage.short.*, usage.week.*, resets.count, resets[0].title, resets[0].expires";
 
   function toFiniteNumber(value, fallback = 0) {
     const num = typeof value === "number" ? value : Number(value);
@@ -169,17 +173,96 @@
     return `${Math.round(clampPercent(usedPercent))}% used`;
   }
 
-  function formatCompact(usage, resets) {
+  function windowContext(win) {
+    if (!win) {
+      return {
+        label: "—",
+        left: { percent: 0 },
+        used: { percent: 0 },
+        reset: { in: "—", at: "—" },
+      };
+    }
+    return {
+      label: formatWindowLabel(win.windowMinutes),
+      left: { percent: percentLeft(win.usedPercent) },
+      used: { percent: Math.round(clampPercent(win.usedPercent)) },
+      reset: {
+        in: formatTimeLeft(win.resetAt),
+        at: formatResetAt(win.resetAt),
+      },
+    };
+  }
+
+  function buildUsageContext(usage, resets) {
+    const primary = windowContext(usage?.primary);
+    const secondary = windowContext(usage?.secondary);
+    const resetCredits = Array.isArray(resets?.credits) ? resets.credits : [];
+    const resetEntries = resetCredits.map((credit) => ({
+      title: credit.title || "Reset",
+      expires: creditExpiryLabel(credit) ?? "—",
+    }));
+    const resetsCtx = {
+      count: resets?.availableCount ?? 0,
+      available: resets?.availableCount ?? 0,
+    };
+    resetEntries.forEach((entry, index) => {
+      resetsCtx[index] = entry;
+    });
+    if (!resetsCtx[0]) resetsCtx[0] = { title: "—", expires: "—" };
+    return {
+      usage: {
+        primary,
+        secondary,
+        short: primary,
+        week: secondary,
+      },
+      resets: resetsCtx,
+    };
+  }
+
+  function formatCompact(usage, resets, template, formatApi) {
     if (!usage && !resets) return "Usage: unavailable";
-    const primary = usage?.primary;
-    const secondary = usage?.secondary;
-    const shortLabel = formatWindowLabel(primary?.windowMinutes);
-    const shortPct = percentLeft(primary?.usedPercent ?? 0);
-    const shortLeft = formatTimeLeft(primary?.resetAt);
-    const weekPct = percentLeft(secondary?.usedPercent ?? 0);
-    const weekLeft = formatDaysLeft(secondary?.resetAt);
-    const resetCount = resets?.availableCount ?? 0;
-    return `${shortLabel}: ${shortPct}% ${shortLeft} • Weekly: ${weekPct}% ${weekLeft} • Reset: ${resetCount}`;
+    const tpl = template || DEFAULT_TEMPLATE;
+    try {
+      return formatApi.template(tpl, buildUsageContext(usage, resets), { fallback: "—" });
+    } catch {
+      return formatApi.template(DEFAULT_TEMPLATE, buildUsageContext(usage, resets), {
+        fallback: "—",
+      });
+    }
+  }
+
+  function defaultSettings() {
+    return {
+      compactTemplate: DEFAULT_TEMPLATE,
+      refreshIntervalSec: 60,
+      refreshPreset: "60",
+    };
+  }
+
+  function normalizeSettings(raw) {
+    const base = defaultSettings();
+    if (!raw || typeof raw !== "object") return base;
+    const compactTemplate =
+      typeof raw.compactTemplate === "string" && raw.compactTemplate.trim()
+        ? raw.compactTemplate.trim()
+        : base.compactTemplate;
+    const refreshIntervalSec = Math.max(
+      0,
+      Math.floor(Number(raw.refreshIntervalSec ?? base.refreshIntervalSec)),
+    );
+    const refreshPreset = ["30", "60", "300", "0", "custom"].includes(raw.refreshPreset)
+      ? raw.refreshPreset
+      : refreshIntervalSec === 0
+        ? "0"
+        : refreshIntervalSec === 30
+          ? "30"
+          : refreshIntervalSec === 300
+            ? "300"
+            : refreshIntervalSec === 60
+              ? "60"
+              : "custom";
+    return { compactTemplate, refreshIntervalSec, refreshPreset };
   }
 
   function readOnlyHttp(http) {
@@ -210,9 +293,21 @@
       dynamicUnloadable: true,
     },
     (api) => {
-      const { observeZone, sidebarNav: nav, ui, log } = api;
+      const { observeZone, sidebarNav: nav, ui, log, storage, components: c, registerOptions, format } =
+        api;
       const h = readOnlyHttp(api.http);
       log.info("setup start");
+      /** @type {ReturnType<typeof defaultSettings>} */
+      let settings = normalizeSettings(storage.persisted.get(SETTINGS_KEY, null));
+
+      function saveSettings() {
+        storage.persisted.set(SETTINGS_KEY, settings);
+      }
+
+      function loadSettings() {
+        settings = normalizeSettings(storage.persisted.get(SETTINGS_KEY, null));
+      }
+
       let disposed = false;
       let pollTimer = null;
       let pendingRefreshAbort = null;
@@ -402,8 +497,70 @@
       function compactLabel() {
         if (state.loading && !state.usage) return "Usage: loading…";
         if (state.error) return "Usage: error";
-        return formatCompact(state.usage, state.resets);
+        return formatCompact(state.usage, state.resets, settings.compactTemplate, format);
       }
+
+      function renderOptionsPanel(container) {
+        container.replaceChildren();
+        let customRefreshHost = null;
+
+        const stack = c.fieldStack([
+          c.textField({
+            label: "Compact row format",
+            value: settings.compactTemplate,
+            monospace: true,
+            onChange: (value) => {
+              settings.compactTemplate = value.trim() || DEFAULT_TEMPLATE;
+              saveSettings();
+              paintNav();
+            },
+          }),
+          c.metaText(TEMPLATE_VARS_HINT),
+          c.selectField({
+            label: "Auto-refresh",
+            value: settings.refreshPreset,
+            options: [
+              { value: "30", label: "Every 30s" },
+              { value: "60", label: "Every 1m" },
+              { value: "300", label: "Every 5m" },
+              { value: "0", label: "Manual only" },
+              { value: "custom", label: "Custom" },
+            ],
+            onChange: (value) => {
+              settings.refreshPreset = value;
+              if (value === "custom") {
+                settings.refreshIntervalSec = Math.max(5, settings.refreshIntervalSec || 60);
+              } else {
+                settings.refreshIntervalSec = Number(value);
+              }
+              saveSettings();
+              startPolling();
+              if (customRefreshHost) {
+                customRefreshHost.style.display =
+                  settings.refreshPreset === "custom" ? "" : "none";
+              }
+            },
+          }),
+        ]);
+
+        customRefreshHost = c.numberField({
+          label: "Custom interval (seconds)",
+          value: settings.refreshIntervalSec,
+          min: 5,
+          max: 3600,
+          onChange: (value) => {
+            settings.refreshIntervalSec = Math.max(5, Math.min(3600, value));
+            settings.refreshPreset = "custom";
+            saveSettings();
+            startPolling();
+          },
+        });
+        customRefreshHost.style.display = settings.refreshPreset === "custom" ? "" : "none";
+        stack.appendChild(customRefreshHost);
+        container.appendChild(stack);
+      }
+
+      registerOptions({ render: renderOptionsPanel });
 
       function refreshPopoverPosition() {
         if (!popoutOpen || !navButton?.isConnected) return;
@@ -524,10 +681,19 @@
         if (pendingRefreshAbort === controller) pendingRefreshAbort = null;
       }
 
+      function refreshIntervalMs() {
+        if (settings.refreshPreset === "custom") {
+          return Math.max(5, settings.refreshIntervalSec) * 1000;
+        }
+        const sec = Number(settings.refreshPreset);
+        return sec > 0 ? sec * 1000 : 0;
+      }
+
       function startPolling() {
         if (disposed) return;
         stopPolling();
-        pollTimer = global.setInterval(refresh, POLL_MS);
+        const ms = refreshIntervalMs();
+        if (ms > 0) pollTimer = global.setInterval(refresh, ms);
       }
 
       function stopPolling() {
@@ -567,6 +733,7 @@
         stopMountObserver();
       }
 
+      loadSettings();
       paintNav();
       startMountObserver();
       refresh()

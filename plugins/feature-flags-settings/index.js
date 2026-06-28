@@ -15,6 +15,7 @@
   }
 
   const PLUGIN_ID = "feature-flags-settings";
+  const SETTINGS_KEY = "explodex-feature-flags-settings";
   const PANEL_ID = "explodex-feature-flags-panel";
   const SETTINGS_ROUTE = "/settings/general-settings";
   const PAGE_LIMIT = 100;
@@ -103,7 +104,74 @@
       dynamicUnloadable: true,
     },
     (api) => {
-      const { bridge, components: c, flags, inject, log, sidebarNav, storage, ui } = api;
+      const { bridge, components: c, flags, inject, log, sidebarNav, storage, ui, registerOptions } =
+        api;
+
+      function defaultSettings() {
+        return {
+          showSidebarShortcut: true,
+          embedInGeneralSettings: true,
+        };
+      }
+
+      function normalizeSettings(raw) {
+        const base = defaultSettings();
+        if (!raw || typeof raw !== "object") return base;
+        return {
+          showSidebarShortcut: raw.showSidebarShortcut !== false,
+          embedInGeneralSettings: raw.embedInGeneralSettings !== false,
+        };
+      }
+
+      let settings = normalizeSettings(storage.persisted.get(SETTINGS_KEY, null));
+
+      function saveSettings() {
+        storage.persisted.set(SETTINGS_KEY, settings);
+      }
+
+      function loadSettings() {
+        settings = normalizeSettings(storage.persisted.get(SETTINGS_KEY, null));
+      }
+
+      function renderOptionsPanel(container, { refresh }) {
+        container.replaceChildren();
+        container.appendChild(
+          c.fieldStack([
+            c.checkboxField({
+              label: "Sidebar shortcut",
+              checked: settings.showSidebarShortcut,
+              onChange: (value) => {
+                settings.showSidebarShortcut = value;
+                saveSettings();
+                if (!value) {
+                  ui.closePopover();
+                  popoutOpen = false;
+                  sidebarNav.remove(PLUGIN_ID);
+                  navButton = null;
+                } else {
+                  paintNav();
+                }
+                refresh();
+              },
+            }),
+            c.checkboxField({
+              label: "Embed panel in General Settings",
+              checked: settings.embedInGeneralSettings,
+              onChange: (value) => {
+                settings.embedInGeneralSettings = value;
+                saveSettings();
+                if (!value) unmountSettingsPanel();
+                else maybeUpdateSettingsPanel(true);
+                refresh();
+              },
+            }),
+            c.metaText("Toggle individual flags from the sidebar popover or General Settings panel."),
+          ]),
+        );
+      }
+
+      registerOptions({ render: renderOptionsPanel });
+      loadSettings();
 
       let disposed = false;
       let navButton = null;
@@ -985,6 +1053,10 @@
 
       function maybeUpdateSettingsPanel(force = false) {
         if (disposed) return;
+        if (!settings.embedInGeneralSettings) {
+          unmountSettingsPanel();
+          return;
+        }
         const onSettings = getAppRoutePathname().includes(SETTINGS_ROUTE);
         if (!onSettings) {
           unmountSettingsPanel();
@@ -1049,6 +1121,11 @@
       }
 
       function paintNav() {
+        if (!settings.showSidebarShortcut) {
+          if (navButton?.isConnected) sidebarNav.remove(PLUGIN_ID);
+          navButton = null;
+          return;
+        }
         const label = enabledSummary();
         const needsMount = !navButton?.isConnected;
 

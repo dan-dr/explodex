@@ -130,7 +130,8 @@ Catalog metadata for the plugin manager. The entry script still calls
 | `id` | `string` | yes | — | Unique plugin id; must match `register()` |
 | `name` | `string` | no | `id` | Display name in the plugin manager |
 | `version` | `string` | no | `"?"` | Semver string shown in UI |
-| `entry` | `string` | no | `index.js` | Entry filename (informational; source is bundled at build) |
+| `entry` | `string` | no | `index.js` | Registration entry filename |
+| `scripts` | `string[]` | no | `[entry]` | Ordered plugin-relative scripts concatenated before evaluation; `entry` is appended if omitted |
 | `description` | `string` | no | — | Short description |
 | `documentation` | `string` | no | — | Relative path to plugin README |
 | `dynamicLoadable` | `boolean` | no | `true` | `false` → enabling requires app restart |
@@ -323,6 +324,36 @@ components.badge({ label?, count? }): HTMLSpanElement
 components.panel({ title?, children?, className? }): HTMLDivElement  // children: Node | () => Node | string
 components.statusToast(message, { duration? }?): void          // transient toast, default 2800ms
 ```
+
+Form and layout helpers (usable in options panels, popovers, or any plugin UI):
+
+```ts
+components.metaText(text?): HTMLDivElement
+components.fieldRow({ label?, control?, hint? }): HTMLDivElement
+components.checkboxField({ label?, checked?, onChange? }): HTMLLabelElement
+components.radioField({ label?, name?, value?, checked?, onChange? }): HTMLLabelElement
+components.numberField({ label?, value?, min?, max?, onChange? }): HTMLDivElement
+components.textField({ label?, value?, placeholder?, monospace?, onChange? }): HTMLDivElement
+components.selectField({ label?, value?, options?, onChange? }): HTMLDivElement
+components.section({ title?, hint?, children? }): { el, body }   // bordered card
+components.sortableList({ label?, items?, onReorder?, renderLabel? }): HTMLDivElement
+components.fieldStack(children?): HTMLDivElement
+```
+
+`sortableList` items are `{ id, label? }`; `onReorder` receives the new id order.
+Up/down buttons reorder items (first/last disable at edges).
+
+---
+
+## `format` — string templates
+
+```ts
+format.template(template, context, { fallback? }?): string
+```
+
+Replaces `{dot.path}` and `{arr[0].field}` placeholders from a plain object.
+Unknown paths use `fallback` (default `—`). Used by **Usage & Resets** for the
+compact sidebar row label.
 
 ---
 
@@ -607,6 +638,17 @@ api.registerOptions({
 
 Call `registerOptions` from the plugin `setup` callback. The built-in `explodex-shell` plugin renders collapsible sections per catalog entry; options panels appear when the plugin is loaded.
 
+**Bundled plugin settings keys** (`storage.persisted`):
+
+| Plugin | Key | Notable fields |
+|--------|-----|----------------|
+| `command-menu-thread-search` | `explodex-cmdk-thread-search` | `maxThreads`, `minChars` (default 2), `sortBy[]`, `showRecentOnOpen` |
+| `reasoning-effort-prefix` | `explodex-reasoning-effort-prefix` | `enabledPrefixes[]`, `showHint`, `stripOnSend`, `restoreAfterSend` |
+| `usage-reset-sidebar` | `explodex-usage-reset-sidebar` | `compactTemplate`, `refreshIntervalSec`, `refreshPreset` |
+| `feature-flags-settings` | `explodex-feature-flags-settings` | `showSidebarShortcut`, `embedInGeneralSettings` |
+| `views` | `explodex-views-settings` | `showSidebar`, `projectViewThreadCount`, `showProjectContextMenu` |
+| `project-folder-colors` | `explodex-project-colors` | palette, visuals, overrides (see plugin) |
+
 **Reload a plugin during dev** (after `bun run package && bun run inject`):
 
 ```js
@@ -635,7 +677,8 @@ All exported interfaces and unions in [`sdk/explodex-sdk.d.ts`](../sdk/explodex-
 | Category | Types |
 |----------|-------|
 | Zones | `ZoneId`, `ZoneDefinition`, `MountStrategy`, `MountContext`, `MountOptions`, `ObserveOptions`, `ObserveInfo` |
-| UI tokens | `ButtonColor`, `ButtonSize`, `ButtonOptions`, `SidebarItemOptions`, `PillOptions`, `BadgeOptions`, `PanelOptions`, `StatusToastOptions` |
+| UI tokens | `ButtonColor`, `ButtonSize`, `ButtonOptions`, `SidebarItemOptions`, `PillOptions`, `BadgeOptions`, `PanelOptions`, `StatusToastOptions`, `FieldRowOptions`, `CheckboxFieldOptions`, `RadioFieldOptions`, `NumberFieldOptions`, `TextFieldOptions`, `SelectFieldOptions`, `SectionOptions`, `SortableListOptions` |
+| Format | `FormatAPI`, `FormatTemplateOptions` |
 | Overlays | `NavItemOptions`, `PopoverOptions`, `RepositionPopoverOptions`, `ConfirmOptions`, `AnchorRect`, `PopoverSide` |
 | Bridge / HTTP | `BridgeAPI`, `HttpAPI`, `HttpResponse`, `HttpRequestOptions` |
 | Storage | `StorageAPI`, `PersistedStorage`, `SettingsStorage`, `GlobalStateStorage` |
@@ -643,7 +686,7 @@ All exported interfaces and unions in [`sdk/explodex-sdk.d.ts`](../sdk/explodex-
 | Plugins | `PluginManifest`, `PluginCatalogEntry`, `PluginAPI`, `PluginManagerAPI`, `PluginTeardown`, `RegisterResult`, `PluginLogger` |
 | Logging | `LogAPI`, `LogEntry`, `LogLevel` |
 | Meta | `ExplodexMeta`, `ExplodexPaths` |
-| Root | `ExplodexAPI`, `InjectAPI`, `ComponentsAPI`, `UIAPI`, `SidebarNavAPI`, `ComposerAPI`, `QueryAPI` |
+| Root | `ExplodexAPI`, `InjectAPI`, `ComponentsAPI`, `FormatAPI`, `UIAPI`, `SidebarNavAPI`, `ComposerAPI`, `QueryAPI` |
 
 ---
 

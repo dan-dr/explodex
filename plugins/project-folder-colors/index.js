@@ -817,137 +817,88 @@ nav [data-explodex-colored][data-explodex-group-pos="only"]::before {
         }
       }
 
-      function optionGroup(title, hint) {
-        const group = document.createElement("div");
-        group.style.cssText =
-          "display:flex;flex-direction:column;gap:8px;padding:10px 12px;border-radius:10px;" +
-          "border:1px solid color-mix(in srgb, currentColor 12%, transparent);" +
-          "background:color-mix(in srgb, currentColor 3%, transparent)";
-        const heading = document.createElement("div");
-        heading.textContent = title;
-        heading.style.cssText = "font-weight:600;font-size:12px;line-height:16px";
-        group.appendChild(heading);
-        if (hint) {
-          const sub = document.createElement("div");
-          sub.textContent = hint;
-          sub.className = "ex-explodex-plugin-meta";
-          group.appendChild(sub);
-        }
-        const body = document.createElement("div");
-        body.style.cssText = "display:flex;flex-direction:column;gap:6px";
-        group.appendChild(body);
-        return { group, body };
-      }
-
-      function radioRow(label, groupName, value, current, onPick) {
-        const row = document.createElement("label");
-        row.style.cssText =
-          "display:flex;align-items:center;gap:8px;font-size:13px;line-height:20px;cursor:pointer";
-        const input = document.createElement("input");
-        input.type = "radio";
-        input.name = groupName;
-        input.checked = current === value;
-        input.addEventListener("change", () => {
-          if (input.checked) onPick(value);
-        });
-        row.appendChild(input);
-        row.appendChild(document.createTextNode(label));
-        return row;
-      }
-
-      function checkboxRow(label, checked, onChange) {
-        const row = document.createElement("label");
-        row.style.cssText =
-          "display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:13px;line-height:20px;cursor:pointer";
-        const text = document.createElement("span");
-        text.textContent = label;
-        const input = document.createElement("input");
-        input.type = "checkbox";
-        input.checked = checked;
-        input.addEventListener("change", () => onChange(input.checked));
-        row.appendChild(text);
-        row.appendChild(input);
-        return row;
-      }
-
       function renderOptionsPanel(container, { refresh }) {
         container.replaceChildren();
         const body = document.createElement("div");
         body.style.cssText = "display:flex;flex-direction:column;gap:12px";
 
-        const styleGroup = optionGroup(
-          "Visual style",
-          usesProjectGroups()
+        const styleGroup = c.section({
+          title: "Visual style",
+          hint: usesProjectGroups()
             ? "Both mode groups project + threads into one block."
             : "How the color appears on each sidebar row.",
-        );
+        });
         styleGroup.body.appendChild(
-          radioRow(
-            "Side accent",
-            "explodex-pfc-style",
-            "side",
-            settings.visuals.style,
-            (value) => {
-              settings.visuals.style = value;
+          c.radioField({
+            label: "Side accent",
+            name: "explodex-pfc-style",
+            value: "side",
+            checked: settings.visuals.style === "side",
+            onChange: () => {
+              settings.visuals.style = "side";
               saveSettings();
               lastAppliedSignature = "";
               applySidebarColors();
               refresh();
             },
-          ),
+          }),
         );
         styleGroup.body.appendChild(
-          radioRow(
-            "Full-width tint",
-            "explodex-pfc-style",
-            "full",
-            settings.visuals.style,
-            (value) => {
-              settings.visuals.style = value;
+          c.radioField({
+            label: "Full-width tint",
+            name: "explodex-pfc-style",
+            value: "full",
+            checked: settings.visuals.style === "full",
+            onChange: () => {
+              settings.visuals.style = "full";
               saveSettings();
               lastAppliedSignature = "";
               applySidebarColors();
               refresh();
             },
-          ),
+          }),
         );
-        body.appendChild(styleGroup.group);
+        body.appendChild(styleGroup.el);
 
-        const targetGroup = optionGroup("What to color", targetHint());
+        const targetGroup = c.section({ title: "What to color", hint: targetHint() });
         for (const [label, value] of [
           ["Project folders", "projects"],
           ["Threads", "threads"],
           ["Both", "both"],
         ]) {
           targetGroup.body.appendChild(
-            radioRow(
+            c.radioField({
               label,
-              "explodex-pfc-target",
+              name: "explodex-pfc-target",
               value,
-              settings.visuals.colorTarget,
-              (next) => {
-                settings.visuals.colorTarget = /** @type {ColorTarget} */ (next);
+              checked: settings.visuals.colorTarget === value,
+              onChange: () => {
+                settings.visuals.colorTarget = /** @type {ColorTarget} */ (value);
                 saveSettings();
                 lastAppliedSignature = "";
                 applySidebarColors();
                 refresh();
               },
-            ),
+            }),
           );
         }
-        body.appendChild(targetGroup.group);
+        body.appendChild(targetGroup.el);
 
-        const colorsGroup = optionGroup(
-          "Picker colors",
-          `Swatches in the hover picker (${MIN_PALETTE_SIZE} minimum).`,
-        );
+        const colorsGroup = c.section({
+          title: "Picker colors",
+          hint: `Swatches in the hover picker (${MIN_PALETTE_SIZE} minimum).`,
+        });
         colorsGroup.body.appendChild(
-          checkboxRow("Auto-assign project colors", settings.autoAssignProjects, (value) => {
-            settings.autoAssignProjects = value;
-            saveSettings();
-            lastAppliedSignature = "";
-            applySidebarColors();
-            refresh();
+          c.checkboxField({
+            label: "Auto-assign project colors",
+            checked: settings.autoAssignProjects,
+            onChange: (value) => {
+              settings.autoAssignProjects = value;
+              saveSettings();
+              lastAppliedSignature = "";
+              applySidebarColors();
+              refresh();
+            },
           }),
         );
 
@@ -1016,7 +967,7 @@ nav [data-explodex-colored][data-explodex-group-pos="only"]::before {
           }),
         );
         colorsGroup.body.appendChild(addRow);
-        body.appendChild(colorsGroup.group);
+        body.appendChild(colorsGroup.el);
 
         const reset = c.button({
           label: "Reset all custom colors",

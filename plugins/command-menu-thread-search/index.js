@@ -12,10 +12,16 @@
   }
 
   const PLUGIN_ID = "command-menu-thread-search";
+  const SETTINGS_KEY = "explodex-cmdk-thread-search";
   const INJECTED_GROUP_ID = "explodex-cmdk-threads-group";
   const THREADS_HEADING = "Threads";
   const INPUT_PLACEHOLDER = "Type command or search threads";
-  const MAX_THREADS = 5;
+  const SORT_LABELS = {
+    pinned: "Pinned",
+    match: "Best match",
+    recent: "Recently active",
+  };
+  const DEFAULT_SORT_BY = ["pinned", "recent", "match"];
 
   const RELATIVE_ACTIVITY_RE = /^(\d+)(mo|w|d|h|m|s)$/i;
   const ACTIVITY_UNIT_MS = {
@@ -41,7 +47,49 @@
       dynamicUnloadable: true,
     },
     (api) => {
-      const { bridge, log } = api;
+      const { bridge, log, storage, components: c, registerOptions } = api;
+
+      function defaultSettings() {
+        return {
+          maxThreads: 5,
+          minChars: 2,
+          sortBy: [...DEFAULT_SORT_BY],
+          showRecentOnOpen: false,
+        };
+      }
+
+      function normalizeSettings(raw) {
+        const base = defaultSettings();
+        if (!raw || typeof raw !== "object") return base;
+        const maxThreads = Math.min(10, Math.max(1, Math.floor(Number(raw.maxThreads) || base.maxThreads)));
+        const minChars = Math.min(4, Math.max(1, Math.floor(Number(raw.minChars) || base.minChars)));
+        const sortBy = Array.isArray(raw.sortBy)
+          ? raw.sortBy.filter((key) => key in SORT_LABELS)
+          : base.sortBy;
+        const ordered = [];
+        for (const key of sortBy) {
+          if (!ordered.includes(key)) ordered.push(key);
+        }
+        for (const key of DEFAULT_SORT_BY) {
+          if (!ordered.includes(key)) ordered.push(key);
+        }
+        return {
+          maxThreads,
+          minChars,
+          sortBy: ordered,
+          showRecentOnOpen: Boolean(raw.showRecentOnOpen),
+        };
+      }
+
+      let settings = normalizeSettings(storage.persisted.get(SETTINGS_KEY, null));
+
+      function saveSettings() {
+        storage.persisted.set(SETTINGS_KEY, settings);
+      }
+
+      function loadSettings() {
+        settings = normalizeSettings(storage.persisted.get(SETTINGS_KEY, null));
+      }
 
       let bodyObserver = null;
       let listObserver = null;
@@ -345,22 +393,86 @@
         return 0;
       }
 
+      function compareThreadEntries(a, b, { hasQuery = true } = {}) {
+        for (const key of settings.sortBy) {
+          let cmp = 0;
+          if (key === "pinned" && a.thread.pinned !== b.thread.pinned) {
+            cmp = a.thread.pinned ? -1 : 1;
+          } else if (key === "recent" && a.thread.activityMs !== b.thread.activityMs) {
+            cmp = a.thread.activityMs - b.thread.activityMs;
+          } else if (key === "match" && hasQuery && b.score !== a.score) {
+            cmp = b.score - a.score;
+          }
+          if (cmp !== 0) return cmp;
+        }
+        return a.thread.sidebarIndex - b.thread.sidebarIndex;
+      }
+
       function filterThreads(threads, query) {
-        if (!query) return [];
+        const normalized = normalizeQuery(query);
+        if (!normalized) {
+          if (!settings.showRecentOnOpen) return [];
+          return threads
+            .map((thread) => ({ thread, score: 0 }))
+            .sort((a, b) => compareThreadEntries(a, b, { hasQuery: false }))
+            .slice(0, settings.maxThreads)
+            .map((entry) => entry.thread);
+        }
+        if (normalized.length < settings.minChars) return [];
         return threads
-          .map((thread) => ({ thread, score: scoreThread(thread.title, query) }))
+          .map((thread) => ({ thread, score: scoreThread(thread.title, normalized) }))
           .filter((entry) => entry.score > 0)
-          .sort((a, b) => {
-            if (a.thread.pinned !== b.thread.pinned) return a.thread.pinned ? -1 : 1;
-            if (a.thread.activityMs !== b.thread.activityMs) {
-              return a.thread.activityMs - b.thread.activityMs;
-            }
-            if (b.score !== a.score) return b.score - a.score;
-            return a.thread.sidebarIndex - b.thread.sidebarIndex;
-          })
-          .slice(0, MAX_THREADS)
+          .sort((a, b) => compareThreadEntries(a, b, { hasQuery: true }))
+          .slice(0, settings.maxThreads)
           .map((entry) => entry.thread);
       }
+
+      function renderOptionsPanel(container) {
+        container.replaceChildren();
+        const sortItems = settings.sortBy.map((id) => ({ id, label: SORT_LABELS[id] ?? id }));
+        container.appendChild(
+          c.fieldStack([
+            c.numberField({
+              label: "Max threads",
+              value: settings.maxThreads,
+              min: 1,
+              max: 10,
+              onChange: (value) => {
+                settings.maxThreads = Math.min(10, Math.max(1, value));
+                saveSettings();
+              },
+            }),
+            c.numberField({
+              label: "Min characters before searching",
+              value: settings.minChars,
+              min: 1,
+              max: 4,
+              onChange: (value) => {
+                settings.minChars = Math.min(4, Math.max(1, value));
+                saveSettings();
+              },
+            }),
+            c.sortableList({
+              label: "Sort by",
+              items: sortItems,
+              onReorder: (ids) => {
+                settings.sortBy = ids.filter((id) => id in SORT_LABELS);
+                saveSettings();
+              },
+            }),
+            c.checkboxField({
+              label: "Show recent threads when palette opens",
+              checked: settings.showRecentOnOpen,
+              onChange: (value) => {
+                settings.showRecentOnOpen = value;
+                saveSettings();
+              },
+            }),
+          ]),
+        );
+      }
+
+      registerOptions({ render: renderOptionsPanel });
 
       function updateInputPlaceholder(root) {
         const input = commandMenuInput(root);
@@ -616,6 +728,21 @@
           activeMenuMode = detectMenuMode(mount, query);
 
           if (!query) {
+            if (settings.showRecentOnOpen && activeMenuMode === "root") {
+              const recentThreads = filterThreads(getThreadCatalog(), "");
+              const renderedIds = recentThreads.map((thread) => thread.conversationId).join(",");
+              if (renderedIds !== lastRenderedThreadIds) {
+                lastRenderedQuery = "";
+                lastRenderedThreadIds = renderedIds;
+                mutateCommandMenuList(() => {
+                  renderInjectedThreads(root, recentThreads);
+                });
+                if (recentThreads.length > 0) {
+                  global.requestAnimationFrame(() => focusFirstThreadItem(root));
+                }
+              }
+              return;
+            }
             lastRenderedQuery = null;
             lastRenderedThreadIds = null;
             mutateCommandMenuList(() => {
@@ -783,6 +910,7 @@
 
       bodyObserver = new MutationObserver(scanForCommandMenu);
       bodyObserver.observe(document.documentElement, { childList: true, subtree: true });
+      loadSettings();
       scanForCommandMenu();
 
       log.info("command menu thread search attached");

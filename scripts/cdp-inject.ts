@@ -146,7 +146,24 @@ function pluginEntryFromDir(path: string): PluginEntry | null {
     console.warn(`WARN: plugin ${basename(path)} has no entry file at ${entryPath}`);
     return null;
   }
-  const source = readFileSync(entryPath, "utf-8");
+  const scriptNames = Array.isArray(manifest.scripts)
+    ? manifest.scripts.filter((value): value is string => typeof value === "string")
+    : [entryName];
+  if (!scriptNames.includes(entryName)) scriptNames.push(entryName);
+  const sources: string[] = [];
+  for (const scriptName of scriptNames) {
+    const scriptPath = resolve(path, scriptName);
+    if (
+      !scriptPath.startsWith(`${resolve(path)}/`) ||
+      !existsSync(scriptPath) ||
+      !statSync(scriptPath).isFile()
+    ) {
+      console.warn(`WARN: plugin ${basename(path)} has no script at ${scriptPath}`);
+      return null;
+    }
+    sources.push(readFileSync(scriptPath, "utf-8"));
+  }
+  const source = sources.join("\n;\n");
   const parsed = parsePluginManifest(source, basename(entryPath));
   const id = (manifest.id as string) ?? basename(path);
   return {

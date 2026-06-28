@@ -614,6 +614,63 @@
         display: flex; flex-wrap: wrap; gap: 8px; padding-top: 4px;
         border-top: 1px solid color-mix(in srgb, currentColor 10%, transparent);
       }
+      .ex-field-stack {
+        display: flex; flex-direction: column; gap: 10px;
+      }
+      .ex-field-row {
+        display: flex; align-items: center; justify-content: space-between; gap: 12px;
+        font-size: 13px; line-height: 20px;
+      }
+      .ex-field-row > label, .ex-field-row > .ex-field-label {
+        flex: 1; min-width: 0; cursor: pointer;
+      }
+      .ex-field-row > input[type="checkbox"], .ex-field-row > input[type="radio"] {
+        flex-shrink: 0; cursor: pointer;
+      }
+      .ex-field-input {
+        width: 88px; padding: 4px 8px; border-radius: 6px;
+        border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+        background: transparent; color: inherit; font: inherit;
+      }
+      .ex-field-input-wide {
+        width: 100%; max-width: 100%; box-sizing: border-box;
+        padding: 6px 8px; border-radius: 6px;
+        border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+        background: transparent; color: inherit; font: inherit;
+      }
+      .ex-field-input-mono { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .ex-field-select {
+        padding: 4px 8px; border-radius: 6px;
+        border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+        background: var(--color-bg-primary, #111); color: inherit; font: inherit;
+      }
+      .ex-field-meta {
+        font-size: 11px; line-height: 1.4;
+        color: var(--color-text-tertiary, color-mix(in srgb, currentColor 55%, transparent));
+      }
+      .ex-section {
+        display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: 10px;
+        border: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+        background: color-mix(in srgb, currentColor 3%, transparent);
+      }
+      .ex-section-title { font-weight: 600; font-size: 12px; line-height: 16px; }
+      .ex-section-body { display: flex; flex-direction: column; gap: 6px; }
+      .ex-sortable-list { display: flex; flex-direction: column; gap: 4px; }
+      .ex-sortable-item {
+        display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px;
+        border: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+        background: color-mix(in srgb, currentColor 2%, transparent);
+      }
+      .ex-sortable-item-label { flex: 1; min-width: 0; font-size: 13px; }
+      .ex-sortable-item-actions { display: inline-flex; gap: 2px; flex-shrink: 0; }
+      .ex-sortable-btn {
+        border: 0; border-radius: 4px; padding: 2px 6px; background: transparent;
+        color: inherit; font: inherit; font-size: 11px; cursor: pointer;
+      }
+      .ex-sortable-btn:hover:not(:disabled) {
+        background: color-mix(in srgb, currentColor 10%, transparent);
+      }
+      .ex-sortable-btn:disabled { opacity: 0.35; cursor: default; }
     `;
     document.head.appendChild(style);
   }
@@ -1295,6 +1352,245 @@
       toast.textContent = message;
       clearTimeout(components.statusToast._timer);
       components.statusToast._timer = setTimeout(() => toast.remove(), duration);
+    },
+
+    metaText(text) {
+      const el = document.createElement("div");
+      el.className = "ex-field-meta ex-explodex-plugin-meta";
+      el.textContent = text ?? "";
+      return el;
+    },
+
+    fieldRow({ label, control, hint } = {}) {
+      const row = document.createElement("div");
+      row.className = "ex-field-row";
+      if (label != null) {
+        const labelEl = document.createElement("span");
+        labelEl.className = "ex-field-label";
+        labelEl.textContent = String(label);
+        row.appendChild(labelEl);
+      }
+      if (control) row.appendChild(control);
+      if (hint) {
+        const wrap = document.createElement("div");
+        wrap.style.cssText = "display:flex;flex-direction:column;gap:4px";
+        wrap.appendChild(row);
+        wrap.appendChild(components.metaText(hint));
+        return wrap;
+      }
+      return row;
+    },
+
+    checkboxField({ label, checked = false, onChange } = {}) {
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.checked = Boolean(checked);
+      if (onChange) input.addEventListener("change", () => onChange(input.checked));
+      const row = document.createElement("label");
+      row.className = "ex-field-row";
+      const text = document.createElement("span");
+      text.className = "ex-field-label";
+      text.textContent = label ?? "";
+      row.appendChild(text);
+      row.appendChild(input);
+      return row;
+    },
+
+    radioField({ label, name, value, checked = false, onChange } = {}) {
+      const input = document.createElement("input");
+      input.type = "radio";
+      if (name) input.name = name;
+      if (value != null) input.value = String(value);
+      input.checked = Boolean(checked);
+      if (onChange) input.addEventListener("change", () => {
+        if (input.checked) onChange(value);
+      });
+      const row = document.createElement("label");
+      row.className = "ex-field-row";
+      const text = document.createElement("span");
+      text.className = "ex-field-label";
+      text.textContent = label ?? "";
+      row.appendChild(text);
+      row.appendChild(input);
+      return row;
+    },
+
+    numberField({ label, value = 0, min, max, onChange } = {}) {
+      const input = document.createElement("input");
+      input.type = "number";
+      input.className = "ex-field-input";
+      input.value = String(value);
+      if (min != null) input.min = String(min);
+      if (max != null) input.max = String(max);
+      if (onChange) {
+        input.addEventListener("change", () => {
+          const parsed = Number(input.value);
+          if (Number.isFinite(parsed)) onChange(parsed);
+        });
+      }
+      return components.fieldRow({ label, control: input });
+    },
+
+    textField({ label, value = "", placeholder, monospace = false, onChange } = {}) {
+      const input = document.createElement("input");
+      input.type = "text";
+      input.className = ["ex-field-input-wide", monospace ? "ex-field-input-mono" : ""]
+        .filter(Boolean)
+        .join(" ");
+      input.value = value ?? "";
+      if (placeholder) input.placeholder = placeholder;
+      if (onChange) input.addEventListener("change", () => onChange(input.value));
+      const wrap = document.createElement("div");
+      wrap.style.cssText = "display:flex;flex-direction:column;gap:6px";
+      if (label) {
+        const labelEl = document.createElement("div");
+        labelEl.className = "ex-field-label";
+        labelEl.style.fontSize = "13px";
+        labelEl.textContent = label;
+        wrap.appendChild(labelEl);
+      }
+      wrap.appendChild(input);
+      return wrap;
+    },
+
+    selectField({ label, value, options = [], onChange } = {}) {
+      const select = document.createElement("select");
+      select.className = "ex-field-select";
+      for (const opt of options) {
+        const option = document.createElement("option");
+        option.value = String(opt.value);
+        option.textContent = opt.label ?? String(opt.value);
+        option.selected = String(opt.value) === String(value);
+        select.appendChild(option);
+      }
+      if (onChange) {
+        select.addEventListener("change", () => onChange(select.value));
+      }
+      return components.fieldRow({ label, control: select });
+    },
+
+    section({ title, hint, children } = {}) {
+      const el = document.createElement("div");
+      el.className = "ex-section";
+      if (title) {
+        const heading = document.createElement("div");
+        heading.className = "ex-section-title";
+        heading.textContent = title;
+        el.appendChild(heading);
+      }
+      if (hint) el.appendChild(components.metaText(hint));
+      const body = document.createElement("div");
+      body.className = "ex-section-body";
+      if (children) {
+        if (typeof children === "function") body.appendChild(children());
+        else if (children instanceof Node) body.appendChild(children);
+        else if (Array.isArray(children)) {
+          for (const child of children) {
+            if (child instanceof Node) body.appendChild(child);
+          }
+        }
+      }
+      el.appendChild(body);
+      return { el, body };
+    },
+
+    sortableList({ label, items = [], onReorder, renderLabel } = {}) {
+      const wrap = document.createElement("div");
+      wrap.style.cssText = "display:flex;flex-direction:column;gap:6px";
+      if (label) {
+        const labelEl = document.createElement("div");
+        labelEl.className = "ex-field-label";
+        labelEl.style.fontSize = "13px";
+        labelEl.textContent = label;
+        wrap.appendChild(labelEl);
+      }
+
+      const list = document.createElement("div");
+      list.className = "ex-sortable-list";
+
+      function moveItem(index, delta) {
+        const next = items.slice();
+        const target = index + delta;
+        if (target < 0 || target >= next.length) return;
+        const [item] = next.splice(index, 1);
+        next.splice(target, 0, item);
+        items = next;
+        onReorder?.(next.map((entry) => entry.id));
+        paint();
+      }
+
+      function paint() {
+        list.replaceChildren();
+        items.forEach((item, index) => {
+          const row = document.createElement("div");
+          row.className = "ex-sortable-item";
+          const text = document.createElement("div");
+          text.className = "ex-sortable-item-label";
+          text.textContent = renderLabel ? renderLabel(item) : (item.label ?? item.id ?? "");
+          const actions = document.createElement("div");
+          actions.className = "ex-sortable-item-actions";
+          const up = document.createElement("button");
+          up.type = "button";
+          up.className = "ex-sortable-btn";
+          up.textContent = "▲";
+          up.disabled = index === 0;
+          up.addEventListener("click", () => moveItem(index, -1));
+          const down = document.createElement("button");
+          down.type = "button";
+          down.className = "ex-sortable-btn";
+          down.textContent = "▼";
+          down.disabled = index === items.length - 1;
+          down.addEventListener("click", () => moveItem(index, 1));
+          actions.append(up, down);
+          row.append(text, actions);
+          list.appendChild(row);
+        });
+      }
+
+      paint();
+      wrap.appendChild(list);
+      return wrap;
+    },
+
+    fieldStack(children = []) {
+      const el = document.createElement("div");
+      el.className = "ex-field-stack";
+      for (const child of children) {
+        if (child instanceof Node) el.appendChild(child);
+      }
+      return el;
+    },
+  };
+
+  // ─── Format utilities ─────────────────────────────────────────────────────
+
+  const TEMPLATE_PLACEHOLDER_RE = /\{([^{}]+)\}/g;
+
+  function resolveTemplatePath(context, path) {
+    if (!path || context == null) return undefined;
+    const segments = [];
+    const re = /([^[.\]]+)|\[(\d+)\]/g;
+    let match;
+    while ((match = re.exec(path)) !== null) {
+      if (match[1] != null) segments.push(match[1]);
+      else if (match[2] != null) segments.push(Number(match[2]));
+    }
+    let current = context;
+    for (const segment of segments) {
+      if (current == null) return undefined;
+      current = current[segment];
+    }
+    return current;
+  }
+
+  const format = {
+    template(template, context, { fallback = "—" } = {}) {
+      if (typeof template !== "string" || !template) return "";
+      return template.replace(TEMPLATE_PLACEHOLDER_RE, (_full, path) => {
+        const value = resolveTemplatePath(context, String(path).trim());
+        if (value == null || value === "") return fallback;
+        return String(value);
+      });
     },
   };
 
@@ -2428,6 +2724,7 @@
     zoneDefinitions: ZONE_DEFINITIONS,
     inject,
     components,
+    format,
     storage,
     bridge,
     http,

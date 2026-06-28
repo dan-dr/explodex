@@ -1,0 +1,11 @@
+{
+  "id": "views",
+  "name": "Views",
+  "version": "1.0.0",
+  "entry": "index.js",
+  "scripts": ["vendor/dockview.min.js", "data.js", "index.js"],
+  "description": "Persistent tiled workspaces for threads, browsers, and terminals.",
+  "documentation": "README.md",
+  "dynamicLoadable": true,
+  "dynamicUnloadable": true
+}

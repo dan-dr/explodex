@@ -16,8 +16,13 @@ Explodex plugins live in `plugins/<id>/` and include:
 | `usage-reset-sidebar` | View-only usage/reset sidebar status (anchors above profile footer) | [README.md](../../plugins/usage-reset-sidebar/README.md) |
 | `feature-flags-settings` | All experimental feature flags with persistent toggles | [README.md](../../plugins/feature-flags-settings/README.md) |
 | `project-folder-colors` | Color-code project folders and threads in the sidebar | [README.md](../../plugins/project-folder-colors/README.md) |
+| `views` | Persistent dockable workspaces for threads, browsers, and terminals | [README.md](../../plugins/views/README.md) |
 
 Screenshots live in [screenshots/](screenshots/) and are embedded in each plugin README.
+
+**Explodex settings page** — per-plugin options panels (sidebar **💥 Explodex** → `/explodex`):
+
+![Explodex plugin options](screenshots/explodex-plugin-options.png)
 
 ### Previews
 
