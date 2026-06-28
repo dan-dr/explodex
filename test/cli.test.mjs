@@ -1,14 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { parseCli, runCli } from "../bin/explodex.mjs";
+import { runCli } from "../bin/explodex.mjs";
 
 describe("CLI routing", () => {
-  test("parses public and internal routes", () => {
-    expect(parseCli([])).toEqual({ command: "launch" });
-    expect(parseCli(["install-launcher", "--system", "--force"])).toEqual({ command: "install-launcher", system: true, force: true });
-    expect(parseCli(["--from-app"])).toEqual({ command: "--from-app" });
-    expect(() => parseCli(["wat"])).toThrow("Unknown command");
-  });
-
   test("default route repairs then opens", async () => {
     const calls = [];
     await runCli([], {
@@ -19,12 +12,36 @@ describe("CLI routing", () => {
     expect(calls).toEqual(["install", "notify", "open:/tmp/Explodex.app"]);
   });
 
-  test("routes action commands to their handlers", async () => {
+  test("routes action commands and internal flags to their handlers", async () => {
     const calls = [];
     await runCli(["--from-app"], { launchFromApp: async () => calls.push("from-app") });
     await runCli(["inject"], { injectOnly: async () => calls.push("inject") });
     await runCli(["update"], { runUpdate: async () => calls.push("update") });
     await runCli(["--check-update"], { refreshUpdateCache: async () => calls.push("check") });
     expect(calls).toEqual(["from-app", "inject", "update", "check"]);
+  });
+
+  test("install-launcher forwards --system and --force", async () => {
+    let received;
+    await runCli(["install-launcher", "--system", "--force"], {
+      installLauncher: async (options) => { received = options; return { path: "/tmp/Explodex.app", repaired: true }; },
+    });
+    expect(received).toMatchObject({ system: true, force: true });
+  });
+
+  test("uninstall-launcher forwards --system", async () => {
+    let received;
+    await runCli(["uninstall-launcher", "--system"], {
+      uninstallLauncher: async (options) => { received = options; return { path: "/tmp/Explodex.app", removed: true }; },
+    });
+    expect(received).toEqual({ system: true });
+  });
+
+  test("rejects unknown commands", async () => {
+    await expect(runCli(["wat"])).rejects.toThrow("Unknown command: wat");
+  });
+
+  test("rejects unknown options", async () => {
+    await expect(runCli(["uninstall-launcher", "--force"])).rejects.toThrow("Unknown option");
   });
 });
