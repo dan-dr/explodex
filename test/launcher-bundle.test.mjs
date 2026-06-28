@@ -15,17 +15,17 @@ describe("launcher generation", () => {
     await generateLauncherBundle(app, "1.2.3");
     expect(await isExplodexOwnedBundle(app)).toBe(true);
     expect(await readFile(join(app, "Contents", "Info.plist"), "utf8")).toContain("1.2.3");
-    expect(await readFile(join(app, "Contents", "MacOS", "Explodex"), "utf8")).toContain("explodex --from-app");
+    expect(await readFile(join(app, "Contents", "MacOS", "Explodex"), "utf8")).toContain("explodex --launch");
     expect(await readFile(join(app, "Contents", "Resources", "progress.jxa"), "utf8")).toContain("NSProgressIndicator");
   });
 
-  test("repairs an owned launcher idempotently", async () => {
+  test("reinstalls an owned launcher idempotently", async () => {
     const home = await tempRoot();
     const first = await installLauncher({ home, version: "1.0.0" });
     await writeFile(join(first.path, "Contents", "Info.plist"), "broken");
     await writeFile(join(first.path, "Contents", "Resources", "stale-native-launcher"), "old");
     const second = await installLauncher({ home, version: "1.0.1" });
-    expect(second.repaired).toBe(true);
+    expect(second.path).toBe(first.path);
     expect(await readFile(join(second.path, "Contents", "Info.plist"), "utf8")).toContain("1.0.1");
     await expect(readFile(join(second.path, "Contents", "Resources", "stale-native-launcher"))).rejects.toThrow();
   });
@@ -43,7 +43,7 @@ describe("launcher generation", () => {
     const home = await tempRoot();
     await installLauncher({ home, version: "1.0.0" });
     const result = await installLauncher({ home, version: "1.0.1", force: true });
-    expect(result.repaired).toBe(true);
+    expect(await readFile(join(result.path, "Contents", "Info.plist"), "utf8")).toContain("1.0.1");
   });
 
   test("recognizes a legacy Explodex plist as owned", async () => {

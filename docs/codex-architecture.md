@@ -649,7 +649,7 @@ CODEX_ELECTRON_USER_DATA_PATH="$PWD/.explodex-user-data" \
 bun scripts/cdp-inject.ts
 ```
 
-Uses `Page.addScriptToEvaluateOnNewDocument` + `Runtime.evaluate`. No ASAR mutation. The injector applies the SDK/catalog to all matching renderer page targets found during its startup watch window (`EXPLODEX_TARGET_WATCH_MS`, default `8000`) so secondary startup renderers are not missed.
+Uses `Page.addScriptToEvaluateOnNewDocument` + `Runtime.evaluate`. No ASAR mutation. The injector applies the SDK/catalog to all matching renderer page targets found during its startup watch window. After the first injection it keeps polling (250ms cadence) for secondary startup renderers but breaks after two idle polls find no new target; `EXPLODEX_TARGET_WATCH_MS` (default `8000`) is the absolute ceiling, not a fixed wait — so a single-renderer launch prints its success line ~0.5s after injecting rather than ~8s later.
 
 For how this compares to `--inspect-brk`, what can be patched before React loads, and why massive early hooks still do not enable generic React props injection, see [early-injection-and-inspect-brk.md](./early-injection-and-inspect-brk.md).
 
@@ -670,7 +670,7 @@ Paste `sdk/explodex-sdk.js` into console (lost on reload unless CDP pre-inject).
 
 #### npm-installed launcher
 
-Installed mode generates `~/Applications/Explodex.app` locally. Its zsh entry resolves the current global `explodex --from-app` through a login shell; the npm package starts unmodified Codex with `--remote-debugging-port`, injects the packaged SDK/plugins, activates Codex, then exits. It does not run a daemon or override Codex user data. See [installation.md](./installation.md) and [local-development.md](./local-development.md).
+Installed mode generates `~/Applications/Explodex.app` locally. Its zsh entry resolves the current global `explodex --launch` through a login shell; the npm package starts unmodified Codex via LaunchServices (`open -a /Applications/Codex.app --args --remote-debugging-port=<port>`), injects the packaged SDK/plugins, activates Codex, then exits. Launching through `open` (rather than spawning `Contents/MacOS/Codex`) gives Codex its own TCC identity so its permission prompts are attributed to Codex, not the controlling terminal. It does not run a daemon or override Codex user data. See [installation.md](./installation.md) and [local-development.md](./local-development.md).
 
 ---
 

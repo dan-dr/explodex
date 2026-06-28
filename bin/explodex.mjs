@@ -2,19 +2,93 @@
 
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { homedir } from "node:os";
 import { realpathSync } from "node:fs";
 import { spawn } from "node:child_process";
-import cac from "cac";
+import { parseArgs } from "node:util";
+import * as clack from "@clack/prompts";
 import { installLauncher, uninstallLauncher } from "../lib/launcher-bundle.mjs";
-import { injectOnly, launchFromApp, readPackageVersion, runDoctor, runUpdate } from "../lib/launch.mjs";
+import { injectOnly, inspectState, launchFromApp, readPackageVersion, runDoctor, runUpdate } from "../lib/launch.mjs";
 import { notifyFromCache, refreshUpdateCache } from "../lib/version-check.mjs";
+import { getLauncherPath, pathExists } from "../lib/paths.mjs";
 
 const cliPath = fileURLToPath(import.meta.url);
 const installDir = join(dirname(cliPath), "..");
+const CODEX_APP = "/Applications/Codex.app";
 
-const HELP_NOTES = [
-  { body: "Install globally with pnpm, Bun, npm, or Yarn.\n  Example: pnpm add -g explodex" },
-];
+const FLAGS = {
+  help: { type: "boolean", short: "h" },
+  version: { type: "boolean", short: "v" },
+  yes: { type: "boolean", short: "y" },
+  system: { type: "boolean" },
+  force: { type: "boolean" },
+  launch: { type: "boolean" },
+  "from-app": { type: "boolean" },
+  "check-update": { type: "boolean" },
+};
+
+// Options each command accepts (besides the always-global --help/--version).
+const ALLOWED_OPTIONS = {
+  "": ["yes", "launch", "from-app", "check-update"],
+  inject: [],
+  update: [],
+  doctor: [],
+  "install-launcher": ["system", "force"],
+  "uninstall-launcher": ["system"],
+};
+
+// Friendlier aliases for the verbose launcher commands.
+const COMMAND_ALIASES = { install: "install-launcher", uninstall: "uninstall-launcher" };
+
+export function parseCli(args) {
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, strict: false, options: FLAGS });
+  if (values.help) return { command: "help" };
+  if (values.version && positionals.length === 0) return { command: "version" };
+
+  const command = COMMAND_ALIASES[positionals[0]] ?? positionals[0] ?? "";
+  if (!(command in ALLOWED_OPTIONS)) throw new Error(`Unknown command: ${positionals[0]}`);
+  if (positionals.length > 1) throw new Error(`Unexpected argument: ${positionals[1]}`);
+
+  const allowed = new Set([...ALLOWED_OPTIONS[command], "help", "version"]);
+  for (const key of Object.keys(values)) {
+    if (values[key] === undefined) continue;
+    if (!allowed.has(key)) throw new Error(`Unknown option: --${key}`);
+  }
+
+  return {
+    command,
+    system: Boolean(values.system),
+    force: Boolean(values.force),
+    yes: Boolean(values.yes),
+    launch: Boolean(values.launch || values["from-app"]),
+    checkUpdate: Boolean(values["check-update"]),
+  };
+}
+
+function printHelp() {
+  console.log(`explodex — launch Codex with the Explodex plugin SDK
+
+Usage:
+  explodex                    Open Explodex (offers to create the launcher app if missing)
+  explodex install            Install the launcher app without launching
+  explodex uninstall          Remove the launcher app
+  explodex inject             Inject into Codex on the Explodex debug port
+  explodex update             Update the global explodex install
+  explodex doctor             Report launcher, Codex, port, and injector state
+  explodex install [--system] [--force]
+  explodex uninstall [--system]
+
+Options:
+  -y, --yes                   Skip the confirmation prompt and create the app
+  -h, --help                  Show this help
+  -v, --version               Print the version
+
+When the launcher app is missing, explodex asks before creating it. Decline and
+explodex still launches Codex and injects plugins this once, just without
+creating the app (run \`explodex install\` to add it later).
+\`install\`/\`uninstall\` are aliases for \`install-launcher\`/\`uninstall-launcher\`.
+--system targets /Applications and requests authorization.`);
+}
 
 function openLauncher(path) {
   return new Promise((resolve, reject) => {
@@ -27,6 +101,7 @@ function openLauncher(path) {
 function resolveDependencies(overrides = {}) {
   return {
     launchFromApp: overrides.launchFromApp ?? launchFromApp,
+    inspectState: overrides.inspectState ?? inspectState,
     injectOnly: overrides.injectOnly ?? injectOnly,
     runUpdate: overrides.runUpdate ?? runUpdate,
     runDoctor: overrides.runDoctor ?? runDoctor,
@@ -35,71 +110,155 @@ function resolveDependencies(overrides = {}) {
     uninstallLauncher: overrides.uninstallLauncher ?? uninstallLauncher,
     notifyFromCache: overrides.notifyFromCache ?? notifyFromCache,
     openLauncher: overrides.openLauncher ?? openLauncher,
+    launcherExists: overrides.launcherExists ?? (() => pathExists(getLauncherPath())),
+    codexInstalled: overrides.codexInstalled ?? (() => pathExists(CODEX_APP)),
+    hasRunBefore: overrides.hasRunBefore ?? (() => pathExists(join(homedir(), ".explodex"))),
   };
 }
 
-export function buildCli(deps, version) {
-  const cli = cac("explodex");
+// Clack draws nicely on a TTY; piped output (logs, CI, tests) falls back to plain lines.
+function makeUi() {
+  const pretty = Boolean(process.stdout.isTTY);
+  if (pretty) {
+    return {
+      pretty,
+      intro: (m) => clack.intro(m),
+      outro: (m) => clack.outro(m),
+      note: (m, title) => clack.note(m, title),
+      info: (m) => clack.log.info(m),
+      warn: (m) => clack.log.warn(m),
+      cancel: (m) => clack.cancel(m),
+      spinner: () => clack.spinner(),
+      confirm: async (message, initialValue = true) => {
+        const answer = await clack.confirm({ message, initialValue });
+        if (clack.isCancel(answer)) return null;
+        return answer;
+      },
+    };
+  }
+  const noopSpinner = () => ({ start() {}, stop(m) { if (m) console.log(m); }, message() {} });
+  return {
+    pretty,
+    intro: () => {},
+    outro: (m) => { if (m) console.log(m); },
+    note: (m, title) => console.log(title ? `${title}\n${m}` : m),
+    info: (m) => console.log(m),
+    warn: (m) => console.warn(m),
+    cancel: (m) => console.warn(m),
+    spinner: noopSpinner,
+    confirm: async () => true,
+  };
+}
 
-  cli
-    .command("", "Repair ~/Applications/Explodex.app and open it")
-    .option("--from-app", "Internal: launch Codex from the app bundle")
-    .option("--check-update", "Internal: refresh the cached update notice")
-    .action(async (options) => {
-      if (options.fromApp) return deps.launchFromApp();
-      if (options.checkUpdate) return deps.refreshUpdateCache();
-      const result = await deps.installLauncher({ version, packageRoot: installDir });
-      await deps.notifyFromCache(version, { cliPath });
-      await deps.openLauncher(result.path);
-    });
+const WELCOME_NOTE = `Explodex wraps the Codex desktop app with a plugin SDK.
 
-  cli
-    .command("inject", "Inject into Codex on the Explodex debug port")
-    .action(() => deps.injectOnly());
+To open Codex with your plugins, Explodex uses a launcher app:
+  - Creates a launcher app at ~/Applications/Explodex.app
+  - Uses ~/.explodex for your plugins and logs
+  - Opens Explodex, which starts Codex with your plugins injected
 
-  cli
-    .command("update", "Update the global explodex install via your package manager")
-    .action(() => deps.runUpdate());
+It does not modify, move, or re-sign Codex itself.`;
 
-  cli
-    .command("doctor", "Report launcher, Codex, port, and injector state")
-    .action(async () => console.log(JSON.stringify(await deps.runDoctor(), null, 2)));
+// Describe what opening the launcher will do, based on the current Codex state.
+function describeState(state, port) {
+  switch (state) {
+    case "foreign-port":
+      return {
+        warn: `Port ${port} is held by another process — the launch may fail until it's freed (set EXPLODEX_DEBUG_PORT to change it).`,
+        outro: "Opening Explodex…",
+      };
+    default:
+      return { outro: "Opening Explodex — Codex will start with your plugins." };
+  }
+}
 
-  cli
-    .command("install-launcher", "Install or repair the Explodex launcher app")
-    .option("--system", "Install /Applications/Explodex.app with macOS authorization")
-    .option("--force", "Repair an existing Explodex-owned launcher")
-    .action(async (options) => {
-      const result = await deps.installLauncher({
-        system: Boolean(options.system),
-        force: Boolean(options.force),
-        version,
-        packageRoot: installDir,
-      });
-      console.log(`${result.repaired ? "Repaired" : "Installed"}: ${result.path}`);
-    });
+async function openExisting(deps, version, path, state, port, ui) {
+  const { warn, outro } = describeState(state, port);
+  if (warn) ui.warn(warn);
+  await deps.notifyFromCache(version, { cliPath });
+  await deps.openLauncher(path);
+  ui.outro(outro);
+}
 
-  cli
-    .command("uninstall-launcher", "Remove the Explodex launcher app")
-    .option("--system", "Remove /Applications/Explodex.app")
-    .action(async (options) => {
-      const result = await deps.uninstallLauncher({ system: Boolean(options.system) });
-      console.log(result.removed ? `Removed: ${result.path}` : `Not installed: ${result.path}`);
-    });
+async function runLaunch(parsed, deps, version) {
+  if (parsed.launch) return deps.launchFromApp();
+  if (parsed.checkUpdate) return deps.refreshUpdateCache();
 
-  cli.help((sections) => [...sections, ...HELP_NOTES]);
-  cli.version(version);
-  return cli;
+  const ui = makeUi();
+  const target = getLauncherPath();
+  ui.intro("Running Explodex");
+
+  // If Codex is already running with Explodex, there's nothing to do — don't
+  // reopen, re-inject, or touch the launcher.
+  const { state, port } = await deps.inspectState().catch(() => ({ state: "unknown" }));
+  if (state === "debug-codex") {
+    ui.outro("Codex is already running with Explodex — nothing to do.");
+    return;
+  }
+  if (state === "plain-codex") {
+    // We don't quit Codex for the user; ask them to quit it first.
+    ui.warn("Codex is running without Explodex.");
+    ui.outro("Quit Codex, then run `explodex` again to start it with your plugins.");
+    return;
+  }
+
+  // The launcher app is created only on first setup (or via `explodex install`),
+  // never silently reinstalled on launch. If it exists, just open it.
+  if (await deps.launcherExists()) {
+    await openExisting(deps, version, target, state, port, ui);
+    return;
+  }
+
+  // Missing launcher app: offer to create it (TTY only; --yes/non-TTY auto-creates).
+  if (ui.pretty && !parsed.yes) {
+    if (!(await deps.hasRunBefore())) ui.note(WELCOME_NOTE, "Welcome");
+    ui.warn(`No launcher app found at ${target}.`);
+    if (!(await deps.codexInstalled())) {
+      ui.warn(`Codex isn't installed at ${CODEX_APP}. Install Codex first — Explodex launches it but doesn't bundle it.`);
+    }
+    const ok = await ui.confirm("Create the Explodex launcher app now?");
+    if (!ok) {
+      // Decline = don't create the app, but still do what it would do: start
+      // Codex with remote debugging and inject the SDK + plugins now.
+      // launchFromApp streams its own injector progress, so no spinner here.
+      ui.info("Skipping the launcher app — launching Codex with plugins now.");
+      ui.info("Run `explodex install` to add the launcher app for next time.");
+      await deps.launchFromApp();
+      ui.outro("Codex is starting with your plugins.");
+      return;
+    }
+  }
+
+  const spin = ui.spinner();
+  spin.start("Creating the Explodex launcher app");
+  const result = await deps.installLauncher({ version, packageRoot: installDir });
+  spin.stop(`Created launcher at ${result.path}`);
+  await openExisting(deps, version, result.path, state, port, ui);
 }
 
 export async function runCli(args, dependencies = {}) {
+  const parsed = parseCli(args);
   const version = await readPackageVersion();
-  const cli = buildCli(resolveDependencies(dependencies), version);
-  const parsed = cli.parse(["node", "explodex", ...args], { run: false });
-  if (cli.matchedCommand?.name === "" && parsed.args.length) {
-    throw new Error(`Unknown command: ${parsed.args[0]}`);
+  const deps = resolveDependencies(dependencies);
+
+  switch (parsed.command) {
+    case "help": printHelp(); return;
+    case "version": console.log(version); return;
+    case "inject": await deps.injectOnly(); return;
+    case "update": await deps.runUpdate(); return;
+    case "doctor": console.log(JSON.stringify(await deps.runDoctor(), null, 2)); return;
+    case "install-launcher": {
+      const result = await deps.installLauncher({ system: parsed.system, force: parsed.force, version, packageRoot: installDir });
+      console.log(`Installed: ${result.path}`);
+      return;
+    }
+    case "uninstall-launcher": {
+      const result = await deps.uninstallLauncher({ system: parsed.system });
+      console.log(result.removed ? `Removed: ${result.path}` : `Not installed: ${result.path}`);
+      return;
+    }
+    case "": await runLaunch(parsed, deps, version); return;
   }
-  await cli.runMatchedCommand();
 }
 
 function isMainModule() {

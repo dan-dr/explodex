@@ -104,7 +104,7 @@ yarn global add explodex
 explodex
 ```
 
-The first run creates or repairs `~/Applications/Explodex.app` and opens it. The generated app is a local launcher: it does not modify, re-sign, or change the bundle ID of Codex. If plain Codex is already running, Explodex asks before quitting and relaunching it.
+You will be prompted to create `~/Applications/Explodex.app`, a lightweight launcher: it does not modify, re-sign, or change the bundle ID of Codex.
 
 See [docs/installation.md](docs/installation.md) for commands, launch states, recovery, and logs.
 

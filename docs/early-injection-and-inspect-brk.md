@@ -89,7 +89,7 @@ Early preamble injection fixes **timing**; it does not by itself fix **wrong hoo
 
 ### Late attach mitigation
 
-`EXPLODEX_TARGET_WATCH_MS` (default `8000`) watches for additional renderer targets during startup. Plugins that depend on React-owned DOM should use `observeZone()` and reload after inject if bootstrap must run before modules.
+`EXPLODEX_TARGET_WATCH_MS` (default `8000`) is the upper bound for watching additional renderer targets during startup; the injector exits early once two consecutive polls (250ms apart) find no new target after the first injection, so it normally returns in ~0.5s. Plugins that depend on React-owned DOM should use `observeZone()` and reload after inject if bootstrap must run before modules.
 
 ---
 

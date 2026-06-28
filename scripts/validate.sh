@@ -31,7 +31,7 @@ for json in package.json .mcp.json plugins/*/plugin.json; do
   bun -e "JSON.parse(await Bun.file('$json').text())"
 done
 
-bunx --bun tsc -p sdk/tsconfig.json
+bun run --bun tsc -p sdk/tsconfig.json
 bun run build:npm
 bun test
 

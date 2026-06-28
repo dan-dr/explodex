@@ -1,0 +1,169 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Release to npm and GitHub
+    runs-on: macos-14
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install npm 11.16.0
+        run: npm install -g npm@11.16.0
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Fetch origin/main
+        run: git fetch origin main
+
+      - name: Run release check and extract notes
+        id: check
+        run: |
+          # Run validation on the tag
+          NPM_TAG=$(bun run release:check -- "${{ github.ref_name }}" | tail -n 1)
+          echo "npm_tag=$NPM_TAG" >> "$GITHUB_OUTPUT"
+          
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          
+          # Extract notes to a temporary file
+          bun run release:notes -- "$VERSION" > "$RUNNER_TEMP/release-notes.txt"
+
+      - name: Verify tag is ancestor of main
+        run: |
+          git merge-base --is-ancestor "${{ github.sha }}" origin/main
+
+      - name: Run validation
+        run: bun run validate
+
+      - name: Dry-run npm pack
+        run: npm pack --dry-run --json
+
+      - name: Require clean generated diff
+        run: git diff --exit-code
+
+      - name: Check npm version status
+        id: npm-status
+        run: |
+          PACKAGE_NAME=$(node -e "console.log(JSON.parse(require('fs').readFileSync('package.json', 'utf8')).name)")
+          VERSION="${{ steps.check.outputs.version }}"
+          echo "Package name: $PACKAGE_NAME, Version: $VERSION"
+          
+          # Query npm registry
+          NPM_INFO=$(npm view "${PACKAGE_NAME}@${VERSION}" --json 2>/dev/null || true)
+          
+          if [ -z "$NPM_INFO" ]; then
+            echo "Version $VERSION is not found on npm. Will publish."
+            echo "action=publish" >> "$GITHUB_OUTPUT"
+          else
+            echo "Version $VERSION exists on npm. Checking gitHead..."
+            GIT_HEAD=$(echo "$NPM_INFO" | node -e "
+              const fs = require('fs');
+              const data = JSON.parse(fs.readFileSync(0, 'utf-8'));
+              console.log(data.gitHead || '');
+            ")
+            echo "npm gitHead: $GIT_HEAD"
+            echo "GitHub SHA: ${{ github.sha }}"
+            
+            if [ "$GIT_HEAD" = "${{ github.sha }}" ]; then
+              echo "gitHead matches GITHUB_SHA. This is an idempotent retry. Skipping npm publish."
+              echo "action=skip" >> "$GITHUB_OUTPUT"
+            else
+              echo "Error: Version $VERSION is already published on npm with a different commit (npm: $GIT_HEAD, github: ${{ github.sha }})." >&2
+              exit 1
+            fi
+          fi
+
+      - name: Publish to npm
+        if: steps.npm-status.outputs.action == 'publish'
+        run: |
+          npm publish --provenance --access public --tag ${{ steps.check.outputs.npm_tag }}
+
+      - name: Verify npm publication and propagation
+        run: |
+          PACKAGE_NAME=$(node -e "console.log(JSON.parse(require('fs').readFileSync('package.json', 'utf8')).name)")
+          VERSION="${{ steps.check.outputs.version }}"
+          EXPECTED_SHA="${{ github.sha }}"
+          
+          echo "Verifying $PACKAGE_NAME@$VERSION is live on npm with commit $EXPECTED_SHA..."
+          
+          for i in {1..10}; do
+            echo "Attempt $i to fetch registry status..."
+            NPM_INFO=$(npm view "${PACKAGE_NAME}@${VERSION}" --json 2>/dev/null || true)
+            if [ -n "$NPM_INFO" ]; then
+              GIT_HEAD=$(echo "$NPM_INFO" | node -e "
+                const fs = require('fs');
+                const data = JSON.parse(fs.readFileSync(0, 'utf-8'));
+                console.log(data.gitHead || '');
+              ")
+              if [ "$GIT_HEAD" = "$EXPECTED_SHA" ]; then
+                echo "Successfully verified: version $VERSION is live on npm with gitHead $EXPECTED_SHA."
+                exit 0
+              else
+                echo "Found version $VERSION but gitHead was '$GIT_HEAD' (expected '$EXPECTED_SHA')."
+              fi
+            else
+              echo "Version $VERSION not yet visible on npm."
+            fi
+            sleep 5
+          done
+          
+          echo "Error: Verification timed out. Version $VERSION with commit $EXPECTED_SHA was not verified on npm." >&2
+          exit 1
+
+      - name: Create or verify GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
+            echo "GitHub Release for ${{ github.ref_name }} already exists. Verifying tag..."
+            echo "Release verified successfully."
+            exit 0
+          fi
+          
+          # Check if there is any prior release
+          PRIOR_RELEASE_COUNT=$(gh release list --limit 1 --json tagName --jq '. | length' 2>/dev/null || echo "0")
+          
+          GH_FLAGS=("--title" "${{ github.ref_name }}" "--notes-file" "$RUNNER_TEMP/release-notes.txt")
+          
+          if [ "${{ steps.check.outputs.npm_tag }}" = "latest" ]; then
+            GH_FLAGS+=("--latest=true")
+          else
+            GH_FLAGS+=("--prerelease" "--latest=false")
+          fi
+          
+          if [ "$PRIOR_RELEASE_COUNT" -gt 0 ]; then
+            echo "Prior releases found. Appending GitHub-generated notes..."
+            GH_FLAGS+=("--generate-notes")
+          else
+            echo "No prior releases found. Using curated notes only."
+          fi
+          
+          gh release create "${{ github.ref_name }}" "${GH_FLAGS[@]}"

@@ -1,10 +1,15 @@
 {
   "name": "explodex",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "A plugin SDK for extending the Codex desktop app.",
   "types": "sdk/explodex-sdk.d.ts",
   "bin": {
     "explodex": "bin/explodex.mjs"
+  },
+  "packageManager": "bun@1.3.14",
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
   },
   "files": [
     "bin/",
@@ -20,8 +25,8 @@
   "os": [
     "darwin"
   ],
-  "dependencies": {
-    "cac": "^6.7.14"
+  "devDependencies": {
+    "typescript": "5.9.3"
   },
   "repository": {
     "type": "git",
@@ -48,10 +53,15 @@
     "clean": "zsh scripts/clean.sh",
     "sync": "bun scripts/package-app.ts",
     "validate": "./scripts/validate.sh",
+    "release:check": "bun scripts/release-util.ts check",
+    "release:notes": "bun scripts/release-util.ts notes",
     "layout:snapshot": "bun scripts/cdp-layout-snapshot.ts",
     "react-devtools": "bun scripts/cdp-react-devtools.ts",
     "test": "bun test",
     "build:npm": "bun scripts/build-npm.ts",
     "prepack": "bun run build:npm"
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.6.0"
   }
 }

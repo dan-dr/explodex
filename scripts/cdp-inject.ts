@@ -507,6 +507,13 @@ async function main(): Promise<void> {
   const injected = new Set<string>();
   let firstInjectionAt: number | null = null;
   let attempt = 0;
+  // After the first injection we keep scanning to catch a secondary renderer
+  // that mounts a beat later, but Codex normally exposes a single page target.
+  // Bail as soon as a couple of quick polls turn up nothing new instead of
+  // sitting through the full TARGET_WATCH_MS ceiling (that tail used to delay
+  // the success line by ~8s even though plugins were already live).
+  const IDLE_POLLS_BEFORE_DONE = 2;
+  let idlePolls = 0;
 
   while (firstInjectionAt == null || Date.now() - firstInjectionAt < TARGET_WATCH_MS) {
     const targets = await getTargets();
@@ -520,6 +527,7 @@ async function main(): Promise<void> {
       continue;
     }
 
+    let injectedThisPoll = 0;
     for (const page of pages) {
       const wsUrl = page.webSocketDebuggerUrl;
       if (!wsUrl || injected.has(wsUrl)) continue;
@@ -531,11 +539,16 @@ async function main(): Promise<void> {
       }
       await injectSourcesViaCdp(wsUrl, sources);
       injected.add(wsUrl);
+      injectedThisPoll++;
       firstInjectionAt ??= Date.now();
     }
 
     if (TARGET_WATCH_MS <= 0) break;
-    await sleep(800);
+    if (firstInjectionAt != null) {
+      idlePolls = injectedThisPoll === 0 ? idlePolls + 1 : 0;
+      if (idlePolls >= IDLE_POLLS_BEFORE_DONE) break;
+    }
+    await sleep(250);
   }
 
   if (!injected.size) {

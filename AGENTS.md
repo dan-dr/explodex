@@ -20,6 +20,7 @@ Explodex wraps the Codex Electron app with a plugin SDK (`sdk/explodex-sdk.js`),
 | [docs/sdk-api.md](docs/sdk-api.md) | **SDK API reference** for plugin authors and agents |
 | [docs/sdk-fragility.md](docs/sdk-fragility.md) | SDK breakage analysis, stable vs fragile deps, upgrade checklist |
 | [docs/early-injection-and-inspect-brk.md](docs/early-injection-and-inspect-brk.md) | inspect-brk vs CDP early inject, massive patch tiers, React props limits |
+| [docs/RELEASING.md](docs/RELEASING.md) | **Release procedure** and registry propagation/recovery guidelines |
 | [docs/plugins/README.md](docs/plugins/README.md) | Plugin-by-plugin review and docs index |
 
 When you change behavior, discover new Codex internals, or fix a plugin based on architecture knowledge:

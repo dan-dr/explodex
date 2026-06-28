@@ -45,6 +45,10 @@ At rest, the filled white pushpin sits beside the thread timestamp with a small 
 
 Pin-to-project reorders the sidebar immediately (`flushProjectPinReorder`) before persisting `sidebar-project-thread-orders`, instead of waiting only on the debounced mutation reconcile.
 
+### Recency sort for unpinned threads (v1.3.1+)
+
+Removing `sortKey` freezes manual `threadIds` order. Unpinned project threads are now re-sorted by sidebar recency timestamps on each reconcile, and projects with no project pins restore `sortKey: "updated_at"` so Codex can auto-sort again.
+
 ### Mutual exclusivity (v1.2.6+)
 
 A thread cannot be globally and project-pinned at the same time. Pinning one scope clears the other. Reconcile also drops stale project-pin map entries when Codex reports the thread as globally pinned.

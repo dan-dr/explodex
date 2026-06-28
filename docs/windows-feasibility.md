@@ -14,7 +14,7 @@ The CLI routes installed-mode operations through a platform adapter. macOS is co
 | Profile continuity | Do not set Electron user-data override in installed mode | Existing login, settings, projects persist |
 | Port ownership | TCP owner PID via PowerShell/Get-NetTCPConnection, then resolve executable path | Foreign-owner and access-denied cases |
 | Updater | Launch the currently installed executable; do not patch update resources | Behavior across auto-update restart |
-| Shortcut | Per-user Start Menu/Desktop `.lnk` generated through PowerShell COM; optional elevated all-users shortcut | Repair and ownership marker semantics |
+| Shortcut | Per-user Start Menu/Desktop `.lnk` generated through PowerShell COM; optional elevated all-users shortcut | Reinstall and ownership marker semantics |
 | Splash | PowerShell/WPF or a small local script-host UI; no distributed native launcher binary | Startup latency, focus, cancellation, accessibility |
 | Injection | Reuse Node CDP injector and npm-packaged SDK/plugins | WebSocket/CDP behavior in production app |
 | Logs | `%LOCALAPPDATA%\\Explodex\\logs` | Actionable errors and privacy |

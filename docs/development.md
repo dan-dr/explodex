@@ -12,7 +12,7 @@ Explodex is a source-first repo. Keep proprietary Codex bundles and extracted re
 | `scripts/cdp-inject.ts` | CDP injector (Bun TypeScript; shell entry `cdp-inject.sh`) |
 | `scripts/dev.ts` | Local dev: package + chrome-devtools-mcp + launch |
 | `scripts/package-app.ts` | Build the source-development `dist/Explodex.app` |
-| `lib/launcher-bundle.mjs` | Generate/repair the lightweight npm-installed launcher |
+| `lib/launcher-bundle.mjs` | Generate the lightweight npm-installed launcher |
 | `lib/platform/macos.mjs` | Installed-mode macOS launch state adapter |
 | `scripts/launch.sh` | Launch Codex with remote debugging and inject Explodex |
 | `templates/explodex-app/` | Tracked shell launcher template for the wrapper app |
@@ -32,7 +32,7 @@ bun run dev
 
 This packages `dist/Explodex.app`, launches it, waits for debug port `9333`, and starts `chrome-devtools-mcp` for agent inspection (see `.mcp.json`).
 
-The CDP injector applies the SDK/catalog to every matching Codex renderer target it sees during startup (`EXPLODEX_TARGET_WATCH_MS`, default `8000`). Inside each renderer, SDK zones can be observed with `Explodex.observeZone(zoneId, callback)` so plugins can remount after React replaces a portal/sidebar node.
+The CDP injector applies the SDK/catalog to every matching Codex renderer target it sees during startup. After the first injection it keeps polling (every 250ms) for late-mounting secondary renderers but exits as soon as two consecutive polls find nothing new; `EXPLODEX_TARGET_WATCH_MS` (default `8000`) is only the absolute upper bound, so the common single-window case finishes in ~0.5s instead of waiting out the full window. Inside each renderer, SDK zones can be observed with `Explodex.observeZone(zoneId, callback)` so plugins can remount after React replaces a portal/sidebar node.
 
 Re-inject after editing SDK or plugins:
 

@@ -23,6 +23,16 @@
 
   const PIN_LABEL_RE = /^(pin|unpin)\s+(chat|conversation)/i;
   const SHOW_MORE_LESS_RE = /show\s+(more|less)/i;
+  const RELATIVE_ACTIVITY_RE = /^(\d+)(mo|w|d|h|m|s)$/i;
+  const ACTIVITY_UNIT_MS = {
+    s: 1_000,
+    m: 60_000,
+    h: 3_600_000,
+    d: 86_400_000,
+    w: 604_800_000,
+    mo: 2_592_000_000,
+  };
+  const DEFAULT_PROJECT_THREAD_SORT_KEY = "updated_at";
 
   const CONVERSATION_ID_RE =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -33,7 +43,7 @@
     {
       id: "project-pins",
       name: "Project Pins",
-      version: "1.3.0",
+      version: "1.3.1",
       dynamicLoadable: true,
       dynamicUnloadable: true,
     },
@@ -683,16 +693,92 @@
         return next;
       }
 
-      function applyProjectPinOrder(orders, pins) {
-        const groups = groupedPinnedThreadKeys(pins);
-        const pinnedThreadKeys = new Set(Object.values(groups).flat());
-        if (pinnedThreadKeys.size === 0) return { changed: false, orders };
+      function rowActivityMsFromListItem(row) {
+        const label =
+          row.querySelector(".tabular-nums")?.textContent?.replace(/\s+/g, " ").trim() ?? "";
+        const match = label.match(RELATIVE_ACTIVITY_RE);
+        if (!match) return Number.POSITIVE_INFINITY;
 
+        const amount = Number(match[1]);
+        const unit = match[2].toLowerCase();
+        const unitMs = ACTIVITY_UNIT_MS[unit];
+        if (unitMs == null) return Number.POSITIVE_INFINITY;
+        return amount * unitMs;
+      }
+
+      function sortThreadIdsByRecency(projectId, threadIds) {
+        const activityById = new Map();
+        for (const { threadId, el } of projectSidebarListItems(projectId)) {
+          activityById.set(threadId, rowActivityMsFromListItem(el));
+        }
+
+        return [...threadIds].sort((left, right) => {
+          const leftMs = activityById.get(left) ?? Number.POSITIVE_INFINITY;
+          const rightMs = activityById.get(right) ?? Number.POSITIVE_INFINITY;
+          if (leftMs !== rightMs) return leftMs - rightMs;
+          return threadIds.indexOf(left) - threadIds.indexOf(right);
+        });
+      }
+
+      function unpinnedThreadIdsForProject(projectId, pinnedIds, existingIds) {
+        const pinnedSet = new Set(pinnedIds);
+        const sidebarIds = projectSidebarListItems(projectId).map((entry) => entry.threadId);
+        const pool =
+          sidebarIds.length > 0
+            ? [
+                ...new Set([
+                  ...sidebarIds,
+                  ...existingIds.filter((id) => !pinnedSet.has(id)),
+                ]),
+              ]
+            : existingIds.filter((id) => !pinnedSet.has(id));
+        return sortThreadIdsByRecency(
+          projectId,
+          pool.filter((id) => !pinnedSet.has(id)),
+        );
+      }
+
+      function restoreRecencySortForUnpinnedProjects(orders, groups) {
         let nextOrders = orders;
         let changed = false;
 
         for (const [projectId, order] of Object.entries(orders)) {
+          if ((groups[projectId] ?? []).length > 0) continue;
+          if (!order || typeof order !== "object") continue;
+          if (order.sortKey === DEFAULT_PROJECT_THREAD_SORT_KEY && !Array.isArray(order.threadIds)) {
+            continue;
+          }
+          const hadManualOrder = Array.isArray(order.threadIds) && order.threadIds.length > 0;
+          const missingSortKey = !("sortKey" in order) || order.sortKey == null;
+          if (!missingSortKey && !hadManualOrder) continue;
+          if (nextOrders === orders) nextOrders = { ...orders };
+          nextOrders[projectId] = { sortKey: DEFAULT_PROJECT_THREAD_SORT_KEY };
+          changed = true;
+        }
+
+        return { changed, orders: nextOrders };
+      }
+
+      function applyProjectPinOrder(orders, pins) {
+        const groups = groupedPinnedThreadKeys(pins);
+        const pinnedThreadKeys = new Set(Object.values(groups).flat());
+
+        let nextOrders = orders;
+        let changed = false;
+
+        const restored = restoreRecencySortForUnpinnedProjects(nextOrders, groups);
+        if (restored.changed) {
+          nextOrders = restored.orders;
+          changed = true;
+        }
+
+        if (pinnedThreadKeys.size === 0) {
+          return { changed, orders: nextOrders };
+        }
+
+        for (const [projectId, order] of Object.entries(nextOrders)) {
           const pinnedForProject = new Set(groups[projectId] ?? []);
+          if (pinnedForProject.size === 0) continue;
           const existingIds = Array.isArray(order?.threadIds) ? order.threadIds : [];
           const filteredIds = existingIds.filter(
             (id) => !pinnedThreadKeys.has(id) || pinnedForProject.has(id),
@@ -709,7 +795,7 @@
           const existingIds = Array.isArray(current?.threadIds) ? current.threadIds : [];
           const nextIds = [
             ...pinnedIds,
-            ...existingIds.filter((id) => !pinnedIds.includes(id)),
+            ...unpinnedThreadIdsForProject(projectId, pinnedIds, existingIds),
           ];
           const hadSortKey = current && typeof current === "object" && "sortKey" in current;
           if (!arraysEqual(existingIds, nextIds) || hadSortKey || !current) {
@@ -732,16 +818,19 @@
         await reconcileExclusivePins();
         if (disposed) return;
         const pins = readProjectPins();
-        if (Object.keys(pins).length === 0) {
-          syncProjectPinVisuals();
-          return;
-        }
-
         reconcileInFlight = true;
         try {
           const orders = await readProjectOrders();
           if (disposed) return;
           const next = applyProjectPinOrder(orders, pins);
+          if (Object.keys(pins).length === 0) {
+            if (next.changed) {
+              await storage.globalState.set(GLOBAL_STATE_KEYS.projectOrders, next.orders);
+              log.debug("restored project thread recency sort");
+            }
+            syncProjectPinVisuals();
+            return;
+          }
           if (disposed) return;
           if (next.changed) {
             await writeProjectOrders(next.orders);
@@ -800,14 +889,18 @@
         await hydrateProjectPins();
         if (disposed) return;
         const pins = readProjectPins();
-        if (Object.keys(pins).length === 0) {
-          syncProjectPinVisuals();
-          return;
-        }
         const orders = await readProjectOrders();
         if (disposed) return;
         const next = applyProjectPinOrder(orders, pins);
         if (disposed) return;
+        if (Object.keys(pins).length === 0) {
+          if (next.changed) {
+            await storage.globalState.set(GLOBAL_STATE_KEYS.projectOrders, next.orders);
+            log.debug("restored project thread recency sort");
+          }
+          syncProjectPinVisuals();
+          return;
+        }
         if (next.changed) {
           await writeProjectOrders(next.orders);
         } else {
