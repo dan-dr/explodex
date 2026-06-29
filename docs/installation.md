@@ -20,7 +20,7 @@ explodex
 
 Bun is the runtime used by the project. Node.js 22+ should also be compatible.
 
-The package-manager command installs Explodex globally. Running `explodex` then opens the launcher app (creating it the first time, with confirmation), after checking the cached npm registry update notification.
+The package-manager command installs Explodex globally. Running `explodex` then opens the launcher app (creating it the first time, with confirmation), offers the plugin creator skill on the first interactive run, and checks the cached npm registry version notification.
 
 On a terminal (TTY), `explodex` uses an interactive flow ([`@clack/prompts`](https://github.com/bombshell-dev/clack)):
 
@@ -30,6 +30,7 @@ On a terminal (TTY), `explodex` uses an interactive flow ([`@clack/prompts`](htt
   - **Confirm** → create `~/Applications/Explodex.app` and open it.
   - **Decline** → do **not** create the app, but still do what the app would do this once: start Codex with remote debugging and inject the SDK + plugins directly via the CLI. The hint suggests `explodex install` to add the launcher app later.
 - Pass `-y`/`--yes` to skip the prompt and create the app. When output is not a TTY (pipes, CI, logs) the prompt is skipped, a missing launcher is created, an existing one is opened as-is, and plain status lines are printed.
+- On the first interactive run, Explodex checks for `explodex-plugin-builder` and offers **Install plugin creator skill (Recommended)**. Accepting runs `npx skills add dan-dr/explodex`. `--yes` accepts this recommendation; non-interactive runs without `--yes` do not start a network install.
 
 The interactive launch is only for the bare `explodex` command; the launcher app itself invokes `explodex --launch`, which stays non-interactive and runs the full launch state machine below. `--from-app` remains a deprecated alias for the same behavior. `install`/`uninstall` are aliases for `install-launcher`/`uninstall-launcher`.
 
@@ -47,8 +48,8 @@ The launcher is generated locally from plist, icon, zsh, and JXA/AppKit assets. 
 | `explodex uninstall-launcher` | Move the owned user launcher to Trash |
 | `explodex uninstall-launcher --system` | Remove the owned system launcher after authorization |
 | `explodex inject` | Inject into Codex already running on the configured debug port |
-| `explodex update` | Run `npm install -g explodex@latest` |
-| `explodex doctor` | Print Codex, injector, port, and log diagnostics |
+| `explodex install-skill` | Run `npx skills add dan-dr/explodex` to install the plugin creator skill |
+| `explodex doctor` | Re-run onboarding checks for `Explodex.app` and the plugin creator skill; offer to repair missing pieces interactively |
 
 An existing bundle without the Explodex ownership marker or legacy Explodex bundle identity is never overwritten or removed, including with `--force`.
 
@@ -74,6 +75,6 @@ Logs are under `~/.explodex/logs/`:
 
 Because Codex is launched via `open` (LaunchServices), its stdout/stderr are not captured into `~/.explodex/logs/`; use Codex's own logging for that stream.
 
-Explodex checks npm at most once per 24 hours in a detached background process. Cached results may print a notification; Explodex never updates itself automatically. Run `explodex update` explicitly.
+Explodex checks npm at most once per 24 hours in a detached background process. Cached results may print a new-version notification; Explodex never updates itself automatically. Reinstall with the package manager used for the global installation.
 
 No daemon monitors Codex. Restart survival after Codex self-update is deferred research.

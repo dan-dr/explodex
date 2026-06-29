@@ -35,10 +35,11 @@ Explodex ships with a handful of plugins — useful on their own, and good start
 
 ## Build your own plugin
 
-Explodex is meant to be modded *with* Codex. Clone the repo, open it in Codex (or any AI agent), and describe what you want — e.g. *"add a button that copies the thread as markdown."* Bundled agent skills drive the whole loop (scaffold → SDK hooks → validate → hot-reload into the live app, no restart):
+With Explodex you create mods using Codex itself in realtime. Run explodex, and use the bundled skill, describe what you want, and watch it happen in real time. try *"it's christmas! add a snowing effect to codex"*. The plugin-builder skill drives the whole loop (scaffold → SDK hooks → validate → live injection):
 
-- [`explodex-plugin-builder`](skills/explodex-plugin-builder/SKILL.md) — research → scaffold → implement → validate → verify
-- [`explodex-live-plugins`](skills/explodex-live-plugins/SKILL.md) — prototype and hot-reload against the live renderer
+- [`explodex-plugin-builder`](skills/explodex-plugin-builder/SKILL.md): canonical workflow; uses an existing Explodex renderer when available and works offline when it is not
+
+Install it with `explodex install-skill` or `npx skills add dan-dr/explodex`.
 
 The [SDK reference](docs/sdk-api.md) and [types](sdk/explodex-sdk.d.ts) keep the agent on stable surfaces; the included plugins double as templates.
 
@@ -105,6 +106,7 @@ explodex
 ```
 
 You will be prompted to create `~/Applications/Explodex.app`, a lightweight launcher: it does not modify, re-sign, or change the bundle ID of Codex.
+The first interactive run also offers to install the plugin creator skill. Re-run both onboarding checks later with `explodex doctor`.
 
 See [docs/installation.md](docs/installation.md) for commands, launch states, recovery, and logs.
 

@@ -24,6 +24,8 @@
   const PIN_LABEL_RE = /^(pin|unpin)\s+(chat|conversation)/i;
   const SHOW_MORE_LESS_RE = /show\s+(more|less)/i;
   const RELATIVE_ACTIVITY_RE = /^(\d+)(mo|w|d|h|m|s)$/i;
+  const IN_PROGRESS_LABEL_RE = /^(in progress|working|pending)$/i;
+  const IN_PROGRESS_ACTIVITY_MS = -1;
   const ACTIVITY_UNIT_MS = {
     s: 1_000,
     m: 60_000,
@@ -43,7 +45,7 @@
     {
       id: "project-pins",
       name: "Project Pins",
-      version: "1.3.1",
+      version: "1.3.2",
       dynamicLoadable: true,
       dynamicUnloadable: true,
     },
@@ -693,7 +695,25 @@
         return next;
       }
 
+      function rowIsInProgressFromListItem(row) {
+        if (!row) return false;
+        if (row.querySelector(".animate-spin, .loading-shimmer-pure-text")) return true;
+
+        const tabular = row.querySelector(".tabular-nums");
+        if (tabular) {
+          const label = tabular.textContent?.replace(/\s+/g, " ").trim() ?? "";
+          if (IN_PROGRESS_LABEL_RE.test(label)) return true;
+          if (tabular.classList.contains("loading-shimmer-pure-text")) return true;
+          if (label) return false;
+        }
+
+        // Codex replaces the recency timestamp with an active-status dot while a turn runs.
+        return !!row.querySelector(".icon-xs.relative.scale-50 .rounded-full[style]");
+      }
+
       function rowActivityMsFromListItem(row) {
+        if (rowIsInProgressFromListItem(row)) return IN_PROGRESS_ACTIVITY_MS;
+
         const label =
           row.querySelector(".tabular-nums")?.textContent?.replace(/\s+/g, " ").trim() ?? "";
         const match = label.match(RELATIVE_ACTIVITY_RE);

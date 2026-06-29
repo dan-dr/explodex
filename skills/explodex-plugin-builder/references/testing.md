@@ -49,7 +49,8 @@ list_pages → select_page (Codex renderer) → evaluate_script → take_snapsho
   sdk: typeof Explodex !== "undefined",
   version: Explodex?.version,
   bridge: Explodex?.bridge?.isAvailable?.(),
-  plugins: Explodex?.plugins?.list?.()?.map(p => ({ id: p.id, loaded: p.loaded })),
+  catalog: Explodex?.plugins?.listCatalog?.() ?? [],
+  loaded: Explodex?.plugins?.list?.() ?? [],
 })
 ```
 
@@ -69,7 +70,8 @@ Check return value / errors. For non-dynamic plugins, restart app after `bun run
 
 ```js
 () => ({
-  registered: Explodex.plugins.list().find(p => p.id === "my-plugin-id"),
+  cataloged: Explodex.plugins.listCatalog().includes("my-plugin-id"),
+  loaded: Explodex.plugins.list().includes("my-plugin-id"),
   zones: document.querySelector("[data-above-composer-portal]") != null,
 })
 ```
@@ -99,7 +101,7 @@ Use `click`, `fill`, or `evaluate_script` to trigger plugin behavior, then re-sn
 ```js
 () => ({
   popoverOpen: document.querySelector(".ex-popover-backdrop") != null,
-  pluginLoaded: Boolean(Explodex?.plugins?.list?.().find(p => p.id === "my-plugin-id")),
+  pluginLoaded: Explodex?.plugins?.list?.().includes("my-plugin-id") ?? false,
 })
 ```
 
@@ -131,7 +133,7 @@ async () => {
 ### Setup
 - [ ] `bun run dev` running, MCP connected
 - [ ] SDK version matches expected
-- [ ] Plugin in `Explodex.plugins.list()`, loaded: true
+- [ ] Plugin ID in `Explodex.plugins.listCatalog()` and `Explodex.plugins.list()`
 
 ### Steps
 1. <navigation or setup action>
@@ -218,7 +220,7 @@ react-scan is dev-only instrumentation; no plugin teardown required. Reload rend
 
 ## Reasoning-effort / turn context
 
-When plugin affects model or effort, verify against rollout JSONL `turn_context` field (see [docs/reasoning-effort-prefix-session.md](../../docs/reasoning-effort-prefix-session.md)). MCP alone may not expose turn payload — check filesystem logs if needed.
+When a plugin affects model or effort, verify against rollout JSONL `turn_context` (see [docs/reasoning-effort-prefix-session.md](../../../docs/reasoning-effort-prefix-session.md)). MCP alone may not expose the turn payload; check filesystem logs if needed.
 
 ## Security (renderer context)
 

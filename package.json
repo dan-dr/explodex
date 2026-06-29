@@ -17,7 +17,9 @@
     "sdk/explodex-sdk.js",
     "sdk/explodex-sdk.d.ts",
     "plugins/",
-    "assets/icon/Explodex.icns"
+    "assets/icon/Explodex.icns",
+    "scripts/splash-screen.swift",
+    "templates/splash-app/"
   ],
   "engines": {
     "node": ">=22"

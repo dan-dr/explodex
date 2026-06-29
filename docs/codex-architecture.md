@@ -540,6 +540,18 @@ Main → message-for-view reply
 
 Explodex SDK wraps common RPCs: `get-setting`, `set-setting`, `get-global-state`, `set-global-state`, `navigate-to-route`.
 
+### Renderer host events versus AppServer requests
+
+Not every message-shaped action is an AppServer request. Renderer host events such as
+`new-quick-chat` are registered inside `app-main-*.js` and delivered through Codex's
+in-renderer `dispatchHostMessage` singleton. They are not AppServer requests or
+Electron view messages. Sending one through either outward path misses the handler.
+
+The built-in Explodex shell uses Codex's native `New chat` control, then the
+new-composer `Don't work in a project` control. It waits for a stable composer before
+inserting the builder prompt. This preserves Codex's own project-state updates
+and avoids a separate `/` navigation that can resolve back to the active thread.
+
 ### Persisted atom sync
 
 | Message | Direction |

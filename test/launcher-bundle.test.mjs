@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, constants, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { generateLauncherBundle, installLauncher, isExplodexOwnedBundle } from "../lib/launcher-bundle.mjs";
@@ -17,7 +17,10 @@ describe("launcher generation", () => {
     expect(await readFile(join(app, "Contents", "Info.plist"), "utf8")).toContain("1.2.3");
     expect(await readFile(join(app, "Contents", "MacOS", "Explodex"), "utf8")).toContain("explodex --launch");
     expect(await readFile(join(app, "Contents", "Resources", "progress.jxa"), "utf8")).toContain("NSProgressIndicator");
-  });
+    expect(await readFile(join(app, "Contents", "MacOS", "Explodex"), "utf8")).toContain("Splash.app");
+    const splashBin = join(app, "Contents", "Resources", "Splash.app", "Contents", "MacOS", "Splash");
+    await access(splashBin, constants.X_OK);
+  }, 15_000);
 
   test("reinstalls an owned launcher idempotently", async () => {
     const home = await tempRoot();
@@ -28,7 +31,7 @@ describe("launcher generation", () => {
     expect(second.path).toBe(first.path);
     expect(await readFile(join(second.path, "Contents", "Info.plist"), "utf8")).toContain("1.0.1");
     await expect(readFile(join(second.path, "Contents", "Resources", "stale-native-launcher"))).rejects.toThrow();
-  });
+  }, 20_000);
 
   test("refuses foreign bundles and rejects force without ownership", async () => {
     const home = await tempRoot();
@@ -44,7 +47,7 @@ describe("launcher generation", () => {
     await installLauncher({ home, version: "1.0.0" });
     const result = await installLauncher({ home, version: "1.0.1", force: true });
     expect(await readFile(join(result.path, "Contents", "Info.plist"), "utf8")).toContain("1.0.1");
-  });
+  }, 20_000);
 
   test("recognizes a legacy Explodex plist as owned", async () => {
     const root = await tempRoot();

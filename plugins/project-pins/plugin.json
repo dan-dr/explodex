@@ -1,7 +1,7 @@
 {
   "id": "project-pins",
   "name": "Project Pins",
-  "version": "1.3.1",
+  "version": "1.3.2",
   "entry": "index.js",
   "description": "Pin a thread to its project instead of globally, and keep it at the top of that project.",
   "dynamicLoadable": true,

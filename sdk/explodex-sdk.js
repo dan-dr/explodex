@@ -2892,11 +2892,11 @@
       let routePollId = null;
       let lastRoutePath = "";
 
-      const CREATE_PLUGIN_LIVE_PROMPT = `Use $explodex-live-plugins to help me create and debug a new Explodex plugin in this repo. If that skill is not installed, read and follow skills/explodex-live-plugins/SKILL.md from this checkout for this turn.
+      const CREATE_PLUGIN_PROMPT = `Use $explodex-plugin-builder to create or edit an Explodex plugin. If that skill is not installed, read and follow skills/explodex-plugin-builder/SKILL.md from this checkout.
 
-Plugin goal: [describe what the plugin should do — sidebar item, composer hook, settings panel, bridge RPC, etc.]
+Plugin goal: [describe what the plugin should do: sidebar item, composer hook, settings panel, bridge RPC, etc.]
 
-If the goal is still a placeholder, ask one clarifying question, then scaffold durable files under plugins/<id>/ and run the same-instance live loop: bun run validate → bun run inject → verify, interact, and unload/reload in the Codex renderer via Chrome DevTools MCP at http://127.0.0.1:9333. Package only when I ask to bundle or export it.`;
+Use the existing Explodex renderer for live iteration when available; otherwise build and validate offline. Preserve this Codex instance: do not reload, restart, or run bun run dev if CDP is already connected. If the goal is still a placeholder, ask one clarifying question, then create durable files under plugins/<id>/ immediately. Package only when I ask to bundle or export.`;
 
       function sleep(ms) {
         return new Promise((resolve) => global.setTimeout(resolve, ms));
@@ -2904,9 +2904,40 @@ If the goal is still a placeholder, ask one clarifying question, then scaffold d
 
       async function prepopulateComposer(text, { attempts = 40, intervalMs = 100 } = {}) {
         for (let i = 0; i < attempts; i += 1) {
-          if (composer.setText(text)) {
+          const input = composer.getInput();
+          const composerReady = input?.isConnected;
+          if (composerReady && composer.setText(text)) {
             composer.focus();
-            return true;
+            await sleep(intervalMs);
+            if (composer.getText() === text) return true;
+            continue;
+          }
+          await sleep(intervalMs);
+        }
+        return false;
+      }
+
+      function buttonByAriaLabel(label) {
+        return Array.from(document.querySelectorAll("button")).find(
+          (button) => button.getAttribute("aria-label") === label,
+        );
+      }
+
+      async function waitForButton(label, { attempts = 40, intervalMs = 100 } = {}) {
+        for (let i = 0; i < attempts; i += 1) {
+          const button = buttonByAriaLabel(label);
+          if (button?.isConnected && !button.disabled) return button;
+          await sleep(intervalMs);
+        }
+        return null;
+      }
+
+      async function chooseProjectlessChat({ attempts = 40, intervalMs = 100 } = {}) {
+        for (let i = 0; i < attempts; i += 1) {
+          if (buttonByAriaLabel("Choose project")) return true;
+          const noProjectButton = buttonByAriaLabel("Don't work in a project");
+          if (noProjectButton?.isConnected && !noProjectButton.disabled) {
+            noProjectButton.click();
           }
           await sleep(intervalMs);
         }
@@ -3113,11 +3144,11 @@ If the goal is still a placeholder, ask one clarifying question, then scaffold d
         actions.className = "ex-explodex-page-actions";
         actions.appendChild(
           c.button({
-            label: "Create Plugin Live",
+            label: "Create Plugin",
             color: "primary",
             size: "composerSm",
             onClick: () => {
-              void startCreatePluginLiveThread();
+              void startCreatePluginThread();
             },
           }),
         );
@@ -3174,14 +3205,27 @@ If the goal is still a placeholder, ask one clarifying question, then scaffold d
         startRouteWatch();
       }
 
-      async function startCreatePluginLiveThread() {
+      async function startCreatePluginThread() {
         hideExplodexPage();
 
-        await bridge.navigate("/", { focusComposerNonce: Date.now() });
+        // Use Codex's native controls. new-quick-chat is an in-renderer event and
+        // cannot be delivered through the AppServer or Electron view-message paths.
+        const newChatButton = await waitForButton("New chat");
+        if (!newChatButton) {
+          c.statusToast("New chat control not found");
+          return;
+        }
+        newChatButton.click();
+        await sleep(300);
 
-        const ok = await prepopulateComposer(CREATE_PLUGIN_LIVE_PROMPT);
+        if (!(await chooseProjectlessChat())) {
+          c.statusToast("Projectless chat control not found");
+          return;
+        }
+
+        const ok = await prepopulateComposer(CREATE_PLUGIN_PROMPT);
         if (!ok) {
-          c.statusToast("Composer not ready — copy prompt from Explodex menu and retry");
+          c.statusToast("Composer not ready. Paste the Create Plugin prompt and retry.");
         }
       }
 

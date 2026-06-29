@@ -8,9 +8,10 @@ import { spawn } from "node:child_process";
 import { parseArgs } from "node:util";
 import * as clack from "@clack/prompts";
 import { installLauncher, uninstallLauncher } from "../lib/launcher-bundle.mjs";
-import { injectOnly, inspectState, launchFromApp, readPackageVersion, runDoctor, runUpdate } from "../lib/launch.mjs";
+import { injectOnly, inspectState, launchFromApp, readPackageVersion } from "../lib/launch.mjs";
 import { notifyFromCache, refreshUpdateCache } from "../lib/version-check.mjs";
 import { getLauncherPath, pathExists } from "../lib/paths.mjs";
+import { installPluginCreatorSkill, isPluginCreatorSkillInstalled, SKILL_INSTALL_COMMAND } from "../lib/skill-install.mjs";
 
 const cliPath = fileURLToPath(import.meta.url);
 const installDir = join(dirname(cliPath), "..");
@@ -31,8 +32,8 @@ const FLAGS = {
 const ALLOWED_OPTIONS = {
   "": ["yes", "launch", "from-app", "check-update"],
   inject: [],
-  update: [],
   doctor: [],
+  "install-skill": [],
   "install-launcher": ["system", "force"],
   "uninstall-launcher": ["system"],
 };
@@ -73,8 +74,8 @@ Usage:
   explodex install            Install the launcher app without launching
   explodex uninstall          Remove the launcher app
   explodex inject             Inject into Codex on the Explodex debug port
-  explodex update             Update the global explodex install
-  explodex doctor             Report launcher, Codex, port, and injector state
+  explodex install-skill      Install the Explodex plugin creator skill
+  explodex doctor             Re-run onboarding checks for the app and skill
   explodex install [--system] [--force]
   explodex uninstall [--system]
 
@@ -103,16 +104,18 @@ function resolveDependencies(overrides = {}) {
     launchFromApp: overrides.launchFromApp ?? launchFromApp,
     inspectState: overrides.inspectState ?? inspectState,
     injectOnly: overrides.injectOnly ?? injectOnly,
-    runUpdate: overrides.runUpdate ?? runUpdate,
-    runDoctor: overrides.runDoctor ?? runDoctor,
+    installSkill: overrides.installSkill ?? installPluginCreatorSkill,
+    skillInstalled: overrides.skillInstalled ?? isPluginCreatorSkillInstalled,
     refreshUpdateCache: overrides.refreshUpdateCache ?? refreshUpdateCache,
     installLauncher: overrides.installLauncher ?? installLauncher,
     uninstallLauncher: overrides.uninstallLauncher ?? uninstallLauncher,
     notifyFromCache: overrides.notifyFromCache ?? notifyFromCache,
     openLauncher: overrides.openLauncher ?? openLauncher,
     launcherExists: overrides.launcherExists ?? (() => pathExists(getLauncherPath())),
+    systemLauncherExists: overrides.systemLauncherExists ?? (() => pathExists(getLauncherPath({ system: true }))),
     codexInstalled: overrides.codexInstalled ?? (() => pathExists(CODEX_APP)),
     hasRunBefore: overrides.hasRunBefore ?? (() => pathExists(join(homedir(), ".explodex"))),
+    makeUi: overrides.makeUi ?? makeUi,
   };
 }
 
@@ -184,9 +187,22 @@ async function runLaunch(parsed, deps, version) {
   if (parsed.launch) return deps.launchFromApp();
   if (parsed.checkUpdate) return deps.refreshUpdateCache();
 
-  const ui = makeUi();
+  const ui = deps.makeUi();
   const target = getLauncherPath();
   ui.intro("Running Explodex");
+
+  const firstRun = !(await deps.hasRunBefore());
+  if (firstRun) {
+    ui.note(WELCOME_NOTE, "Welcome");
+    const skillInstalled = await deps.skillInstalled();
+    if (!skillInstalled && (parsed.yes || ui.pretty)) {
+      const install = parsed.yes || await ui.confirm("Install plugin creator skill (Recommended)");
+      if (install) {
+        ui.info(`$ ${SKILL_INSTALL_COMMAND.join(" ")}`);
+        await deps.installSkill();
+      }
+    }
+  }
 
   // If Codex is already running with Explodex, there's nothing to do — don't
   // reopen, re-inject, or touch the launcher.
@@ -211,7 +227,6 @@ async function runLaunch(parsed, deps, version) {
 
   // Missing launcher app: offer to create it (TTY only; --yes/non-TTY auto-creates).
   if (ui.pretty && !parsed.yes) {
-    if (!(await deps.hasRunBefore())) ui.note(WELCOME_NOTE, "Welcome");
     ui.warn(`No launcher app found at ${target}.`);
     if (!(await deps.codexInstalled())) {
       ui.warn(`Codex isn't installed at ${CODEX_APP}. Install Codex first — Explodex launches it but doesn't bundle it.`);
@@ -236,6 +251,29 @@ async function runLaunch(parsed, deps, version) {
   await openExisting(deps, version, result.path, state, port, ui);
 }
 
+async function runDoctorOnboarding(deps, version) {
+  const ui = deps.makeUi();
+  let launcherInstalled = await deps.launcherExists() || await deps.systemLauncherExists();
+  let skillInstalled = await deps.skillInstalled();
+
+  ui.intro("Explodex onboarding check");
+  ui.info(`Explodex.app: ${launcherInstalled ? "installed" : "missing"}`);
+  ui.info(`Plugin creator skill: ${skillInstalled ? "installed" : "missing"}`);
+
+  if (!launcherInstalled && ui.pretty && await ui.confirm("Install Explodex.app?")) {
+    const result = await deps.installLauncher({ version, packageRoot: installDir });
+    ui.info(`Installed: ${result.path}`);
+    launcherInstalled = true;
+  }
+  if (!skillInstalled && ui.pretty && await ui.confirm("Install plugin creator skill (Recommended)")) {
+    ui.info(`$ ${SKILL_INSTALL_COMMAND.join(" ")}`);
+    await deps.installSkill();
+    skillInstalled = true;
+  }
+
+  ui.outro(launcherInstalled && skillInstalled ? "Onboarding checks passed." : "Onboarding check complete.");
+}
+
 export async function runCli(args, dependencies = {}) {
   const parsed = parseCli(args);
   const version = await readPackageVersion();
@@ -245,8 +283,8 @@ export async function runCli(args, dependencies = {}) {
     case "help": printHelp(); return;
     case "version": console.log(version); return;
     case "inject": await deps.injectOnly(); return;
-    case "update": await deps.runUpdate(); return;
-    case "doctor": console.log(JSON.stringify(await deps.runDoctor(), null, 2)); return;
+    case "install-skill": await deps.installSkill(); return;
+    case "doctor": await runDoctorOnboarding(deps, version); return;
     case "install-launcher": {
       const result = await deps.installLauncher({ system: parsed.system, force: parsed.force, version, packageRoot: installDir });
       console.log(`Installed: ${result.path}`);

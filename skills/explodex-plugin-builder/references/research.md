@@ -43,11 +43,11 @@ Prefer **string literals** (bridge `type` names, `data-*` attributes, localStora
 
 ## Docs to read (in order)
 
-1. [docs/sdk-api.md](../../docs/sdk-api.md) — plugin API surface
-2. [docs/codex-architecture.md](../../docs/codex-architecture.md) — bundle topology, zones, IPC §9
-3. [docs/composer-message-lifecycle.md](../../docs/composer-message-lifecycle.md) — send path, effort hooks
-4. [docs/sdk-fragility.md](../../docs/sdk-fragility.md) — what breaks on Codex upgrade
-5. [docs/plugins/README.md](../../docs/plugins/README.md) — bundled plugin index
+1. [docs/sdk-api.md](../../../docs/sdk-api.md): plugin API surface
+2. [docs/codex-architecture.md](../../../docs/codex-architecture.md): bundle topology, zones, IPC section 9
+3. [docs/composer-message-lifecycle.md](../../../docs/composer-message-lifecycle.md): send path, effort hooks
+4. [docs/sdk-fragility.md](../../../docs/sdk-fragility.md): what breaks on Codex upgrade
+5. [docs/plugins/README.md](../../../docs/plugins/README.md): bundled plugin index
 
 ## Study existing plugins
 

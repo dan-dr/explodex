@@ -23,6 +23,20 @@ describe("update cache", () => {
     expect(spawned).toBe(false);
   });
 
+  test("reports a newer version without prescribing an update command", async () => {
+    const home = await mkdtemp(join(tmpdir(), "explodex-update-")); roots.push(home);
+    await refreshUpdateCache({ home, now: 100, fetchImpl: async () => ({ ok: true, json: async () => ({ version: "2.0.0" }) }) });
+    const messages = [];
+    const originalError = console.error;
+    console.error = (message) => messages.push(message);
+    try {
+      await notifyFromCache("1.0.0", { home, now: 100, cliPath: "/tmp/cli" });
+    } finally {
+      console.error = originalError;
+    }
+    expect(messages).toEqual(["New explodex version available: 1.0.0 → 2.0.0. Reinstall with your package manager."]);
+  });
+
   test("stale cache spawns one detached refresh", async () => {
     const home = await mkdtemp(join(tmpdir(), "explodex-update-")); roots.push(home);
     let args;

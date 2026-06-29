@@ -10,7 +10,7 @@ Pick the most stable hook for each feature class.
 | Medium | Bridge payload shapes, composer DOM | `update-thread-settings-for-next-turn`, `composer.insertText` |
 | High | React fiber (`codex.*`), Tailwind class selectors | `findNextTurnSettingsSetter`, sidebarNav label anchoring |
 
-See [docs/sdk-fragility.md](../../docs/sdk-fragility.md) for failure modes.
+See [docs/sdk-fragility.md](../../../docs/sdk-fragility.md) for failure modes.
 
 ## By feature type
 
@@ -41,7 +41,7 @@ Returns unmount function — call in teardown.
 
 ### Composer text / submit interception
 
-Prefer official paths from [composer-message-lifecycle.md](../../docs/composer-message-lifecycle.md):
+Prefer official paths from [composer-message-lifecycle.md](../../../docs/composer-message-lifecycle.md):
 
 - **One-turn settings** (effort, model): `bridge` or `codex` → `update-thread-settings-for-next-turn` before send
 - **Read composer**: `api.composer.getText()`, `getInput()`, `insertText()`, `onInput()`

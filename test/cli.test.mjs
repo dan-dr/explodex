@@ -7,6 +7,7 @@ describe("CLI parsing", () => {
     expect(parseCli(["--launch"])).toMatchObject({ command: "", launch: true });
     expect(parseCli(["--from-app"])).toMatchObject({ command: "", launch: true });
     expect(parseCli(["--check-update"])).toMatchObject({ command: "", checkUpdate: true });
+    expect(parseCli(["install-skill"])).toMatchObject({ command: "install-skill" });
     expect(parseCli(["install-launcher", "--system", "--force"])).toMatchObject({ command: "install-launcher", system: true, force: true });
     expect(parseCli(["--help"])).toEqual({ command: "help" });
     expect(parseCli(["--version"])).toEqual({ command: "version" });
@@ -19,6 +20,7 @@ describe("CLI parsing", () => {
 
   test("rejects unknown commands and options", () => {
     expect(() => parseCli(["wat"])).toThrow("Unknown command: wat");
+    expect(() => parseCli(["update"])).toThrow("Unknown command: update");
     expect(() => parseCli(["uninstall-launcher", "--force"])).toThrow("Unknown option: --force");
   });
 });
@@ -30,6 +32,7 @@ describe("CLI launch flow", () => {
     installLauncher: async () => { calls.push("install"); return { path: "/tmp/Explodex.app" }; },
     notifyFromCache: async () => calls.push("notify"),
     openLauncher: async () => calls.push("open"),
+    hasRunBefore: async () => true,
     ...over,
   });
 
@@ -58,9 +61,47 @@ describe("CLI routing", () => {
     await runCli(["--launch"], { launchFromApp: async () => calls.push("launch") });
     await runCli(["--from-app"], { launchFromApp: async () => calls.push("from-app") });
     await runCli(["inject"], { injectOnly: async () => calls.push("inject") });
-    await runCli(["update"], { runUpdate: async () => calls.push("update") });
+    await runCli(["install-skill"], { installSkill: async () => calls.push("install-skill") });
     await runCli(["--check-update"], { refreshUpdateCache: async () => calls.push("check") });
-    expect(calls).toEqual(["launch", "from-app", "inject", "update", "check"]);
+    expect(calls).toEqual(["launch", "from-app", "inject", "install-skill", "check"]);
+  });
+
+  test("first --yes run installs the recommended skill", async () => {
+    const calls = [];
+    await runCli(["--yes"], {
+      inspectState: async () => ({ state: "stopped", port: 9333 }),
+      launcherExists: async () => true,
+      hasRunBefore: async () => false,
+      skillInstalled: async () => false,
+      installSkill: async () => calls.push("install-skill"),
+      notifyFromCache: async () => calls.push("notify"),
+      openLauncher: async () => calls.push("open"),
+    });
+    expect(calls).toEqual(["install-skill", "notify", "open"]);
+  });
+
+  test("doctor checks and repairs the launcher and skill", async () => {
+    const calls = [];
+    const ui = {
+      pretty: true,
+      intro() {},
+      outro() {},
+      info() {},
+      warn() {},
+      note() {},
+      cancel() {},
+      spinner: () => ({ start() {}, stop() {}, message() {} }),
+      confirm: async () => true,
+    };
+    await runCli(["doctor"], {
+      makeUi: () => ui,
+      launcherExists: async () => false,
+      systemLauncherExists: async () => false,
+      skillInstalled: async () => false,
+      installLauncher: async () => { calls.push("launcher"); return { path: "/tmp/Explodex.app" }; },
+      installSkill: async () => calls.push("skill"),
+    });
+    expect(calls).toEqual(["launcher", "skill"]);
   });
 
   test("install-launcher forwards --system and --force", async () => {
