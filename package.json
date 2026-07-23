@@ -61,7 +61,8 @@
     "react-devtools": "bun scripts/cdp-react-devtools.ts",
     "test": "bun test",
     "build:npm": "bun scripts/build-npm.ts",
-    "prepack": "bun run build:npm"
+    "prepack": "bun run build:npm",
+    "node:lts-smoke": "node scripts/node-lts-smoke.mjs"
   },
   "dependencies": {
     "@clack/prompts": "^1.6.0"

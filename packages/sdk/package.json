@@ -1,0 +1,13 @@
+{
+  "name": "@explodex/sdk",
+  "version": "0.0.0-migration",
+  "private": true,
+  "description": "Placeholder package metadata until the M2 SDK cutover. Not a release authority.",
+  "type": "module",
+  "files": [
+    "package.json"
+  ],
+  "engines": {
+    "node": ">=22"
+  }
+}
