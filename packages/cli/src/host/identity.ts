@@ -17,13 +17,14 @@ import type {
 export type InspectHostOptions = {
   adapters: HostAdapters;
   /**
-   * Override the path inspected as the sole product host.
-   * Production always uses CANONICAL_BUNDLE_PATH; tests may point at fixtures.
+   * Override the path inspected while exercising controlled fixtures.
+   * The path is never discovered from bundle IDs, repositories, vendor copies,
+   * or arbitrary Electron applications.
    */
   bundlePath?: string;
   /**
    * When true (default), require the resolved realpath to be exactly the
-   * canonical /Applications/ChatGPT.app path. Fixture tests set false.
+   * canonical /Applications/ChatGPT.app path. Controlled fixtures set false.
    */
   requireCanonicalPath?: boolean;
 };
@@ -34,6 +35,9 @@ type PlistFields = {
   appVersion: string | null;
   appBuild: string | null;
 };
+
+const CHATGPT_SIGNATURE_REQUIREMENT =
+  'identifier "com.openai.codex" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = "2DC432GLL2"';
 
 function candidate(
   path: string,
@@ -87,7 +91,7 @@ async function readPlistFields(
   ];
 
   for (const { key, plistKey } of keys) {
-    const result = await adapters.process.execFile("plutil", [
+    const result = await adapters.process.execFile("/usr/bin/plutil", [
       "-extract",
       plistKey,
       "raw",
@@ -104,23 +108,39 @@ async function readPlistFields(
   return fields;
 }
 
-async function readSigningTeam(
+async function readSigningIdentity(
   adapters: HostAdapters,
   bundlePath: string,
-): Promise<{ team: string | null; raw: string }> {
-  const result = await adapters.process.execFile("codesign", [
+): Promise<{ valid: boolean; team: string | null }> {
+  const verification = await adapters.process.execFile("/usr/bin/codesign", [
+    "--verify",
+    "--deep",
+    "--strict",
+    "--verbose=2",
+    `-R=${CHATGPT_SIGNATURE_REQUIREMENT}`,
+    bundlePath,
+  ]);
+  if (verification.exitCode !== 0) {
+    return { valid: false, team: null };
+  }
+
+  const details = await adapters.process.execFile("/usr/bin/codesign", [
     "-dv",
     "--verbose=4",
     bundlePath,
   ]);
+  if (details.exitCode !== 0) {
+    return { valid: false, team: null };
+  }
+
   // codesign writes identity details to stderr.
-  const raw = `${result.stderr}\n${result.stdout}`;
+  const raw = `${details.stderr}\n${details.stdout}`;
   const teamMatch = raw.match(/^\s*TeamIdentifier\s*=\s*(.+)\s*$/m);
   const team = teamMatch?.[1]?.trim() ?? null;
   if (team === null || team === "" || team === "not set") {
-    return { team: null, raw };
+    return { valid: true, team: null };
   }
-  return { team, raw };
+  return { valid: true, team };
 }
 
 function isInsideBundle(bundlePath: string, absolutePath: string): boolean {
@@ -175,9 +195,9 @@ export async function inspectHost(options: InspectHostOptions): Promise<HostInsp
     );
   }
 
-  // Reject known non-product names even when tests override the path.
+  // Reject known non-product names even when controlled fixtures override the path.
   const base = basename(realBundlePath);
-  if (base === "Codex.app" || (base.endsWith(".app") && base !== "ChatGPT.app" && requireCanonicalPath)) {
+  if (base === "Codex.app" || (requireCanonicalPath && base !== "ChatGPT.app")) {
     return fail(
       "host_wrong_identity",
       `Refusing non-canonical host bundle name ${base}`,
@@ -296,8 +316,24 @@ export async function inspectHost(options: InspectHostOptions): Promise<HostInsp
       [candidate(realBundlePath, "executable_not_file")],
     );
   }
+  if (!(await adapters.fs.canExecute(realExecutablePath))) {
+    return fail(
+      "host_broken_executable_relationship",
+      `Executable is not accessible for execution: ${realExecutablePath}`,
+      ["executable_access"],
+      [candidate(realBundlePath, "executable_not_executable")],
+    );
+  }
 
-  const signing = await readSigningTeam(adapters, realBundlePath);
+  const signing = await readSigningIdentity(adapters, realBundlePath);
+  if (!signing.valid) {
+    return fail(
+      "host_invalid_signature",
+      `Code signature verification failed for ${realBundlePath}`,
+      ["signature_valid"],
+      [candidate(realBundlePath, "signature_verification_failed")],
+    );
+  }
   if (signing.team !== CANONICAL_SIGNING_TEAM) {
     return fail(
       "host_invalid_signature",
@@ -314,8 +350,21 @@ export async function inspectHost(options: InspectHostOptions): Promise<HostInsp
   const hostHashes: Record<string, string> = {};
   for (const relative of COMPATIBILITY_HOST_HASH_RELATIVE_PATHS) {
     const absolute = join(realBundlePath, relative);
-    const bytes = await adapters.fs.readFile(absolute);
-    hostHashes[relative] = adapters.hash.sha256Hex(bytes);
+    try {
+      const fileStat = await adapters.fs.stat(absolute);
+      if (fileStat.kind !== "file") {
+        throw new Error("not a regular file");
+      }
+      const bytes = await adapters.fs.readFile(absolute);
+      hostHashes[relative] = adapters.hash.sha256Hex(bytes);
+    } catch {
+      return fail(
+        "host_malformed",
+        `Relevant host file is missing or unreadable: ${absolute}`,
+        [`host_hash_readable:${relative}`],
+        [candidate(realBundlePath, "host_hash_input_unreadable")],
+      );
+    }
   }
 
   const host: HostIdentity = {

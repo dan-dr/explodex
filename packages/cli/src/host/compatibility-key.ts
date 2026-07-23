@@ -14,6 +14,14 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
+function isSha256Hex(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{64}$/i.test(value);
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0;
+}
+
 function normalizeHostHashes(input: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
   const keys = Object.keys(input).sort();
@@ -24,6 +32,21 @@ function normalizeHostHashes(input: Record<string, string>): Record<string, stri
     }
   }
   return out;
+}
+
+function validateRequiredHostHashes(input: Record<string, string>): Record<string, string> {
+  const normalized = normalizeHostHashes(input);
+  const required = new Set<string>(COMPATIBILITY_HOST_HASH_RELATIVE_PATHS);
+  const keys = Object.keys(normalized);
+  if (keys.length !== required.size || keys.some((key) => !required.has(key))) {
+    throw new Error("compatibility key requires exactly every required host hash");
+  }
+  for (const path of COMPATIBILITY_HOST_HASH_RELATIVE_PATHS) {
+    if (!isSha256Hex(normalized[path])) {
+      throw new Error(`required host hash '${path}' must be a SHA-256 digest`);
+    }
+  }
+  return normalized;
 }
 
 /** Build the exact current compatibility key from host + SDK + probe identities. */
@@ -37,18 +60,30 @@ export function deriveCompatibilityKey(input: {
     toolVersion: DEFAULT_PROBE_TOOL_VERSION,
   };
 
-  if (!isNonEmptyString(input.sdkRuntime.sha256)) {
-    throw new Error("sdkRuntime.sha256 is required to derive a compatibility key");
+  if (!isSha256Hex(input.sdkRuntime.sha256)) {
+    throw new Error("sdkRuntime.sha256 must be a SHA-256 digest");
   }
   if (!isNonEmptyString(input.sdkRuntime.version)) {
     throw new Error("sdkRuntime.version is required to derive a compatibility key");
+  }
+  if (!isNonEmptyString(input.host.appVersion) || !isNonEmptyString(input.host.appBuild)) {
+    throw new Error("host application version and build are required");
+  }
+  if (!isNonEmptyString(input.host.signingTeam)) {
+    throw new Error("host signing team is required");
+  }
+  if (!isPositiveInteger(probe.schemaVersion)) {
+    throw new Error("probe schema version must be a positive integer");
+  }
+  if (!isNonEmptyString(probe.toolVersion)) {
+    throw new Error("probe tool version is required");
   }
 
   return {
     schemaVersion: COMPATIBILITY_SCHEMA_VERSION,
     appVersion: input.host.appVersion,
     appBuild: input.host.appBuild,
-    hostHashes: normalizeHostHashes(input.host.hostHashes),
+    hostHashes: validateRequiredHostHashes(input.host.hostHashes),
     signingTeam: input.host.signingTeam,
     sdkRuntimeSha256: input.sdkRuntime.sha256.toLowerCase(),
     probeSchemaVersion: probe.schemaVersion,
@@ -84,24 +119,39 @@ export function parseCompatibilityKey(value: unknown): CompatibilityKey | null {
   if (!isNonEmptyString(value.appVersion)) return null;
   if (!isNonEmptyString(value.appBuild)) return null;
   if (!isNonEmptyString(value.signingTeam)) return null;
-  if (!isNonEmptyString(value.sdkRuntimeSha256)) return null;
-  if (typeof value.probeSchemaVersion !== "number" || !Number.isFinite(value.probeSchemaVersion)) {
-    return null;
-  }
+  if (!isSha256Hex(value.sdkRuntimeSha256)) return null;
+  if (!isPositiveInteger(value.probeSchemaVersion)) return null;
   if (!isNonEmptyString(value.probeToolVersion)) return null;
   if (!isRecord(value.hostHashes)) return null;
 
-  const hostHashes: Record<string, string> = {};
-  for (const [key, hash] of Object.entries(value.hostHashes)) {
-    if (!isNonEmptyString(hash)) return null;
+  const requiredPaths = new Set<string>(COMPATIBILITY_HOST_HASH_RELATIVE_PATHS);
+  const rawHashKeys = Object.keys(value.hostHashes);
+  if (
+    rawHashKeys.length !== requiredPaths.size ||
+    rawHashKeys.some((key) => !requiredPaths.has(key))
+  ) {
+    return null;
+  }
+
+  const hostHashes: Record<string, string> = Object.create(null) as Record<string, string>;
+  for (const key of rawHashKeys) {
+    const hash = value.hostHashes[key];
+    if (!isSha256Hex(hash)) return null;
     hostHashes[key] = hash.toLowerCase();
+  }
+
+  let validatedHostHashes: Record<string, string>;
+  try {
+    validatedHostHashes = validateRequiredHostHashes(hostHashes);
+  } catch {
+    return null;
   }
 
   return {
     schemaVersion: 1,
     appVersion: value.appVersion,
     appBuild: value.appBuild,
-    hostHashes: normalizeHostHashes(hostHashes),
+    hostHashes: validatedHostHashes,
     signingTeam: value.signingTeam,
     sdkRuntimeSha256: value.sdkRuntimeSha256.toLowerCase(),
     probeSchemaVersion: value.probeSchemaVersion,

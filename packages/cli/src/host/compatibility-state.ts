@@ -206,6 +206,20 @@ export function evaluateCompatibility(
         allowsCompatibilityDependentWork: false,
       };
     }
+    if (
+      running.executablePath !== undefined &&
+      running.executablePath !== options.host.executablePath
+    ) {
+      return {
+        status: "unproven",
+        key: persisted.key,
+        currentKey,
+        matched: false,
+        reason: mismatchReason("running_executable_path"),
+        nextAction: PUBLIC_COMPATIBILITY_PROBE_HINT,
+        allowsCompatibilityDependentWork: false,
+      };
+    }
   }
 
   return {

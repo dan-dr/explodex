@@ -44,6 +44,8 @@ export type VirtualHostBundleOptions = {
   executableAbsolutePath?: string;
   /** Extra files under the bundle (relative path -> content). */
   extraFiles?: Record<string, string | Uint8Array>;
+  /** Relative bundle paths that should fail when read. */
+  unreadableRelativePaths?: string[];
   /** Omit standard structure pieces. */
   omit?: Array<"contents" | "infoPlist" | "macos" | "executable">;
   /** Info.plist bytes override. */
@@ -54,6 +56,8 @@ export type VirtualHostBundleOptions = {
   realpathMap?: Record<string, string>;
   /** Make codesign fail / return empty team. */
   codesignBroken?: boolean;
+  /** Simulate an integrity-valid signature that fails the trusted OpenAI requirement. */
+  codesignRequirementMismatch?: boolean;
 };
 
 export function defaultCanonicalBundleOptions(
@@ -100,6 +104,8 @@ export function buildInfoPlist(options: {
 export class MemoryFileSystem implements HostFileSystem {
   readonly entries = new Map<string, Entry>();
   readonly realpathOverrides = new Map<string, string>();
+  readonly unreadablePaths = new Set<string>();
+  readonly nonExecutablePaths = new Set<string>();
   readonly writeLog: Array<{ path: string; bytes: number }> = [];
 
   seedFile(path: string, content: string | Uint8Array, mode = 0o644): void {
@@ -126,6 +132,14 @@ export class MemoryFileSystem implements HostFileSystem {
 
   setRealpath(from: string, to: string): void {
     this.realpathOverrides.set(norm(from), norm(to));
+  }
+
+  setUnreadable(path: string): void {
+    this.unreadablePaths.add(norm(path));
+  }
+
+  setNonExecutable(path: string): void {
+    this.nonExecutablePaths.add(norm(path));
   }
 
   private ensureParentDirs(path: string): void {
@@ -157,6 +171,13 @@ export class MemoryFileSystem implements HostFileSystem {
     return { kind: "symlink" as const };
   }
 
+  async canExecute(path: string): Promise<boolean> {
+    const normalizedPath = norm(path);
+    if (this.nonExecutablePaths.has(normalizedPath)) return false;
+    const entry = this.entries.get(normalizedPath);
+    return entry?.kind === "file" && entry.mode !== undefined && (entry.mode & 0o111) !== 0;
+  }
+
   async realpath(path: string): Promise<string> {
     const p = norm(path);
     if (this.realpathOverrides.has(p)) {
@@ -173,7 +194,11 @@ export class MemoryFileSystem implements HostFileSystem {
   }
 
   async readFile(path: string): Promise<Uint8Array> {
-    const entry = this.entries.get(norm(path));
+    const normalizedPath = norm(path);
+    if (this.unreadablePaths.has(normalizedPath)) {
+      throw new Error(`EACCES file: ${path}`);
+    }
+    const entry = this.entries.get(normalizedPath);
     if (!entry || entry.kind !== "file") {
       throw new Error(`ENOENT file: ${path}`);
     }
@@ -215,13 +240,15 @@ export class VirtualProcess implements HostProcess {
           plist: Record<string, string>;
           signingTeam: string | null;
           codesignBroken?: boolean;
+          codesignRequirementMismatch?: boolean;
         }
       >;
     },
   ) {}
 
   async execFile(file: string, args: readonly string[]): Promise<ExecResult> {
-    if (file === "plutil") {
+    const command = file.split("/").pop() ?? file;
+    if (command === "plutil") {
       // plutil -extract KEY raw -o - PATH
       const extractIdx = args.indexOf("-extract");
       const path = args[args.length - 1] ?? "";
@@ -239,12 +266,29 @@ export class VirtualProcess implements HostProcess {
       return { stdout: "", stderr: `plutil: file not found ${path}`, exitCode: 1 };
     }
 
-    if (file === "codesign") {
+    if (command === "codesign") {
       const bundlePath = args[args.length - 1] ?? "";
       for (const [path, meta] of this.options.bundles) {
-        if (norm(bundlePath) === norm(path) || norm(bundlePath) === norm(path)) {
+        if (norm(bundlePath) === norm(path)) {
           if (meta.codesignBroken) {
             return { stdout: "", stderr: "codesign failed", exitCode: 1 };
+          }
+          if (args.includes("--verify")) {
+            if (
+              meta.codesignRequirementMismatch &&
+              args.some((arg) => arg.startsWith("-R="))
+            ) {
+              return {
+                stdout: "",
+                stderr: `${path}: does not satisfy its designated Requirement`,
+                exitCode: 1,
+              };
+            }
+            return {
+              stdout: "",
+              stderr: `${path}: valid on disk\n${path}: satisfies its Designated Requirement`,
+              exitCode: 0,
+            };
           }
           const team = meta.signingTeam ?? "not set";
           const stderr = [
@@ -285,6 +329,7 @@ export function seedVirtualBundle(
     plist: Record<string, string>;
     signingTeam: string | null;
     codesignBroken?: boolean;
+    codesignRequirementMismatch?: boolean;
   };
   hostHashInputs: Record<string, Uint8Array>;
 } {
@@ -333,10 +378,21 @@ export function seedVirtualBundle(
     fs.seedFile(executablePath, execBytes, 0o755);
   }
 
+  if (!omit.has("contents")) {
+    fs.seedDir(join(bundlePath, "Contents", "Resources"));
+    fs.seedFile(
+      join(bundlePath, "Contents", "Resources", "app.asar"),
+      `renderer-archive-stub:${opts.appBuild}`,
+    );
+  }
+
   if (opts.extraFiles) {
     for (const [rel, content] of Object.entries(opts.extraFiles)) {
       fs.seedFile(join(bundlePath, rel), content);
     }
+  }
+  for (const relativePath of opts.unreadableRelativePaths ?? []) {
+    fs.setUnreadable(join(bundlePath, relativePath));
   }
 
   if (opts.realpathMap) {
@@ -372,6 +428,7 @@ export function seedVirtualBundle(
       },
       signingTeam: opts.codesignBroken ? null : ((opts.signingTeam as string) ?? null),
       codesignBroken: opts.codesignBroken,
+      codesignRequirementMismatch: opts.codesignRequirementMismatch,
     },
     hostHashInputs,
   };

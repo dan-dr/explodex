@@ -20,6 +20,7 @@ export type ExecResult = {
 export type HostFileSystem = {
   exists(path: string): Promise<boolean>;
   stat(path: string): Promise<FileStat>;
+  canExecute(path: string): Promise<boolean>;
   realpath(path: string): Promise<string>;
   readFile(path: string): Promise<Uint8Array>;
   /** Optional write used only by home/state modules, never against the host bundle. */
@@ -79,6 +80,14 @@ export async function createNodeFileSystem(): Promise<HostFileSystem> {
         return { kind: "other", mode: st.mode, size: st.size };
       } catch {
         return { kind: "missing" };
+      }
+    },
+    async canExecute(path) {
+      try {
+        await fs.access(path, constants.X_OK);
+        return true;
+      } catch {
+        return false;
       }
     },
     async realpath(path) {

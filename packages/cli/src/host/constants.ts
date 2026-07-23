@@ -35,6 +35,7 @@ export const DEFAULT_PROBE_TOOL_VERSION = "explodex-compat-probe/0.1.0";
 export const COMPATIBILITY_HOST_HASH_RELATIVE_PATHS = [
   "Contents/Info.plist",
   "Contents/MacOS/ChatGPT",
+  "Contents/Resources/app.asar",
 ] as const;
 
 export type CompatibilityHostHashRelativePath =

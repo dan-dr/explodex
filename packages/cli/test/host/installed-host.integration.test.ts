@@ -44,6 +44,9 @@ describe("installed ChatGPT.app read-only inspection", () => {
     expect(result.host.signingTeam).toBe(CANONICAL_SIGNING_TEAM);
     expect(result.host.appVersion).toBe(MISSION_BASELINE_APP_VERSION);
     expect(result.host.appBuild).toBe(MISSION_BASELINE_APP_BUILD);
+    expect(result.host.hostHashes["Contents/Info.plist"]).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.host.hostHashes["Contents/MacOS/ChatGPT"]).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.host.hostHashes["Contents/Resources/app.asar"]).toMatch(/^[a-f0-9]{64}$/);
     expect(result.readOnly).toBe(true);
     expect(result.compatibility.allowsCompatibilityDependentWork).toBe(false);
 

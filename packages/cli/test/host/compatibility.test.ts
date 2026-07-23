@@ -11,6 +11,7 @@ import {
 import {
   compatibilityKeysEqual,
   deriveCompatibilityKey,
+  parseCompatibilityKey,
 } from "../../src/host/compatibility-key.ts";
 import {
   evaluateCompatibility,
@@ -161,6 +162,61 @@ describe("compatibility key exactness (VAL-HOST-006)", () => {
     expect(key.probeToolVersion).toBe(DEFAULT_PROBE_TOOL_VERSION);
     expect(key.hostHashes["Contents/Info.plist"]).toMatch(/^[a-f0-9]{64}$/);
     expect(key.hostHashes["Contents/MacOS/ChatGPT"]).toMatch(/^[a-f0-9]{64}$/);
+    expect(key.hostHashes["Contents/Resources/app.asar"]).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  test("rejects incomplete or malformed compatibility keys", async () => {
+    const { host } = await validHost();
+    const key = deriveCompatibilityKey({ host, sdkRuntime: SDK_A, probe: PROBE });
+
+    expect(
+      parseCompatibilityKey({
+        ...key,
+        hostHashes: { "Contents/Info.plist": key.hostHashes["Contents/Info.plist"] },
+      }),
+    ).toBeNull();
+    expect(parseCompatibilityKey({ ...key, sdkRuntimeSha256: "not-a-digest" })).toBeNull();
+    expect(
+      parseCompatibilityKey({
+        ...key,
+        hostHashes: {
+          ...key.hostHashes,
+          "Contents/Resources/app.asar": "not-a-digest",
+        },
+      }),
+    ).toBeNull();
+    expect(parseCompatibilityKey({ ...key, probeSchemaVersion: 0 })).toBeNull();
+    expect(
+      parseCompatibilityKey(
+        JSON.parse(
+          `{${JSON.stringify("schemaVersion")}:1,${JSON.stringify("appVersion")}:${JSON.stringify(key.appVersion)},${JSON.stringify("appBuild")}:${JSON.stringify(key.appBuild)},${JSON.stringify("hostHashes")}:{${Object.entries(key.hostHashes)
+            .map(([path, hash]) => `${JSON.stringify(path)}:${JSON.stringify(hash)}`)
+            .join(",")},${JSON.stringify("__proto__")}:${JSON.stringify(sha256Of("unexpected-prototype-key"))}},${JSON.stringify("signingTeam")}:${JSON.stringify(key.signingTeam)},${JSON.stringify("sdkRuntimeSha256")}:${JSON.stringify(key.sdkRuntimeSha256)},${JSON.stringify("probeSchemaVersion")}:${key.probeSchemaVersion},${JSON.stringify("probeToolVersion")}:${JSON.stringify(key.probeToolVersion)}}`,
+        ) as unknown,
+      ),
+    ).toBeNull();
+  });
+
+  test("derivation refuses incomplete or malformed identity input", async () => {
+    const { host } = await validHost();
+
+    expect(() =>
+      deriveCompatibilityKey({
+        host: {
+          ...host,
+          hostHashes: { "Contents/Info.plist": host.hostHashes["Contents/Info.plist"] },
+        },
+        sdkRuntime: SDK_A,
+        probe: PROBE,
+      }),
+    ).toThrow("required host hash");
+    expect(() =>
+      deriveCompatibilityKey({
+        host,
+        sdkRuntime: { ...SDK_A, sha256: "bad" },
+        probe: PROBE,
+      }),
+    ).toThrow("SHA-256");
   });
 
   test("proven record is accepted only when every field matches", async () => {
@@ -241,6 +297,16 @@ describe("compatibility key exactness (VAL-HOST-006)", () => {
         },
       }),
     },
+    {
+      name: "hostHashes.renderer same-build drift",
+      mutate: (key) => ({
+        ...key,
+        hostHashes: {
+          ...key.hostHashes,
+          "Contents/Resources/app.asar": sha256Of("same-build-renderer-drift"),
+        },
+      }),
+    },
   ];
 
   test.each(mismatchCases)("mismatch on $name returns unproven and blocks", async ({ mutate }) => {
@@ -294,10 +360,30 @@ describe("compatibility key exactness (VAL-HOST-006)", () => {
       runningProcess: {
         appVersion: host.appVersion,
         appBuild: "1111",
+        executablePath: host.executablePath,
       },
     });
     expect(report.status).toBe("unproven");
     expect(report.reason).toContain("running_app_build");
+    expect(report.allowsCompatibilityDependentWork).toBe(false);
+  });
+
+  test("running process executable drift invalidates proof", async () => {
+    const { host } = await validHost();
+    const key = deriveCompatibilityKey({ host, sdkRuntime: SDK_A, probe: PROBE });
+    const report = evaluateCompatibility({
+      host,
+      sdkRuntime: SDK_A,
+      probe: PROBE,
+      persisted: provenRecord(key),
+      runningProcess: {
+        appVersion: host.appVersion,
+        appBuild: host.appBuild,
+        executablePath: "/Applications/OldChatGPT.app/Contents/MacOS/ChatGPT",
+      },
+    });
+    expect(report.status).toBe("unproven");
+    expect(report.reason).toContain("running_executable_path");
     expect(report.allowsCompatibilityDependentWork).toBe(false);
   });
 

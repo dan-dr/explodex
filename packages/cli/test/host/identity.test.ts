@@ -41,6 +41,7 @@ describe("inspectHost canonical resolution (VAL-HOST-001)", () => {
     expect(result.host.appBuild).toBe(MISSION_BASELINE_APP_BUILD);
     expect(result.host.hostHashes["Contents/Info.plist"]).toMatch(/^[a-f0-9]{64}$/);
     expect(result.host.hostHashes["Contents/MacOS/ChatGPT"]).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.host.hostHashes["Contents/Resources/app.asar"]).toMatch(/^[a-f0-9]{64}$/);
 
     // Read-only: inspection must not write into the host bundle.
     const hostWrites = fs.writeLog.filter((w) => w.path.startsWith(CANONICAL_BUNDLE_PATH));
@@ -88,6 +89,26 @@ describe("inspectHost canonical resolution (VAL-HOST-001)", () => {
     expect(result.error.code).toBe("host_not_canonical_path");
     expect(result.selected).toBe(false);
     expect(result.host).toBeNull();
+  });
+
+  test("ignores valid-looking alternate bundles and selects only the canonical path", async () => {
+    const alternate = "/Users/me/Applications/ChatGPT.app";
+    const { adapters } = createFixtureAdapters({
+      bundles: [
+        defaultCanonicalBundleOptions(),
+        defaultCanonicalBundleOptions({ bundlePath: alternate }),
+      ],
+    });
+
+    const result = await inspectHost({
+      adapters,
+      bundlePath: CANONICAL_BUNDLE_PATH,
+      requireCanonicalPath: true,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok || !result.host) throw new Error("expected success");
+    expect(result.host.bundlePath).toBe(CANONICAL_BUNDLE_PATH);
+    expect(result.host.bundlePath).not.toBe(alternate);
   });
 });
 
@@ -193,6 +214,98 @@ describe("inspectHost failure matrix (VAL-HOST-002)", () => {
     if (result.ok) throw new Error("expected failure");
     expect(result.error.code).toBe("host_invalid_signature");
     expect(result.error.failedPredicates).toContain("signing_team");
+  });
+
+  test("a broken code signature fails closed even when identity metadata is present", async () => {
+    const { adapters } = createFixtureAdapters({
+      bundles: [defaultCanonicalBundleOptions({ codesignBroken: true })],
+    });
+    const result = await inspectHost({
+      adapters,
+      bundlePath: CANONICAL_BUNDLE_PATH,
+      requireCanonicalPath: true,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.error.code).toBe("host_invalid_signature");
+    expect(result.error.failedPredicates).toContain("signature_valid");
+    expect(result.selected).toBe(false);
+  });
+
+  test("rejects a self-declared team identifier without the trusted Apple signer chain", async () => {
+    const { adapters } = createFixtureAdapters({
+      bundles: [
+        defaultCanonicalBundleOptions({
+          signingTeam: CANONICAL_SIGNING_TEAM,
+          codesignRequirementMismatch: true,
+        }),
+      ],
+    });
+    const result = await inspectHost({
+      adapters,
+      bundlePath: CANONICAL_BUNDLE_PATH,
+      requireCanonicalPath: true,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.error.code).toBe("host_invalid_signature");
+    expect(result.error.failedPredicates).toContain("signature_valid");
+  });
+
+  test("requires the canonical executable to be executable by the current process", async () => {
+    const executablePath = `${CANONICAL_BUNDLE_PATH}/Contents/MacOS/ChatGPT`;
+    const { adapters, fs } = createFixtureAdapters({});
+    fs.seedFile(executablePath, "not-executable", 0o401);
+    fs.setNonExecutable(executablePath);
+
+    const result = await inspectHost({
+      adapters,
+      bundlePath: CANONICAL_BUNDLE_PATH,
+      requireCanonicalPath: true,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.error.code).toBe("host_broken_executable_relationship");
+    expect(result.error.failedPredicates).toContain("executable_access");
+  });
+
+  test("missing relevant host bytes fail closed with a structured predicate", async () => {
+    const { adapters, fs } = createFixtureAdapters({});
+    fs.entries.delete(`${CANONICAL_BUNDLE_PATH}/Contents/Resources/app.asar`);
+
+    const result = await inspectHost({
+      adapters,
+      bundlePath: CANONICAL_BUNDLE_PATH,
+      requireCanonicalPath: true,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.error.code).toBe("host_malformed");
+    expect(result.error.failedPredicates).toContain(
+      "host_hash_readable:Contents/Resources/app.asar",
+    );
+  });
+
+  test("unreadable relevant host bytes fail closed with a structured predicate", async () => {
+    const { adapters } = createFixtureAdapters({
+      bundles: [
+        defaultCanonicalBundleOptions({
+          unreadableRelativePaths: ["Contents/Resources/app.asar"],
+        }),
+      ],
+    });
+
+    const result = await inspectHost({
+      adapters,
+      bundlePath: CANONICAL_BUNDLE_PATH,
+      requireCanonicalPath: true,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.error.code).toBe("host_malformed");
+    expect(result.error.failedPredicates).toContain(
+      "host_hash_readable:Contents/Resources/app.asar",
+    );
   });
 
   test("failure selects none and leaves candidates unchanged (no writes)", async () => {
