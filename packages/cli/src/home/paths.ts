@@ -25,3 +25,7 @@ export function compatibilityStatePath(explodexHome: string): string {
 export function stateDirectory(explodexHome: string): string {
   return join(explodexHome, "state");
 }
+
+export function locksDirectory(explodexHome: string): string {
+  return join(explodexHome, "locks");
+}

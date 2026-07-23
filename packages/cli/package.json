@@ -12,7 +12,9 @@
   ],
   "exports": {
     "./host": "./src/host/index.ts",
-    "./host/*": "./src/host/*"
+    "./host/*": "./src/host/*",
+    "./runtime": "./src/runtime/index.ts",
+    "./runtime/*": "./src/runtime/*"
   },
   "files": [
     "src/",
