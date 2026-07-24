@@ -10,11 +10,13 @@ import {
   type BoundedOperationFailure,
   type BoundedOperationResult,
   type BoundedOperationSuccess,
+  type DeterministicStage,
   type ExternalWaitStage,
   type OperationIdentity,
   type OperationStage,
   type PartialOperationState,
   type ResidualInventory,
+  type ResourceCleanupReport,
   type StageBoundConfig,
 } from "./types.ts";
 import { assertNoResidentControlPlane } from "./resource-scope.ts";
@@ -30,8 +32,9 @@ export type OperationContext = {
   runExternalWait<T>(stage: ExternalWaitStage, work: (ctl: StageControl) => Promise<T>): Promise<T>;
   /**
    * Run deterministic local work. No wall deadline, but abortable on interrupt.
+   * External-wait stages are rejected and must use runExternalWait().
    */
-  runLocal<T>(stage: OperationStage, work: (ctl: StageControl) => Promise<T> | T): Promise<T>;
+  runLocal<T>(stage: DeterministicStage, work: (ctl: StageControl) => Promise<T> | T): Promise<T>;
   /** Record that a stage completed successfully. */
   markStageComplete(stage: OperationStage): void;
   /** Update partial-state fields (surviving ChatGPT, already-applied work). */
@@ -49,6 +52,11 @@ export type StageControl = {
   throwIfInterrupted(): void;
   /** Remaining ms for external waits; Infinity for local work. */
   remainingMs(): number;
+  /**
+   * Atomically claim permission for an externally visible effect.
+   * Returns false after timeout, interruption, supersession, or terminal cleanup.
+   */
+  tryCommitEffect(): boolean;
 };
 
 export class TimeoutError extends Error {
@@ -107,6 +115,17 @@ function newOperationId(clockIso: string): string {
   return `op_${stamp}_${rand}`;
 }
 
+const EXTERNAL_WAIT_STAGES: ReadonlySet<ExternalWaitStage> = new Set([
+  "launch-readiness",
+  "cdp-discovery",
+  "cdp-evaluation",
+  "renderer-response",
+  "approval",
+  "http-download",
+  "owned-child-shutdown",
+  "lock-acquisition",
+]);
+
 function mergeBounds(
   overrides: Partial<Record<ExternalWaitStage, number>> | undefined,
 ): StageBoundConfig {
@@ -115,6 +134,46 @@ function mergeBounds(
       ...DEFAULT_STAGE_BOUNDS_MS,
       ...overrides,
     },
+  };
+}
+
+function invalidBoundFailure<T>(
+  operationId: string,
+  operation: string,
+  stage: ExternalWaitStage,
+  boundMs: number,
+): BoundedOperationResult<T> {
+  return {
+    ok: false,
+    operationId,
+    operation,
+    error: {
+      code: "invalid_stage_bound",
+      message: `Stage "${stage}" requires a finite positive bound`,
+      stage,
+      boundMs,
+    },
+    partial: emptyPartial(),
+    stagesCompleted: [],
+    warnings: [],
+    residualInventory: emptyResidualInventory(),
+  };
+}
+
+function emptyResidualInventory(): ResidualInventory {
+  return {
+    commandOwnedChildren: 0,
+    sessions: 0,
+    locksHeld: 0,
+    callbacks: 0,
+    watchers: 0,
+    sockets: 0,
+    futureDocuments: 0,
+    reconnectLoops: 0,
+    approvalListeners: 0,
+    daemons: 0,
+    supervisors: 0,
+    hasResidentControlPlane: false,
   };
 }
 
@@ -148,9 +207,18 @@ export async function runBoundedOperation<T>(
     ownerProcessStartedAt: self.processStartedAt,
   };
 
+  for (const stage of EXTERNAL_WAIT_STAGES) {
+    const boundMs = bounds.bounds[stage];
+    if (!Number.isFinite(boundMs) || boundMs <= 0) {
+      return invalidBoundFailure(identity.operationId, identity.operation, stage, boundMs);
+    }
+  }
+
   const scope = createResourceScope({
     operationId: identity.operationId,
     process: adapters.process,
+    clock: adapters.clock,
+    timers: adapters.timers,
   });
 
   const stagesCompleted: OperationStage[] = [];
@@ -201,20 +269,32 @@ export async function runBoundedOperation<T>(
     throwIfInterrupted,
 
     async runLocal(stage, work) {
+      if (EXTERNAL_WAIT_STAGES.has(stage as ExternalWaitStage)) {
+        throw Object.assign(
+          new Error(`External wait stage "${stage}" must use runExternalWait()`),
+          {
+            code: "external_wait_requires_bound" as const,
+            stage: stage as OperationStage,
+          },
+        );
+      }
       throwIfInterrupted();
       currentStage = stage;
+      let stageActive = true;
       const ctl: StageControl = {
         stage,
         signal: abort.signal,
         isInterrupted: () => scope.isInterrupted() || abort.signal.aborted,
         throwIfInterrupted,
         remainingMs: () => Number.POSITIVE_INFINITY,
+        tryCommitEffect: () => stageActive && !scope.isInterrupted() && !abort.signal.aborted,
       };
       try {
         const result = await work(ctl);
         throwIfInterrupted();
         return result;
       } finally {
+        stageActive = false;
         currentStage = null;
       }
     },
@@ -225,43 +305,73 @@ export async function runBoundedOperation<T>(
       const boundMs = bounds.bounds[stage];
       const started = adapters.clock.nowMs();
       const deadline = started + boundMs;
+      const stageAbort = new AbortController();
+      let stageActive = true;
+
+      const propagateAbort = (): void => {
+        stageActive = false;
+        stageAbort.abort();
+      };
+      if (abort.signal.aborted) propagateAbort();
+      else abort.signal.addEventListener("abort", propagateAbort, { once: true });
 
       const ctl: StageControl = {
         stage,
-        signal: abort.signal,
-        isInterrupted: () => scope.isInterrupted() || abort.signal.aborted,
-        throwIfInterrupted,
+        signal: stageAbort.signal,
+        isInterrupted: () => scope.isInterrupted() || stageAbort.signal.aborted,
+        throwIfInterrupted: () => {
+          if (scope.isInterrupted() || abort.signal.aborted) {
+            throw new InterruptError(stage);
+          }
+          if (!stageActive || stageAbort.signal.aborted) {
+            throw new TimeoutError(stage, boundMs);
+          }
+        },
         remainingMs: () => Math.max(0, deadline - adapters.clock.nowMs()),
+        tryCommitEffect: () =>
+          stageActive &&
+          adapters.clock.nowMs() <= deadline &&
+          !stageAbort.signal.aborted &&
+          !scope.isInterrupted() &&
+          !abort.signal.aborted,
       };
 
       let settled = false;
-      let timeoutHandle: { clear(): void } | null = null;
+      const timeoutHandle = adapters.timers.setTimeout(() => {
+        if (settled) return;
+        stageActive = false;
+        stageAbort.abort();
+      }, boundMs);
 
       const timeoutPromise = new Promise<never>((_resolve, reject) => {
-        timeoutHandle = adapters.timers.setTimeout(() => {
-          if (settled) return;
-          reject(new TimeoutError(stage, boundMs));
-        }, boundMs);
+        const onStageAbort = (): void => {
+          if (abort.signal.aborted || scope.isInterrupted()) {
+            reject(new InterruptError(stage));
+          } else {
+            reject(new TimeoutError(stage, boundMs));
+          }
+        };
+        if (stageAbort.signal.aborted) onStageAbort();
+        else stageAbort.signal.addEventListener("abort", onStageAbort, { once: true });
       });
 
-      const abortPromise = new Promise<never>((_resolve, reject) => {
-        if (abort.signal.aborted) {
-          reject(new InterruptError(stage));
-          return;
-        }
-        const onAbort = (): void => {
-          reject(new InterruptError(stage));
-        };
-        abort.signal.addEventListener("abort", onAbort, { once: true });
-      });
+      const workPromise = Promise.resolve().then(() => work(ctl));
+      void workPromise.catch(() => undefined);
 
       try {
-        const result = await Promise.race([work(ctl), timeoutPromise, abortPromise]);
+        const result = await Promise.race([workPromise, timeoutPromise]);
         throwIfInterrupted();
+        if (!stageActive || adapters.clock.nowMs() > deadline) {
+          stageActive = false;
+          stageAbort.abort();
+          throw new TimeoutError(stage, boundMs);
+        }
         return result;
       } finally {
         settled = true;
-        timeoutHandle?.clear();
+        stageActive = false;
+        timeoutHandle.clear();
+        abort.signal.removeEventListener("abort", propagateAbort);
         currentStage = null;
       }
     },
@@ -271,15 +381,26 @@ export async function runBoundedOperation<T>(
     const result = await options.run(ctx);
     throwIfInterrupted();
     terminalReason = "success";
+    abort.abort();
 
-    await finalizeDispose(scope, terminalReason, adapters);
+    const cleanup = await finalizeDispose(
+      scope,
+      terminalReason,
+      bounds.bounds["owned-child-shutdown"],
+    );
     const inventory = scope.inventory();
-    if (enforce) {
-      assertNoResidentControlPlane(inventory);
+    if (options.afterDispose) await options.afterDispose(inventory);
+    if (cleanup.failures.length > 0 || (enforce && inventory.hasResidentControlPlane)) {
+      return cleanupFailureResult(
+        identity,
+        stagesCompleted,
+        warnings,
+        partial,
+        inventory,
+        cleanup,
+      );
     }
-    if (options.afterDispose) {
-      await options.afterDispose(inventory);
-    }
+    if (enforce) assertNoResidentControlPlane(inventory);
 
     const success: BoundedOperationSuccess<T> = {
       ok: true,
@@ -298,9 +419,30 @@ export async function runBoundedOperation<T>(
         ...partial,
         stalledStage: error.stage,
       };
-      await safeCleanup(scope, adapters, terminalReason);
+      abort.abort();
+      const cleanup = await finalizeDispose(
+        scope,
+        terminalReason,
+        bounds.bounds["owned-child-shutdown"],
+      );
       const inventory = scope.inventory();
       if (options.afterDispose) await options.afterDispose(inventory);
+      if (cleanup.failures.length > 0 || (enforce && inventory.hasResidentControlPlane)) {
+        return cleanupFailureResult(
+          identity,
+          stagesCompleted,
+          warnings,
+          partial,
+          inventory,
+          cleanup,
+          {
+            code: "operation_timeout",
+            message: error.message,
+            stage: error.stage,
+            boundMs: error.boundMs,
+          },
+        );
+      }
       return failureResult(identity, stagesCompleted, warnings, partial, inventory, {
         code: "operation_timeout",
         message: error.message,
@@ -315,9 +457,28 @@ export async function runBoundedOperation<T>(
         ...partial,
         stalledStage: error.stage,
       };
-      await safeCleanup(scope, adapters, terminalReason);
+      const cleanup = await finalizeDispose(
+        scope,
+        terminalReason,
+        bounds.bounds["owned-child-shutdown"],
+      );
       const inventory = scope.inventory();
       if (options.afterDispose) await options.afterDispose(inventory);
+      if (cleanup.failures.length > 0 || (enforce && inventory.hasResidentControlPlane)) {
+        return cleanupFailureResult(
+          identity,
+          stagesCompleted,
+          warnings,
+          partial,
+          inventory,
+          cleanup,
+          {
+            code: "operation_interrupted",
+            message: error.message,
+            stage: error.stage,
+          },
+        );
+      }
       return failureResult(identity, stagesCompleted, warnings, partial, inventory, {
         code: "operation_interrupted",
         message: error.message,
@@ -326,33 +487,40 @@ export async function runBoundedOperation<T>(
     }
 
     terminalReason = "failure";
+    abort.abort();
     const message =
       error instanceof Error ? error.message : "Operation failed with a non-Error throw";
-    const code =
-      typeof error === "object" &&
-      error !== null &&
-      "code" in error &&
-      typeof (error as { code: unknown }).code === "string" &&
-      (error as { code: string }).code === "resident_control_plane_forbidden"
-        ? ("resident_control_plane_forbidden" as const)
-        : ("operation_failed" as const);
+    const errorCode = readRuntimeErrorCode(error);
+    const errorStage = readRuntimeErrorStage(error) ?? currentStage ?? partial.stalledStage;
 
-    await safeCleanup(scope, adapters, terminalReason);
+    const cleanup = await finalizeDispose(
+      scope,
+      terminalReason,
+      bounds.bounds["owned-child-shutdown"],
+    );
     const inventory = scope.inventory();
     if (options.afterDispose) await options.afterDispose(inventory);
-
-    // If cleanup left residue and enforcement is on, surface that too.
-    if (enforce && inventory.hasResidentControlPlane && code === "operation_failed") {
-      warnings.push({
-        code: "residual_after_cleanup",
-        message: "Cleanup completed but residual inventory was non-empty",
-      });
+    if (cleanup.failures.length > 0 || (enforce && inventory.hasResidentControlPlane)) {
+      return cleanupFailureResult(
+        identity,
+        stagesCompleted,
+        warnings,
+        partial,
+        inventory,
+        cleanup,
+        {
+          code: errorCode,
+          message,
+          stage: errorStage,
+          details: error instanceof Error ? { name: error.name } : undefined,
+        },
+      );
     }
 
     return failureResult(identity, stagesCompleted, warnings, partial, inventory, {
-      code,
+      code: errorCode,
       message,
-      stage: currentStage ?? partial.stalledStage,
+      stage: errorStage,
       details: error instanceof Error ? { name: error.name } : undefined,
     });
   } finally {
@@ -364,24 +532,52 @@ export async function runBoundedOperation<T>(
 async function finalizeDispose(
   scope: ResourceScope,
   reason: "success" | "failure" | "timeout" | "interrupted",
-  adapters: RuntimeAdapters,
-): Promise<void> {
-  // Reap command-owned children first (never protected ChatGPT).
-  await scope.reapCommandOwnedChildren("SIGTERM");
-  await scope.dispose(reason);
-  void adapters;
+  boundMs: number,
+): Promise<ResourceCleanupReport> {
+  return scope.dispose(reason, boundMs);
 }
 
-async function safeCleanup(
-  scope: ResourceScope,
-  adapters: RuntimeAdapters,
-  reason: "success" | "failure" | "timeout" | "interrupted",
-): Promise<void> {
-  try {
-    await finalizeDispose(scope, reason, adapters);
-  } catch {
-    // Best-effort.
+function cleanupFailureResult(
+  identity: OperationIdentity,
+  stagesCompleted: OperationStage[],
+  warnings: Array<{ code: string; message: string }>,
+  partial: PartialOperationState,
+  inventory: ResidualInventory,
+  cleanup: ResourceCleanupReport,
+  cause?: BoundedOperationFailure["error"],
+): BoundedOperationFailure {
+  return failureResult(identity, stagesCompleted, warnings, partial, inventory, {
+    code: "cleanup_failed",
+    message: cause
+      ? `${cause.message}; terminal cleanup was incomplete`
+      : "Terminal cleanup was incomplete",
+    stage: "cleanup",
+    boundMs: cleanup.boundMs,
+    details: {
+      failures: cleanup.failures,
+      residualInventory: inventory,
+      ...(cause ? { cause } : {}),
+    },
+  });
+}
+
+function readRuntimeErrorCode(error: unknown): BoundedOperationFailure["error"]["code"] {
+  if (typeof error !== "object" || error === null || !("code" in error)) {
+    return "operation_failed";
   }
+  const code = (error as { code?: unknown }).code;
+  if (code === "resident_control_plane_forbidden") return code;
+  if (code === "external_wait_requires_bound") return code;
+  if (code === "invalid_stage_bound") return code;
+  if (code === "lock_busy") return code;
+  if (code === "lock_stale_unrecoverable") return code;
+  return "operation_failed";
+}
+
+function readRuntimeErrorStage(error: unknown): OperationStage | null {
+  if (typeof error !== "object" || error === null || !("stage" in error)) return null;
+  const stage = (error as { stage?: unknown }).stage;
+  return typeof stage === "string" ? (stage as OperationStage) : null;
 }
 
 function failureResult(

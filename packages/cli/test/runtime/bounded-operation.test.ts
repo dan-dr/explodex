@@ -104,6 +104,7 @@ describe("bounded operation runtime — no resident control plane (VAL-HOST-027)
           },
         });
         harness.setProcessAlive(55_001, "2026-07-23T12:00:01.000Z", true);
+        harness.setSignalDisposition(55_001, "2026-07-23T12:00:01.000Z", "exit");
         throw new Error("evaluation blew up");
       },
     });
@@ -117,6 +118,243 @@ describe("bounded operation runtime — no resident control plane (VAL-HOST-027)
     // Command-owned child was signaled during reap.
     expect(harness.signalsSent.some((s) => s.pid === 55_001)).toBe(true);
     expect(result.residualInventory.hasResidentControlPlane).toBe(false);
+  });
+
+  test("cleanup failure remains truthful in residual inventory", async () => {
+    const harness = createFakeRuntimeHarness();
+
+    const result = await runBoundedOperation({
+      adapters: harness.adapters,
+      operation: "status",
+      operationId: "op-cleanup-failure",
+      run: async (ctx) => {
+        ctx.scope.register({
+          kind: "session",
+          label: "broken-session",
+          disposition: "command-owned",
+          dispose: () => {
+            throw new Error("session close failed");
+          },
+        });
+        return "done";
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("cleanup_failed");
+    expect(result.error.stage).toBe("cleanup");
+    expect(result.residualInventory.sessions).toBe(1);
+    expect(result.residualInventory.hasResidentControlPlane).toBe(true);
+    expect(result.error.details).toEqual(expect.objectContaining({
+      failures: expect.arrayContaining([
+        expect.objectContaining({ label: "broken-session", outcome: "failed" }),
+      ]),
+    }));
+  });
+
+  test("hanging disposer is bounded and reported as cleanup failure", async () => {
+    const harness = createFakeRuntimeHarness();
+
+    const work = runBoundedOperation({
+      adapters: harness.adapters,
+      operation: "status",
+      operationId: "op-cleanup-timeout",
+      stageBounds: { "owned-child-shutdown": 25 },
+      run: async (ctx) => {
+        ctx.scope.register({
+          kind: "callback",
+          label: "hung-callback",
+          disposition: "command-owned",
+          dispose: () => new Promise<void>(() => undefined),
+        });
+        return "done";
+      },
+    });
+
+    const result = await runWithClockPump(harness, work, { stepMs: 5, maxSteps: 20 });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("cleanup_failed");
+    expect(result.error.stage).toBe("cleanup");
+    expect(result.error.boundMs).toBe(25);
+    expect(result.residualInventory.callbacks).toBe(1);
+    expect(result.error.details).toEqual(expect.objectContaining({
+      failures: expect.arrayContaining([
+        expect.objectContaining({ label: "hung-callback", outcome: "timed-out" }),
+      ]),
+    }));
+  });
+
+  test("one hanging disposer cannot starve later LIFO cleanup hooks", async () => {
+    const harness = createFakeRuntimeHarness();
+    const attempts: string[] = [];
+
+    const work = runBoundedOperation({
+      adapters: harness.adapters,
+      operation: "status",
+      operationId: "op-cleanup-fairness",
+      stageBounds: { "owned-child-shutdown": 30 },
+      run: async (ctx) => {
+        ctx.scope.register({
+          kind: "session",
+          label: "session",
+          disposition: "command-owned",
+          dispose: () => {
+            attempts.push("session");
+          },
+        });
+        ctx.scope.register({
+          kind: "lock",
+          label: "lock",
+          disposition: "command-owned",
+          dispose: () => {
+            attempts.push("lock");
+          },
+        });
+        ctx.scope.register({
+          kind: "callback",
+          label: "hung-callback",
+          disposition: "command-owned",
+          dispose: () => {
+            attempts.push("callback");
+            return new Promise<void>(() => undefined);
+          },
+        });
+        return null;
+      },
+    });
+
+    const result = await runWithClockPump(harness, work, { stepMs: 1, maxSteps: 100 });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(attempts).toEqual(["callback", "lock", "session"]);
+    expect(result.residualInventory.callbacks).toBe(1);
+    expect(result.residualInventory.locksHeld).toBe(0);
+    expect(result.residualInventory.sessions).toBe(0);
+  });
+
+  test("stubborn child cleanup cannot starve unrelated disposers", async () => {
+    const harness = createFakeRuntimeHarness();
+    const child = { pid: 55_075, start: "stubborn-child" };
+    const attempts: string[] = [];
+    harness.setProcessAlive(child.pid, child.start, true);
+    harness.setSignalDisposition(child.pid, child.start, "remain-alive");
+
+    const work = runBoundedOperation({
+      adapters: harness.adapters,
+      operation: "status",
+      operationId: "op-child-disposer-overlap",
+      stageBounds: { "owned-child-shutdown": 30 },
+      run: async (ctx) => {
+        ctx.scope.register({
+          kind: "session",
+          label: "session",
+          disposition: "command-owned",
+          dispose: () => {
+            attempts.push("session");
+          },
+        });
+        ctx.scope.register({
+          kind: "lock",
+          label: "lock",
+          disposition: "command-owned",
+          dispose: () => {
+            attempts.push("lock");
+          },
+        });
+        ctx.scope.register({
+          kind: "child-process",
+          label: "stubborn-helper",
+          disposition: "command-owned",
+          pid: child.pid,
+          processStartedAt: child.start,
+          dispose: () => {
+            attempts.push("child");
+          },
+        });
+        return null;
+      },
+    });
+
+    const startedAt = harness.nowMs();
+    const result = await runWithClockPump(harness, work, { stepMs: 1, maxSteps: 100 });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(harness.nowMs() - startedAt).toBeLessThanOrEqual(35);
+    expect(attempts).toEqual(expect.arrayContaining(["child", "lock", "session"]));
+    expect(result.residualInventory.commandOwnedChildren).toBe(1);
+    expect(result.residualInventory.locksHeld).toBe(0);
+    expect(result.residualInventory.sessions).toBe(0);
+  });
+
+  test("timed-out disposer is aborted and cannot commit a late effect", async () => {
+    const harness = createFakeRuntimeHarness();
+    let lateEffects = 0;
+    let sawAbort = false;
+
+    const work = runBoundedOperation({
+      adapters: harness.adapters,
+      operation: "status",
+      operationId: "op-cleanup-effect-fence",
+      stageBounds: { "owned-child-shutdown": 20 },
+      run: async (ctx) => {
+        ctx.scope.register({
+          kind: "callback",
+          label: "late-cleanup-callback",
+          disposition: "command-owned",
+          dispose: async (control) => {
+            control.signal.addEventListener("abort", () => {
+              sawAbort = true;
+            }, { once: true });
+            await new Promise<void>((resolve) => {
+              harness.adapters.timers.setTimeout(resolve, 100);
+            });
+            if (control.tryCommitEffect()) lateEffects += 1;
+          },
+        });
+        return "done";
+      },
+    });
+
+    const result = await runWithClockPump(harness, work, { stepMs: 5, maxSteps: 20 });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("cleanup_failed");
+    expect(sawAbort).toBe(true);
+
+    harness.advanceMs(200);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(lateEffects).toBe(0);
+  });
+
+  test("protected child runs detach cleanup without receiving a signal", async () => {
+    const harness = createFakeRuntimeHarness();
+    let detached = false;
+
+    const result = await runBoundedOperation({
+      adapters: harness.adapters,
+      operation: "launch-with-injection",
+      operationId: "op-protected-detach",
+      run: async (ctx) => {
+        ctx.scope.register({
+          kind: "child-process",
+          label: "launched-chatgpt",
+          disposition: "protected-chatgpt",
+          pid: 55_100,
+          processStartedAt: "chatgpt-start",
+          dispose: () => {
+            detached = true;
+          },
+        });
+        return null;
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(detached).toBe(true);
+    expect(harness.signalsSent.some((entry) => entry.pid === 55_100)).toBe(false);
   });
 
   test("repetition does not accumulate residual control-plane resources", async () => {
@@ -154,6 +392,8 @@ describe("bounded operation runtime — no resident control plane (VAL-HOST-027)
     const scope = createResourceScope({
       operationId: "op-reconnect",
       process: harness.adapters.process,
+      clock: harness.adapters.clock,
+      timers: harness.adapters.timers,
     });
     expect(() =>
       scope.register({
@@ -187,9 +427,7 @@ describe("bounded operation runtime — no resident control plane (VAL-HOST-027)
               disposition: "protected-chatgpt",
               pid: chatgptPid,
               processStartedAt: chatgptStart,
-              dispose: () => {
-                throw new Error("protected dispose must not be required to kill");
-              },
+              dispose: () => undefined,
             });
             ctx.setPartial({
               survivingChatGpt: {
@@ -405,6 +643,153 @@ describe("bounded operation runtime — stage timeouts (VAL-HOST-028)", () => {
   });
 
   test.each([
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+    0,
+    -1,
+  ])("rejects invalid external stage bound %p before command work", async (boundMs) => {
+    const harness = createFakeRuntimeHarness();
+    let started = false;
+
+    const result = await runBoundedOperation({
+      adapters: harness.adapters,
+      operation: "attach",
+      operationId: `op-invalid-bound-${String(boundMs)}`,
+      stageBounds: { "cdp-discovery": boundMs },
+      run: async () => {
+        started = true;
+        return null;
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("invalid_stage_bound");
+    expect(result.error.stage).toBe("cdp-discovery");
+    expect(result.error.boundMs).toBe(boundMs);
+    expect(started).toBe(false);
+  });
+
+  test("timeout aborts and fences late stage effects", async () => {
+    const harness = createFakeRuntimeHarness();
+    let lateEffects = 0;
+    let sawAbort = false;
+
+    const work = runBoundedOperation({
+      adapters: harness.adapters,
+      operation: "attach",
+      operationId: "op-timeout-fence",
+      stageBounds: { "renderer-response": 20 },
+      run: async (ctx) => {
+        await ctx.runExternalWait("renderer-response", async (ctl) => {
+          await new Promise<void>((resolve) => {
+            ctl.signal.addEventListener("abort", () => {
+              sawAbort = true;
+            }, { once: true });
+            harness.adapters.timers.setTimeout(() => resolve(), 100);
+          });
+          if (!ctl.tryCommitEffect()) return;
+          lateEffects += 1;
+        });
+        return null;
+      },
+    });
+
+    const result = await runWithClockPump(harness, work, { stepMs: 5, maxSteps: 20 });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("operation_timeout");
+    expect(sawAbort).toBe(true);
+
+    harness.advanceMs(200);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(lateEffects).toBe(0);
+  });
+
+  test("effect claimed before timeout is awaited as a registered resource", async () => {
+    const harness = createFakeRuntimeHarness();
+    let effectCompleted = false;
+
+    const work = runBoundedOperation({
+      adapters: harness.adapters,
+      operation: "attach",
+      operationId: "op-effect-in-flight",
+      stageBounds: { "renderer-response": 20, "owned-child-shutdown": 30 },
+      run: async (ctx) => {
+        await ctx.runExternalWait("renderer-response", async (ctl) => {
+          if (!ctl.tryCommitEffect()) return;
+          const effect = new Promise<void>((resolve) => {
+            harness.adapters.timers.setTimeout(() => {
+              effectCompleted = true;
+              resolve();
+            }, 25);
+          });
+          ctx.scope.register({
+            kind: "callback",
+            label: "in-flight-effect",
+            disposition: "command-owned",
+            dispose: () => effect,
+          });
+          await new Promise<void>(() => undefined);
+        });
+        return null;
+      },
+    });
+
+    const result = await runWithClockPump(harness, work, { stepMs: 5, maxSteps: 20 });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("operation_timeout");
+    expect(effectCompleted).toBe(true);
+    expect(result.residualInventory.callbacks).toBe(0);
+  });
+
+  test("runLocal effect control is inactive after the local stage returns", async () => {
+    const harness = createFakeRuntimeHarness();
+    let retainedControl: { tryCommitEffect(): boolean } | null = null;
+
+    const result = await runBoundedOperation({
+      adapters: harness.adapters,
+      operation: "status",
+      operationId: "op-local-effect-fence",
+      run: async (ctx) => {
+        await ctx.runLocal("local-work", async (control) => {
+          retainedControl = control;
+        });
+        expect(retainedControl?.tryCommitEffect()).toBe(false);
+        return null;
+      },
+    });
+
+    expect(result.ok).toBe(true);
+  });
+
+  test("runLocal rejects external-wait stages at runtime", async () => {
+    const harness = createFakeRuntimeHarness();
+    let started = false;
+
+    const result = await runBoundedOperation({
+      adapters: harness.adapters,
+      operation: "local-build",
+      operationId: "op-local-external-stage",
+      run: async (ctx) => {
+        await ctx.runLocal("http-download" as never, async () => {
+          started = true;
+        });
+        return null;
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("external_wait_requires_bound");
+    expect(result.error.stage).toBe("http-download");
+    expect(started).toBe(false);
+  });
+
+  test.each([
     ["launch-readiness", 30] as const,
     ["cdp-discovery", 25] as const,
     ["http-download", 35] as const,
@@ -460,11 +845,19 @@ describe("bounded operation runtime — stage timeouts (VAL-HOST-028)", () => {
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error.code).toBe("operation_timeout");
-    expect(result.error.stage).toBe(stage);
+    expect(result.error.code).toBe(
+      stage === "owned-child-shutdown" ? "cleanup_failed" : "operation_timeout",
+    );
+    expect(result.error.stage).toBe(stage === "owned-child-shutdown" ? "cleanup" : stage);
     expect(result.error.boundMs).toBe(boundMs);
-    expect(disposed).toEqual(expect.arrayContaining(["session", "lock", "callback"]));
-    expect(result.residualInventory.hasResidentControlPlane).toBe(false);
+    const expectedDisposed =
+      stage === "owned-child-shutdown" ? ["lock", "callback"] : ["session", "lock", "callback"];
+    expect(disposed).toEqual(expect.arrayContaining(expectedDisposed));
+    if (stage !== "owned-child-shutdown") {
+      expect(result.residualInventory.hasResidentControlPlane).toBe(false);
+    } else {
+      expect(result.residualInventory.sessions).toBe(1);
+    }
   });
 
   test("TimeoutError is distinguishable for callers", () => {
@@ -479,6 +872,7 @@ describe("bounded operation runtime — stage timeouts (VAL-HOST-028)", () => {
     const helperPid = 70_001;
     const chatgptPid = 70_002;
     harness.setProcessAlive(helperPid, "t1", true);
+    harness.setSignalDisposition(helperPid, "t1", "exit");
     harness.setProcessAlive(chatgptPid, "t2", true);
 
     const work = runBoundedOperation({
@@ -516,13 +910,149 @@ describe("bounded operation runtime — stage timeouts (VAL-HOST-028)", () => {
       },
     });
 
-    const result = await runWithClockPump(harness, work, { stepMs: 5, maxSteps: 20 });
+    const result = await runWithClockPump(harness, work, { stepMs: 5, maxSteps: 2_000 });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.code).toBe("operation_timeout");
     expect(harness.signalsSent.filter((s) => s.pid === helperPid).length).toBeGreaterThan(0);
     expect(harness.signalsSent.filter((s) => s.pid === chatgptPid).length).toBe(0);
     expect(result.partial.survivingChatGpt?.pid).toBe(chatgptPid);
+  });
+
+  test("revalidates child start identity immediately before signaling", async () => {
+    const harness = createFakeRuntimeHarness();
+    const helperPid = 70_100;
+    const originalStart = "helper-original";
+    const replacementStart = "helper-replacement";
+    harness.setProcessAlive(helperPid, originalStart, true);
+    harness.setSignalBarrier(() => {
+      harness.setProcessAlive(helperPid, originalStart, false);
+      harness.setProcessAlive(helperPid, replacementStart, true);
+    });
+
+    const result = await runBoundedOperation({
+      adapters: harness.adapters,
+      operation: "attach",
+      operationId: "op-pid-reuse",
+      run: async (ctx) => {
+        ctx.scope.register({
+          kind: "child-process",
+          label: "helper",
+          disposition: "command-owned",
+          pid: helperPid,
+          processStartedAt: originalStart,
+          dispose: () => undefined,
+        });
+        throw new Error("trigger cleanup");
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("cleanup_failed");
+    expect(harness.signalsSent.some((entry) => entry.pid === helperPid)).toBe(false);
+    expect(result.error.details).toEqual(expect.objectContaining({
+      failures: expect.arrayContaining([
+        expect.objectContaining({ label: "helper", outcome: "identity-mismatch" }),
+      ]),
+    }));
+  });
+
+  test("rejects invalid command-owned child PID registration", async () => {
+    const harness = createFakeRuntimeHarness();
+
+    const result = await runBoundedOperation({
+      adapters: harness.adapters,
+      operation: "attach",
+      operationId: "op-invalid-child-pid",
+      run: async (ctx) => {
+        ctx.scope.register({
+          kind: "child-process",
+          label: "invalid-helper",
+          disposition: "command-owned",
+          pid: 0,
+          processStartedAt: "invalid-start",
+          dispose: () => undefined,
+        });
+        throw new Error("trigger cleanup");
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("cleanup_failed");
+    expect(result.error.details).toEqual(expect.objectContaining({
+      failures: expect.arrayContaining([
+        expect.objectContaining({ label: "invalid-helper", outcome: "invalid-registration" }),
+      ]),
+    }));
+  });
+
+  test("signals all command-owned children before waiting for exits", async () => {
+    const harness = createFakeRuntimeHarness();
+    const first = { pid: 60_001, start: "first-child" };
+    const second = { pid: 60_002, start: "second-child" };
+    for (const child of [first, second]) {
+      harness.setProcessAlive(child.pid, child.start, true);
+      harness.setSignalDisposition(child.pid, child.start, { exitAfterMs: 15 });
+    }
+
+    const work = runBoundedOperation({
+      adapters: harness.adapters,
+      operation: "attach",
+      operationId: "op-signal-all-children",
+      stageBounds: { "owned-child-shutdown": 100 },
+      run: async (ctx) => {
+        for (const child of [first, second]) {
+          ctx.scope.register({
+            kind: "child-process",
+            label: `helper-${child.pid}`,
+            disposition: "command-owned",
+            pid: child.pid,
+            processStartedAt: child.start,
+            dispose: () => undefined,
+          });
+        }
+        return null;
+      },
+    });
+
+    const result = await runWithClockPump(harness, work, { stepMs: 1, maxSteps: 100 });
+    expect(result.ok).toBe(true);
+    expect(harness.signalsSent.map((entry) => entry.pid)).toEqual([first.pid, second.pid]);
+  });
+
+  test("reports command-owned child that ignores graceful shutdown", async () => {
+    const harness = createFakeRuntimeHarness();
+    const helperPid = 70_200;
+    harness.setProcessAlive(helperPid, "helper-start", true);
+    harness.setSignalDisposition(helperPid, "helper-start", "remain-alive");
+
+    const work = runBoundedOperation({
+      adapters: harness.adapters,
+      operation: "attach",
+      operationId: "op-child-survives",
+      stageBounds: { "owned-child-shutdown": 20 },
+      run: async (ctx) => {
+        ctx.scope.register({
+          kind: "child-process",
+          label: "stubborn-helper",
+          disposition: "command-owned",
+          pid: helperPid,
+          processStartedAt: "helper-start",
+          dispose: () => undefined,
+        });
+        throw new Error("trigger cleanup");
+      },
+    });
+
+    const result = await runWithClockPump(harness, work, { stepMs: 5, maxSteps: 20 });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("cleanup_failed");
+    expect(result.error.boundMs).toBe(20);
+    expect(result.residualInventory.commandOwnedChildren).toBe(1);
+    expect(harness.signalsSent.some((entry) => entry.pid === helperPid)).toBe(true);
   });
 });
 
@@ -614,6 +1144,7 @@ describe("bounded operation runtime — cooperative SIGINT (VAL-HOST-029)", () =
     const helperPid = 80_001;
     const chatgptPid = 80_002;
     harness.setProcessAlive(helperPid, "h", true);
+    harness.setSignalDisposition(helperPid, "h", "exit");
     harness.setProcessAlive(chatgptPid, "c", true);
 
     const work = runBoundedOperation({
@@ -713,6 +1244,7 @@ describe("bounded operation runtime — cooperative SIGINT (VAL-HOST-029)", () =
 });
 
 describe("operation locks (command-lifetime coordination)", () => {
+  const ownerPath = (directory: string): string => `${directory}/owner.json`;
   test("exclusive acquire and release", async () => {
     const harness = createFakeRuntimeHarness();
     const home = "/tmp/explodex-test-home-a";
@@ -734,7 +1266,7 @@ describe("operation locks (command-lifetime coordination)", () => {
     expect(acquired.ok).toBe(true);
     if (!acquired.ok) return;
     expect(acquired.record.operationId).toBe("op-lock-1");
-    expect(harness.files.has(lockPath(home, "plugins-state"))).toBe(true);
+    expect(harness.files.has(ownerPath(lockPath(home, "plugins-state")))).toBe(true);
 
     const busy = await acquireOperationLock({
       adapters: harness.adapters,
@@ -747,8 +1279,8 @@ describe("operation locks (command-lifetime coordination)", () => {
     if (busy.ok) return;
     expect(busy.code).toBe("lock_busy");
 
-    await releaseOperationLock(harness.adapters, acquired.path, "op-lock-1");
-    expect(harness.files.has(lockPath(home, "plugins-state"))).toBe(false);
+    await releaseOperationLock(harness.adapters, acquired.path, acquired.record);
+    expect(harness.files.has(ownerPath(lockPath(home, "plugins-state")))).toBe(false);
 
     const again = await acquireOperationLock({
       adapters: harness.adapters,
@@ -758,6 +1290,83 @@ describe("operation locks (command-lifetime coordination)", () => {
       waitBoundMs: 0,
     });
     expect(again.ok).toBe(true);
+  });
+
+  test("aborted acquisition never publishes its prepared lock", async () => {
+    const harness = createFakeRuntimeHarness();
+    const home = "/tmp/explodex-test-home-aborted-lock";
+    const abort = new AbortController();
+    const originalRenameExclusive = harness.adapters.fs.renameExclusive;
+    harness.adapters.fs.renameExclusive = async (from, to, options) => {
+      abort.abort();
+      if (options?.abortSignal?.aborted) {
+        throw Object.assign(new Error("rename aborted"), { code: "ABORT_ERR" });
+      }
+      return originalRenameExclusive(from, to, options);
+    };
+
+    await expect(acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: home,
+      resource: "plugins-state",
+      identity: {
+        operationId: "op-aborted-lock",
+        operation: "install",
+        startedAt: harness.adapters.clock.nowIso(),
+        ownerPid: harness.self.pid,
+        ownerProcessStartedAt: harness.self.processStartedAt,
+      },
+      waitBoundMs: 100,
+      abortSignal: abort.signal,
+    })).rejects.toThrow(/rename aborted/);
+
+    expect(harness.files.has(ownerPath(lockPath(home, "plugins-state")))).toBe(false);
+  });
+
+  test("retries when a contended lock disappears before owner read", async () => {
+    const harness = createFakeRuntimeHarness();
+    const home = "/tmp/explodex-test-home-release-read-race";
+    const path = lockPath(home, "plugins-state");
+    const owner = {
+      schemaVersion: 1 as const,
+      resource: "plugins-state" as const,
+      operationId: "op-releasing",
+      pid: 12_390,
+      processStartedAt: "live-owner",
+      acquiredAt: "2026-07-01T00:00:01.000Z",
+    };
+    harness.setProcessAlive(owner.pid, owner.processStartedAt, true);
+    await harness.adapters.fs.mkdir(`${home}/locks`, { recursive: true });
+    await harness.adapters.fs.createDirectoryExclusive(path);
+    await harness.adapters.fs.writeFile(ownerPath(path), `${JSON.stringify(owner)}\n`);
+    const originalReadText = harness.adapters.fs.readText;
+    let releasedBeforeRead = false;
+    harness.adapters.fs.readText = async (readPath) => {
+      if (!releasedBeforeRead && readPath === ownerPath(path)) {
+        releasedBeforeRead = true;
+        harness.files.delete(ownerPath(path));
+        await harness.adapters.fs.removeDirectory(path);
+      }
+      return originalReadText(readPath);
+    };
+
+    const acquired = await acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: home,
+      resource: "plugins-state",
+      identity: {
+        operationId: "op-after-release",
+        operation: "install",
+        startedAt: harness.adapters.clock.nowIso(),
+        ownerPid: harness.self.pid,
+        ownerProcessStartedAt: harness.self.processStartedAt,
+      },
+      waitBoundMs: 100,
+    });
+
+    expect(acquired.ok).toBe(true);
+    if (!acquired.ok) return;
+    expect(acquired.record.operationId).toBe("op-after-release");
   });
 
   test("stale lock is recovered when owner is dead", async () => {
@@ -776,9 +1385,9 @@ describe("operation locks (command-lifetime coordination)", () => {
       processStartedAt: deadStart,
       acquiredAt: "2026-07-01T00:00:01.000Z",
     };
-    // Ensure directory "exists" via mkdir + write
     await harness.adapters.fs.mkdir(`${home}/locks`, { recursive: true });
-    await harness.adapters.fs.writeFile(path, `${JSON.stringify(stale)}\n`);
+    await harness.adapters.fs.createDirectoryExclusive(path);
+    await harness.adapters.fs.writeFile(ownerPath(path), `${JSON.stringify(stale)}\n`);
 
     const identity = {
       operationId: "op-recover",
@@ -799,6 +1408,247 @@ describe("operation locks (command-lifetime coordination)", () => {
     if (!acquired.ok) return;
     expect(acquired.recoveredStale).toBe(true);
     expect(acquired.record.operationId).toBe("op-recover");
+  });
+
+  test("stale recovery does not unlink a replacement owner", async () => {
+    const harness = createFakeRuntimeHarness();
+    const home = "/tmp/explodex-test-home-stale-race";
+    const path = lockPath(home, "main-launch");
+    const stale = {
+      schemaVersion: 1 as const,
+      resource: "main-launch" as const,
+      operationId: "op-dead",
+      pid: 12_400,
+      processStartedAt: "dead-start",
+      acquiredAt: "2026-07-01T00:00:01.000Z",
+    };
+    const replacement = {
+      schemaVersion: 1 as const,
+      resource: "main-launch" as const,
+      operationId: "op-replacement",
+      pid: 12_401,
+      processStartedAt: "replacement-start",
+      acquiredAt: "2026-07-01T00:00:02.000Z",
+    };
+    harness.setProcessAlive(stale.pid, stale.processStartedAt, false);
+    harness.setProcessAlive(replacement.pid, replacement.processStartedAt, true);
+    await harness.adapters.fs.mkdir(`${home}/locks`, { recursive: true });
+    await harness.adapters.fs.createDirectoryExclusive(path);
+    await harness.adapters.fs.writeFile(ownerPath(path), `${JSON.stringify(stale)}\n`);
+    harness.setCompareRemoveBarrier(() => {
+      harness.files.set(ownerPath(path), `${JSON.stringify(replacement)}\n`);
+    });
+
+    const acquired = await acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: home,
+      resource: "main-launch",
+      identity: {
+        operationId: "op-contender",
+        operation: "launch",
+        startedAt: harness.adapters.clock.nowIso(),
+        ownerPid: harness.self.pid,
+        ownerProcessStartedAt: harness.self.processStartedAt,
+      },
+      waitBoundMs: 0,
+    });
+
+    expect(acquired.ok).toBe(false);
+    expect(JSON.parse(harness.files.get(ownerPath(path)) ?? "null")).toEqual(replacement);
+  });
+
+  test("release does not unlink a replacement owner", async () => {
+    const harness = createFakeRuntimeHarness();
+    const home = "/tmp/explodex-test-home-release-race";
+    const path = lockPath(home, "plugins-state");
+    const original = {
+      schemaVersion: 1 as const,
+      resource: "plugins-state" as const,
+      operationId: "op-original",
+      pid: harness.self.pid,
+      processStartedAt: harness.self.processStartedAt,
+      acquiredAt: "2026-07-01T00:00:01.000Z",
+    };
+    const replacement = {
+      schemaVersion: 1 as const,
+      resource: "plugins-state" as const,
+      operationId: "op-replacement",
+      pid: 12_500,
+      processStartedAt: "replacement-start",
+      acquiredAt: "2026-07-01T00:00:02.000Z",
+    };
+    await harness.adapters.fs.mkdir(`${home}/locks`, { recursive: true });
+    await harness.adapters.fs.createDirectoryExclusive(path);
+    await harness.adapters.fs.writeFile(ownerPath(path), `${JSON.stringify(original)}\n`);
+    harness.setCompareRemoveBarrier(() => {
+      harness.files.set(ownerPath(path), `${JSON.stringify(replacement)}\n`);
+    });
+
+    await expect(releaseOperationLock(harness.adapters, path, original)).rejects.toThrow(
+      /could not atomically remove/,
+    );
+
+    expect(JSON.parse(harness.files.get(ownerPath(path)) ?? "null")).toEqual(replacement);
+  });
+
+  test("release preserves an owned directory when unexpected entries block removal", async () => {
+    const harness = createFakeRuntimeHarness();
+    const home = "/tmp/explodex-test-home-extra-lock-entry";
+    const path = lockPath(home, "plugins-state");
+    const owner = {
+      schemaVersion: 1 as const,
+      resource: "plugins-state" as const,
+      operationId: "op-extra-entry",
+      pid: harness.self.pid,
+      processStartedAt: harness.self.processStartedAt,
+      acquiredAt: "2026-07-01T00:00:01.000Z",
+    };
+    await harness.adapters.fs.mkdir(`${home}/locks`, { recursive: true });
+    await harness.adapters.fs.createDirectoryExclusive(path);
+    await harness.adapters.fs.writeFile(ownerPath(path), `${JSON.stringify(owner)}\n`);
+    harness.addDirectoryEntry(`${path}/unexpected`);
+
+    await expect(releaseOperationLock(harness.adapters, path, owner)).rejects.toThrow(
+      /could not atomically remove/,
+    );
+    expect(harness.files.get(ownerPath(path))).toBe(`${JSON.stringify(owner)}\n`);
+    expect(await harness.adapters.fs.isDirectory(path)).toBe(true);
+  });
+
+  test("release reports an ownerless lock directory instead of hiding residue", async () => {
+    const harness = createFakeRuntimeHarness();
+    const home = "/tmp/explodex-test-home-ownerless-lock";
+    const path = lockPath(home, "plugins-state");
+    await harness.adapters.fs.mkdir(`${home}/locks`, { recursive: true });
+    await harness.adapters.fs.createDirectoryExclusive(path);
+
+    await expect(releaseOperationLock(harness.adapters, path, {
+      schemaVersion: 1,
+      resource: "plugins-state",
+      operationId: "op-ownerless",
+      pid: harness.self.pid,
+      processStartedAt: harness.self.processStartedAt,
+      acquiredAt: "2026-07-01T00:00:01.000Z",
+    })).rejects.toThrow(/ENOENT/);
+    expect(await harness.adapters.fs.exists(path)).toBe(true);
+  });
+
+  test("malformed lock fails closed without deletion", async () => {
+    const harness = createFakeRuntimeHarness();
+    const home = "/tmp/explodex-test-home-malformed-lock";
+    const path = lockPath(home, "plugins-state");
+    await harness.adapters.fs.mkdir(`${home}/locks`, { recursive: true });
+    await harness.adapters.fs.createDirectoryExclusive(path);
+    await harness.adapters.fs.writeFile(ownerPath(path), "{partial");
+
+    const acquired = await acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: home,
+      resource: "plugins-state",
+      identity: {
+        operationId: "op-contender",
+        operation: "install",
+        startedAt: harness.adapters.clock.nowIso(),
+        ownerPid: harness.self.pid,
+        ownerProcessStartedAt: harness.self.processStartedAt,
+      },
+      waitBoundMs: 0,
+    });
+
+    expect(acquired.ok).toBe(false);
+    if (acquired.ok) return;
+    expect(acquired.code).toBe("lock_stale_unrecoverable");
+    expect(harness.files.get(ownerPath(path))).toBe("{partial");
+  });
+
+  test.each([
+    { waitBoundMs: Number.NaN },
+    { waitBoundMs: Number.POSITIVE_INFINITY },
+    { waitBoundMs: -1 },
+    { waitBoundMs: 10, pollIntervalMs: 0 },
+    { waitBoundMs: 10, pollIntervalMs: Number.POSITIVE_INFINITY },
+  ])("rejects invalid lock timing configuration %#", async (timing) => {
+    const harness = createFakeRuntimeHarness();
+    const acquired = await acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: "/tmp/explodex-invalid-lock-timing",
+      resource: "plugins-state",
+      identity: {
+        operationId: "op-invalid-lock-timing",
+        operation: "install",
+        startedAt: harness.adapters.clock.nowIso(),
+        ownerPid: harness.self.pid,
+        ownerProcessStartedAt: harness.self.processStartedAt,
+      },
+      ...timing,
+    });
+
+    expect(acquired.ok).toBe(false);
+    if (acquired.ok) return;
+    expect(acquired.code).toBe("invalid_stage_bound");
+  });
+
+  test("hardened and legacy clients contend on the same canonical path", async () => {
+    const harness = createFakeRuntimeHarness();
+    const home = "/tmp/explodex-test-home-legacy-contention";
+    const path = lockPath(home, "plugins-state");
+    expect(path.endsWith("/plugins-state.lock")).toBe(true);
+    const legacy = {
+      schemaVersion: 1 as const,
+      resource: "plugins-state" as const,
+      operationId: "op-legacy",
+      pid: 12_700,
+      processStartedAt: "legacy-start",
+      acquiredAt: "2026-07-01T00:00:01.000Z",
+    };
+    await harness.adapters.fs.mkdir(`${home}/locks`, { recursive: true });
+    expect(await harness.adapters.fs.writeFileExclusive(path, `${JSON.stringify(legacy)}\n`)).toBe(true);
+
+    const acquired = await acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: home,
+      resource: "plugins-state",
+      identity: {
+        operationId: "op-hardened",
+        operation: "install",
+        startedAt: harness.adapters.clock.nowIso(),
+        ownerPid: harness.self.pid,
+        ownerProcessStartedAt: harness.self.processStartedAt,
+      },
+      waitBoundMs: 0,
+    });
+
+    expect(acquired.ok).toBe(false);
+    if (acquired.ok) return;
+    expect(acquired.code).toBe("lock_stale_unrecoverable");
+    expect(await harness.adapters.fs.isFile(path)).toBe(true);
+    expect(await harness.adapters.fs.isDirectory(path)).toBe(false);
+  });
+
+  test("legacy exclusive creation cannot acquire while a hardened directory owns the path", async () => {
+    const harness = createFakeRuntimeHarness();
+    const home = "/tmp/explodex-test-home-hardened-contention";
+    const acquired = await acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: home,
+      resource: "plugins-state",
+      identity: {
+        operationId: "op-hardened-owner",
+        operation: "install",
+        startedAt: harness.adapters.clock.nowIso(),
+        ownerPid: harness.self.pid,
+        ownerProcessStartedAt: harness.self.processStartedAt,
+      },
+      waitBoundMs: 0,
+    });
+    expect(acquired.ok).toBe(true);
+    if (!acquired.ok) return;
+
+    expect(await harness.adapters.fs.writeFileExclusive(
+      acquired.path,
+      "legacy replacement",
+    )).toBe(false);
+    expect(await harness.adapters.fs.isDirectory(acquired.path)).toBe(true);
   });
 
   test("parseOperationLockRecord rejects malformed records", () => {
@@ -838,8 +1688,10 @@ describe("operation locks (command-lifetime coordination)", () => {
           kind: "lock",
           label: "plugins-state",
           disposition: "command-owned",
-          dispose: async () => {
-            await releaseOperationLock(harness.adapters, acquired.path, ctx.identity.operationId);
+          dispose: async (control) => {
+            await releaseOperationLock(harness.adapters, acquired.path, acquired.record, {
+              abortSignal: control.signal,
+            });
           },
         });
         return { locked: true };
@@ -847,7 +1699,7 @@ describe("operation locks (command-lifetime coordination)", () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(harness.files.has(lockPath(home, "plugins-state"))).toBe(false);
+    expect(harness.files.has(ownerPath(lockPath(home, "plugins-state")))).toBe(false);
     if (!result.ok) return;
     expect(result.residualInventory.locksHeld).toBe(0);
   });

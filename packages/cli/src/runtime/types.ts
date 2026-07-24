@@ -89,6 +89,8 @@ export type BoundedOperationErrorCode =
   | "operation_timeout"
   | "operation_interrupted"
   | "operation_failed"
+  | "invalid_stage_bound"
+  | "external_wait_requires_bound"
   | "lock_busy"
   | "lock_stale_unrecoverable"
   | "cleanup_failed"
@@ -151,8 +153,37 @@ export type RegisteredResource = {
   /** Optional OS pid for child processes. */
   pid?: number;
   processStartedAt?: string;
-  /** Cleanup invoked at most once during scope dispose. */
-  dispose: () => void | Promise<void>;
+  /** Cleanup invoked at most once with a timeout-fenced control object. */
+  dispose: (control: {
+    signal: AbortSignal;
+    isActive(): boolean;
+    tryCommitEffect(): boolean;
+  }) => void | Promise<void>;
+};
+
+export type ResourceCleanupOutcome =
+  | "disposed"
+  | "failed"
+  | "timed-out"
+  | "identity-mismatch"
+  | "still-running"
+  | "invalid-registration";
+
+export type ResourceCleanupFailure = {
+  id: string;
+  kind: ResourceKind;
+  label: string;
+  disposition: ProcessDisposition;
+  pid?: number;
+  processStartedAt?: string;
+  outcome: Exclude<ResourceCleanupOutcome, "disposed">;
+  message: string;
+};
+
+export type ResourceCleanupReport = {
+  failures: ResourceCleanupFailure[];
+  timedOut: boolean;
+  boundMs: number;
 };
 
 export type StageBoundConfig = {
