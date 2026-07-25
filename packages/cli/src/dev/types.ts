@@ -113,14 +113,36 @@ export type SanitizedLaunchDescriptor = {
 };
 
 /**
+ * Exact host identity frozen at Phase 0 operation start.
+ * Historical observations never substitute for this freeze.
+ */
+export type Phase0FrozenHost = {
+  bundlePath: string;
+  executablePath: string;
+  bundleId: string;
+  executableName: string;
+  signingTeam: string;
+  appVersion: string;
+  appBuild: string;
+  hostHashes: Record<string, string>;
+};
+
+/**
  * Minimal retained isolation/marker set for development launches.
  * Incomplete contracts keep lifecycle mutation and compatibility probing disabled.
  */
 export type Phase0LaunchContract = {
   schemaVersion: 1;
   status: Phase0ContractStatus;
-  /** Host build against which the proof was collected (mission baseline or authorized revision). */
+  /**
+   * Exact host identity frozen for this operation.
+   * Null only for pre-inspection disabled stubs.
+   */
+  frozenHost: Phase0FrozenHost | null;
+  /** Convenience mirror of frozenHost.appBuild (or disabled stub). */
   appBuild: string;
+  /** Convenience mirror of frozenHost.appVersion when known. */
+  appVersion: string | null;
   retainedKnobs: Phase0CandidateKnob[];
   knobMatrix: Phase0KnobVerdict[];
   launchMarker: LaunchMarkerContract | null;
@@ -178,9 +200,13 @@ export type Phase0KnobObservation = {
 };
 
 export type Phase0EvaluationInput = {
-  appBuild: string;
-  /** Mission baseline or authorized revision that Phase 0 may claim. */
-  authorizedBuild: string;
+  /** Exact host identity frozen at operation start. */
+  frozenHost: Phase0FrozenHost;
+  /**
+   * Optional recheck after launch/evidence. When present and different from
+   * frozenHost, Phase 0 aborts as active-operation drift without reconnect.
+   */
+  recheckedHost?: Phase0FrozenHost | null;
   observations: Phase0KnobObservation[];
   proposedMarker: LaunchMarkerContract | null;
   layout: DevLayoutPaths;
@@ -205,11 +231,54 @@ export type DevelopmentLifecycleGateResult =
       operation: DevelopmentLifecycleMutation;
       contract: Phase0LaunchContract | null;
       error: {
-        code: "phase0_unproven" | "phase0_incomplete" | "phase0_build_mismatch";
+        code:
+          | "phase0_unproven"
+          | "phase0_incomplete"
+          | "phase0_host_mismatch"
+          | "phase0_build_mismatch";
         message: string;
         nextAction: string;
       };
       blockedBeforeLaunchOrEvaluation: true;
+    };
+
+export type Phase0OperationProcessEvidence = {
+  pid: number;
+  processStartedAt: string;
+  executablePath: string;
+  arguments: string[];
+  env: Record<string, string | undefined>;
+  portOwnerPid: number | null;
+  browserIdentity: string | null;
+  targetId: string | null;
+};
+
+export type Phase0OperationResult =
+  | {
+      ok: true;
+      contract: Phase0LaunchContract;
+      allowsLifecycleMutation: true;
+      allowsCompatibilityProbe: true;
+      layout: DevLayoutPaths;
+      frozenHost: Phase0FrozenHost;
+      process: Phase0OperationProcessEvidence;
+      protectedMainSurvived: boolean;
+      grantsOwnershipFromPathsOnly: false;
+    }
+  | {
+      ok: false;
+      contract: Phase0LaunchContract;
+      allowsLifecycleMutation: false;
+      allowsCompatibilityProbe: false;
+      layout: DevLayoutPaths | null;
+      frozenHost: Phase0FrozenHost | null;
+      process: Phase0OperationProcessEvidence | null;
+      protectedMainSurvived: boolean;
+      grantsOwnershipFromPathsOnly: false;
+      error: {
+        code: string;
+        message: string;
+      };
     };
 
 export type OwnershipFromLayoutResult = {

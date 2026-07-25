@@ -3,7 +3,12 @@ import {
   PUBLIC_PHASE0_PROOF_HINT,
   type DevelopmentLifecycleMutation,
 } from "./constants.ts";
-import type { DevelopmentLifecycleGateResult, Phase0LaunchContract } from "./types.ts";
+import { frozenHostEquals } from "./phase0.ts";
+import type {
+  DevelopmentLifecycleGateResult,
+  Phase0FrozenHost,
+  Phase0LaunchContract,
+} from "./types.ts";
 
 const lifecycleMutations = new Set<string>(DEVELOPMENT_LIFECYCLE_MUTATIONS);
 
@@ -16,11 +21,17 @@ export function isDevelopmentLifecycleMutation(
 /**
  * Gate development lifecycle mutation and compatibility probing on a proven Phase 0 contract.
  * Layout creation, status, and host inspection remain available without Phase 0 proof.
+ * When expectedHost is supplied, the contract's frozen identity must match exactly.
  */
 export function gateDevelopmentLifecycleMutation(options: {
   operation: DevelopmentLifecycleMutation | string;
   contract: Phase0LaunchContract | null;
-  /** Optional expected build when an authorized baseline is known. */
+  /**
+   * Optional exact host freeze that must match the contract.
+   * Prefer this over expectedBuild for rolling-current-host operations.
+   */
+  expectedHost?: Phase0FrozenHost | null;
+  /** @deprecated Prefer expectedHost. Retained for narrow build-only checks. */
   expectedBuild?: string;
 }): DevelopmentLifecycleGateResult {
   const operation = options.operation;
@@ -69,7 +80,22 @@ export function gateDevelopmentLifecycleMutation(options: {
     };
   }
 
-  if (
+  if (options.expectedHost !== undefined && options.expectedHost !== null) {
+    if (!frozenHostEquals(contract.frozenHost, options.expectedHost)) {
+      return {
+        allowed: false,
+        operation,
+        contract,
+        error: {
+          code: "phase0_host_mismatch",
+          message:
+            "Phase 0 contract frozen host identity does not match the current operation's frozen host; re-run Phase 0 on the current identity.",
+          nextAction: PUBLIC_PHASE0_PROOF_HINT,
+        },
+        blockedBeforeLaunchOrEvaluation: true,
+      };
+    }
+  } else if (
     options.expectedBuild !== undefined &&
     options.expectedBuild !== "" &&
     contract.appBuild !== options.expectedBuild
@@ -87,7 +113,11 @@ export function gateDevelopmentLifecycleMutation(options: {
     };
   }
 
-  if (contract.launchMarker === null || contract.retainedKnobs.length === 0) {
+  if (
+    contract.frozenHost === null ||
+    contract.launchMarker === null ||
+    contract.retainedKnobs.length === 0
+  ) {
     return {
       allowed: false,
       operation,
@@ -114,12 +144,14 @@ export function gateDevelopmentLifecycleMutation(options: {
 export function runIfPhase0Allows<T>(options: {
   operation: DevelopmentLifecycleMutation | string;
   contract: Phase0LaunchContract | null;
+  expectedHost?: Phase0FrozenHost | null;
   expectedBuild?: string;
   run: () => T;
 }): { gate: DevelopmentLifecycleGateResult; result?: T } {
   const gate = gateDevelopmentLifecycleMutation({
     operation: options.operation,
     contract: options.contract,
+    expectedHost: options.expectedHost,
     expectedBuild: options.expectedBuild,
   });
   if (!gate.allowed) {

@@ -85,6 +85,10 @@ describe("development layout (VAL-DEV-001)", () => {
         root: "/Users/dan/.explodex",
         protectedPaths: { explodexHome: "/Users/dan/.explodex" },
       },
+      {
+        root: "/Users/dan/.explodex/plugins",
+        protectedPaths: { explodexHome: "/Users/dan/.explodex" },
+      },
     ];
     for (const entry of cases) {
       const result = await ensureDefaultDevLayout({
@@ -96,6 +100,24 @@ describe("development layout (VAL-DEV-001)", () => {
       if (result.ok) continue;
       expect(result.error.code).toBe("protected_path");
     }
+  });
+
+  test("allows the canonical default root under ~/.explodex/dev/plugin-dev", async () => {
+    const fs = new MemoryFileSystem();
+    const root = "/Users/dan/.explodex/dev/plugin-dev";
+    const result = await ensureDefaultDevLayout({
+      fs,
+      rootPath: root,
+      protectedPaths: {
+        mainProfilePath: "/Users/dan/Library/Application Support/Codex",
+        userCodexHome: "/Users/dan/.codex",
+        explodexHome: "/Users/dan/.explodex",
+      },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.layout.rootPath).toBe(root);
+    expect(result.grantsOwnership).toBe(false);
   });
 
   test("path creation alone never grants ownership", async () => {

@@ -10,11 +10,31 @@ export const CANONICAL_EXECUTABLE_NAME = "ChatGPT";
 /** Developer ID team for the signed host. */
 export const CANONICAL_SIGNING_TEAM = "2DC432GLL2";
 
-/** Mission baseline application version (CFBundleShortVersionString). */
+/**
+ * Historical readiness observation (2026-07-22) application version.
+ * Not an acceptance constant or allowlist; every live operation freezes the
+ * then-current exact canonical host identity instead.
+ */
 export const MISSION_BASELINE_APP_VERSION = "26.715.61943";
 
-/** Mission baseline application build (CFBundleVersion). */
+/**
+ * Historical readiness observation (2026-07-22) application build.
+ * Not an acceptance constant or allowlist; every live operation freezes the
+ * then-current exact canonical host identity instead.
+ */
 export const MISSION_BASELINE_APP_BUILD = "5628";
+
+/**
+ * Historical read-only observation (2026-07-25) application version.
+ * Evidence history only; never used as a build-choice gate.
+ */
+export const HISTORICAL_OBSERVED_APP_VERSION_2026_07_25 = "26.721.41059";
+
+/**
+ * Historical read-only observation (2026-07-25) application build.
+ * Evidence history only; never used as a build-choice gate.
+ */
+export const HISTORICAL_OBSERVED_APP_BUILD_2026_07_25 = "5848";
 
 /** The only declared role endpoints. Normal commands never scan or fall back. */
 export const DECLARED_ROLE_ENDPOINTS = {

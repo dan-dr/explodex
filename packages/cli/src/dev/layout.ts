@@ -74,16 +74,41 @@ export type ProtectedPathSet = {
   explodexHome?: string;
 };
 
+/**
+ * Reject roots that collide with protected main/profile, ~/.codex, or the normal
+ * Explodex home itself. The canonical default ~/.explodex/dev/plugin-dev is under
+ * the Explodex home and must remain allowed; only non-dev home descendants and the
+ * home root itself are protected.
+ */
 function isProtectedPath(path: string, protectedPaths: ProtectedPathSet): boolean {
-  const candidates = [
-    protectedPaths.mainProfilePath,
-    protectedPaths.userCodexHome,
-    protectedPaths.explodexHome,
-  ].filter((value): value is string => typeof value === "string" && value.length > 0);
-  for (const candidate of candidates) {
-    if (normalizePath(path) === normalizePath(candidate)) return true;
-    if (isPathInside(candidate, path) || isPathInside(path, candidate)) return true;
+  const normalized = normalizePath(path);
+
+  for (const candidate of [protectedPaths.mainProfilePath, protectedPaths.userCodexHome]) {
+    if (typeof candidate !== "string" || candidate.length === 0) continue;
+    const protectedRoot = normalizePath(candidate);
+    if (normalized === protectedRoot) return true;
+    if (isPathInside(protectedRoot, normalized) || isPathInside(normalized, protectedRoot)) {
+      return true;
+    }
   }
+
+  if (
+    typeof protectedPaths.explodexHome === "string" &&
+    protectedPaths.explodexHome.length > 0
+  ) {
+    const home = normalizePath(protectedPaths.explodexHome);
+    if (normalized === home) return true;
+    // Instance root must not be a parent that swallows the normal home.
+    if (isPathInside(normalized, home) && normalized !== home) return true;
+    if (isPathInside(home, normalized)) {
+      const relative = normalized.slice(home.length + 1);
+      // Allow only the documented development tree under <home>/dev/...
+      if (relative !== "dev" && !relative.startsWith(`dev${sep}`)) {
+        return true;
+      }
+    }
+  }
+
   return false;
 }
 

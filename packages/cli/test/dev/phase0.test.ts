@@ -4,20 +4,45 @@ import {
   describeDevLayout,
   ensureDefaultDevLayout,
   evaluatePhase0LaunchContract,
+  freezeHostIdentity,
+  frozenHostEquals,
   gateDevelopmentLifecycleMutation,
   loadPhase0LaunchContract,
   markerMatchesExactly,
   ownershipFromLayoutOnly,
+  phase0RequiresReproof,
   runIfPhase0Allows,
   savePhase0LaunchContract,
 } from "../../src/dev/index.ts";
-import type { Phase0KnobObservation } from "../../src/dev/types.ts";
-import { MISSION_BASELINE_APP_BUILD } from "../../src/host/constants.ts";
+import type { Phase0FrozenHost, Phase0KnobObservation } from "../../src/dev/types.ts";
+import {
+  HISTORICAL_OBSERVED_APP_BUILD_2026_07_25,
+  MISSION_BASELINE_APP_BUILD,
+  MISSION_BASELINE_APP_VERSION,
+} from "../../src/host/constants.ts";
 import type { HostAdapters } from "../../src/host/adapters.ts";
 import { createFixedClock, createMemoryHash, MemoryFileSystem } from "../host/fixture-fs.ts";
 
 const CLOCK = "2026-07-25T15:00:00.000Z";
 const MARKER = "--explodex-dev-instance=plugin-dev";
+
+function sampleFrozenHost(overrides: Partial<Phase0FrozenHost> = {}): Phase0FrozenHost {
+  return freezeHostIdentity({
+    bundlePath: "/Applications/ChatGPT.app",
+    executablePath: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
+    bundleId: "com.openai.codex",
+    executableName: "ChatGPT",
+    signingTeam: "2DC432GLL2",
+    appVersion: "26.721.41059",
+    appBuild: HISTORICAL_OBSERVED_APP_BUILD_2026_07_25,
+    hostHashes: {
+      "Contents/Info.plist": "a".repeat(64),
+      "Contents/MacOS/ChatGPT": "b".repeat(64),
+      "Contents/Resources/app.asar": "c".repeat(64),
+    },
+    ...overrides,
+  });
+}
 
 function adaptersFor(fs: MemoryFileSystem): HostAdapters {
   return {
@@ -88,7 +113,11 @@ function completeObservations(layoutRoot: string): Phase0KnobObservation[] {
         secretFree: true,
       },
       sanitizedLaunchDescriptor: {
-        argv: ["/Applications/ChatGPT.app/Contents/MacOS/ChatGPT", MARKER, "--remote-debugging-port=9444"],
+        argv: [
+          "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
+          MARKER,
+          "--remote-debugging-port=9444",
+        ],
         envKeys: ["CODEX_HOME"],
       },
       notes: "Exact argv marker uniquely identifies the development launch.",
@@ -139,11 +168,15 @@ describe("Phase 0 launch-isolation contract (VAL-HOST-007)", () => {
     expect(gate.allowed).toBe(false);
   });
 
-  test("independent knob matrix retains only the smallest effective set", () => {
+  test("independent knob matrix retains only the smallest effective set for the frozen current host", () => {
     const layout = describeDevLayout("/tmp/homes/phase0-b/.explodex/dev/plugin-dev");
+    const frozenHost = sampleFrozenHost();
+    // Frozen host differs from the dated readiness baseline and must still prove.
+    expect(frozenHost.appBuild).not.toBe(MISSION_BASELINE_APP_BUILD);
+    expect(frozenHost.appVersion).not.toBe(MISSION_BASELINE_APP_VERSION);
+
     const result = evaluatePhase0LaunchContract({
-      appBuild: MISSION_BASELINE_APP_BUILD,
-      authorizedBuild: MISSION_BASELINE_APP_BUILD,
+      frozenHost,
       observations: completeObservations(layout.rootPath),
       proposedMarker: { kind: "exact-argv-token", value: MARKER },
       layout,
@@ -153,6 +186,9 @@ describe("Phase 0 launch-isolation contract (VAL-HOST-007)", () => {
     expect(result.contract.status).toBe("proven");
     expect(result.allowsLifecycleMutation).toBe(true);
     expect(result.allowsCompatibilityProbe).toBe(true);
+    expect(result.contract.frozenHost).toEqual(frozenHost);
+    expect(result.contract.appBuild).toBe(frozenHost.appBuild);
+    expect(result.contract.appVersion).toBe(frozenHost.appVersion);
     expect(result.contract.retainedKnobs).toEqual([
       "electron-user-data",
       "codex-home",
@@ -169,11 +205,11 @@ describe("Phase 0 launch-isolation contract (VAL-HOST-007)", () => {
 
   test("missing, ambiguous, or non-minimal marker evidence keeps mutation disabled", () => {
     const layout = describeDevLayout("/tmp/homes/phase0-c/.explodex/dev/plugin-dev");
+    const frozenHost = sampleFrozenHost();
     const base = completeObservations(layout.rootPath);
 
     const missingMarker = evaluatePhase0LaunchContract({
-      appBuild: MISSION_BASELINE_APP_BUILD,
-      authorizedBuild: MISSION_BASELINE_APP_BUILD,
+      frozenHost,
       observations: base.filter((entry) => entry.knob !== "launch-marker"),
       proposedMarker: { kind: "exact-argv-token", value: MARKER },
       layout,
@@ -183,8 +219,7 @@ describe("Phase 0 launch-isolation contract (VAL-HOST-007)", () => {
     expect(missingMarker.allowsLifecycleMutation).toBe(false);
 
     const substringMarker = evaluatePhase0LaunchContract({
-      appBuild: MISSION_BASELINE_APP_BUILD,
-      authorizedBuild: MISSION_BASELINE_APP_BUILD,
+      frozenHost,
       observations: base.map((entry) =>
         entry.knob === "launch-marker"
           ? {
@@ -204,8 +239,7 @@ describe("Phase 0 launch-isolation contract (VAL-HOST-007)", () => {
     expect(substringMarker.allowsLifecycleMutation).toBe(false);
 
     const secretMarker = evaluatePhase0LaunchContract({
-      appBuild: MISSION_BASELINE_APP_BUILD,
-      authorizedBuild: MISSION_BASELINE_APP_BUILD,
+      frozenHost,
       observations: base,
       proposedMarker: { kind: "exact-argv-token", value: "--token=super-secret" },
       layout,
@@ -215,11 +249,51 @@ describe("Phase 0 launch-isolation contract (VAL-HOST-007)", () => {
     expect(secretMarker.allowsLifecycleMutation).toBe(false);
   });
 
-  test("unauthorized or mismatched build cannot freeze a proven contract", () => {
-    const layout = describeDevLayout("/tmp/homes/phase0-d/.explodex/dev/plugin-dev");
+  test("historical difference from dated observations is not a blocker when freeze matches recheck", () => {
+    const layout = describeDevLayout("/tmp/homes/phase0-hist/.explodex/dev/plugin-dev");
+    const historical = sampleFrozenHost({
+      appVersion: MISSION_BASELINE_APP_VERSION,
+      appBuild: MISSION_BASELINE_APP_BUILD,
+    });
+    const current = sampleFrozenHost({
+      appVersion: "26.721.41059",
+      appBuild: HISTORICAL_OBSERVED_APP_BUILD_2026_07_25,
+      hostHashes: {
+        "Contents/Info.plist": "d".repeat(64),
+        "Contents/MacOS/ChatGPT": "e".repeat(64),
+        "Contents/Resources/app.asar": "f".repeat(64),
+      },
+    });
+    expect(frozenHostEquals(historical, current)).toBe(false);
+
     const result = evaluatePhase0LaunchContract({
-      appBuild: "5848",
-      authorizedBuild: MISSION_BASELINE_APP_BUILD,
+      frozenHost: current,
+      recheckedHost: current,
+      observations: completeObservations(layout.rootPath),
+      proposedMarker: { kind: "exact-argv-token", value: MARKER },
+      layout,
+      clockIso: CLOCK,
+    });
+    expect(result.contract.status).toBe("proven");
+    expect(result.contract.appBuild).toBe(current.appBuild);
+    expect(result.allowsLifecycleMutation).toBe(true);
+  });
+
+  test("active-operation host drift aborts without proving or reconnecting", () => {
+    const layout = describeDevLayout("/tmp/homes/phase0-d/.explodex/dev/plugin-dev");
+    const frozen = sampleFrozenHost({ appBuild: "5848" });
+    const drifted = sampleFrozenHost({
+      appBuild: "9999",
+      appVersion: "99.0.0",
+      hostHashes: {
+        "Contents/Info.plist": "1".repeat(64),
+        "Contents/MacOS/ChatGPT": "2".repeat(64),
+        "Contents/Resources/app.asar": "3".repeat(64),
+      },
+    });
+    const result = evaluatePhase0LaunchContract({
+      frozenHost: frozen,
+      recheckedHost: drifted,
       observations: completeObservations(layout.rootPath),
       proposedMarker: { kind: "exact-argv-token", value: MARKER },
       layout,
@@ -227,14 +301,38 @@ describe("Phase 0 launch-isolation contract (VAL-HOST-007)", () => {
     });
     expect(result.contract.status).toBe("incomplete");
     expect(result.allowsLifecycleMutation).toBe(false);
-    expect(result.contract.reason).toMatch(/not the authorized build/);
+    expect(result.contract.reason).toMatch(/drifted from the frozen/i);
+  });
+
+  test("between-operation host change requires automatic re-proof rather than build choice", () => {
+    const previous = sampleFrozenHost({ appBuild: MISSION_BASELINE_APP_BUILD });
+    const current = sampleFrozenHost({ appBuild: HISTORICAL_OBSERVED_APP_BUILD_2026_07_25 });
+    const proven = evaluatePhase0LaunchContract({
+      frozenHost: previous,
+      observations: completeObservations("/tmp/homes/phase0-reproof/.explodex/dev/plugin-dev"),
+      proposedMarker: { kind: "exact-argv-token", value: MARKER },
+      layout: describeDevLayout("/tmp/homes/phase0-reproof/.explodex/dev/plugin-dev"),
+      clockIso: CLOCK,
+    });
+    expect(proven.contract.status).toBe("proven");
+    expect(
+      phase0RequiresReproof({
+        contract: proven.contract,
+        currentHost: current,
+      }),
+    ).toBe(true);
+    expect(
+      phase0RequiresReproof({
+        contract: proven.contract,
+        currentHost: previous,
+      }),
+    ).toBe(false);
   });
 
   test("exact marker matching rejects substrings and protected-main argv", () => {
     const layout = describeDevLayout("/tmp/homes/phase0-e/.explodex/dev/plugin-dev");
     const proven = evaluatePhase0LaunchContract({
-      appBuild: MISSION_BASELINE_APP_BUILD,
-      authorizedBuild: MISSION_BASELINE_APP_BUILD,
+      frozenHost: sampleFrozenHost(),
       observations: completeObservations(layout.rootPath),
       proposedMarker: { kind: "exact-argv-token", value: MARKER },
       layout,
@@ -270,8 +368,7 @@ describe("Phase 0 launch-isolation contract (VAL-HOST-007)", () => {
     if (!layoutResult.ok) return;
 
     const incomplete = evaluatePhase0LaunchContract({
-      appBuild: MISSION_BASELINE_APP_BUILD,
-      authorizedBuild: MISSION_BASELINE_APP_BUILD,
+      frozenHost: sampleFrozenHost(),
       observations: [],
       proposedMarker: null,
       layout: layoutResult.layout,
@@ -289,12 +386,13 @@ describe("Phase 0 launch-isolation contract (VAL-HOST-007)", () => {
       path: layoutResult.layout.phase0ContractPath,
     });
     expect(loaded?.status).toBe("incomplete");
+    expect(loaded?.frozenHost?.appBuild).toBe(HISTORICAL_OBSERVED_APP_BUILD_2026_07_25);
 
     let launched = false;
     const result = runIfPhase0Allows({
       operation: "compatibility-probe",
       contract: loaded,
-      expectedBuild: MISSION_BASELINE_APP_BUILD,
+      expectedHost: sampleFrozenHost(),
       run: () => {
         launched = true;
         return "launched";
@@ -305,11 +403,11 @@ describe("Phase 0 launch-isolation contract (VAL-HOST-007)", () => {
     expect(result.result).toBeUndefined();
   });
 
-  test("proven contract allows lifecycle mutation only for the expected build", () => {
+  test("proven contract allows lifecycle mutation only for the matching frozen host", () => {
     const layout = describeDevLayout("/tmp/homes/phase0-g/.explodex/dev/plugin-dev");
+    const frozenHost = sampleFrozenHost();
     const proven = evaluatePhase0LaunchContract({
-      appBuild: MISSION_BASELINE_APP_BUILD,
-      authorizedBuild: MISSION_BASELINE_APP_BUILD,
+      frozenHost,
       observations: completeObservations(layout.rootPath),
       proposedMarker: { kind: "exact-argv-token", value: MARKER },
       layout,
@@ -320,17 +418,17 @@ describe("Phase 0 launch-isolation contract (VAL-HOST-007)", () => {
     const allowed = gateDevelopmentLifecycleMutation({
       operation: "dev-start",
       contract: proven.contract,
-      expectedBuild: MISSION_BASELINE_APP_BUILD,
+      expectedHost: frozenHost,
     });
     expect(allowed.allowed).toBe(true);
 
     const mismatched = gateDevelopmentLifecycleMutation({
       operation: "dev-start",
       contract: proven.contract,
-      expectedBuild: "5848",
+      expectedHost: sampleFrozenHost({ appBuild: "0001", appVersion: "0.0.1" }),
     });
     expect(mismatched.allowed).toBe(false);
     if (mismatched.allowed) return;
-    expect(mismatched.error.code).toBe("phase0_build_mismatch");
+    expect(mismatched.error.code).toBe("phase0_host_mismatch");
   });
 });

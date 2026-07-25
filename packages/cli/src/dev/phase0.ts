@@ -1,4 +1,5 @@
 import type { HostAdapters } from "../host/adapters.ts";
+import type { HostIdentity } from "../host/types.ts";
 import {
   DEV_CDP_HOST,
   DEV_CDP_PORT,
@@ -12,6 +13,7 @@ import type {
   LaunchMarkerContract,
   Phase0EvaluationInput,
   Phase0EvaluationResult,
+  Phase0FrozenHost,
   Phase0KnobObservation,
   Phase0KnobVerdict,
   Phase0LaunchContract,
@@ -26,20 +28,67 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
+/** Normalize host identity into the secret-free Phase 0 freeze shape. */
+export function freezeHostIdentity(host: HostIdentity | Phase0FrozenHost): Phase0FrozenHost {
+  return {
+    bundlePath: host.bundlePath,
+    executablePath: host.executablePath,
+    bundleId: host.bundleId,
+    executableName: host.executableName,
+    signingTeam: host.signingTeam,
+    appVersion: host.appVersion,
+    appBuild: host.appBuild,
+    hostHashes: { ...host.hostHashes },
+  };
+}
+
+/** Exact equality of frozen host identity fields (including relevant hashes). */
+export function frozenHostEquals(
+  left: Phase0FrozenHost | null | undefined,
+  right: Phase0FrozenHost | null | undefined,
+): boolean {
+  if (left === null || left === undefined || right === null || right === undefined) {
+    return false;
+  }
+  if (
+    left.bundlePath !== right.bundlePath ||
+    left.executablePath !== right.executablePath ||
+    left.bundleId !== right.bundleId ||
+    left.executableName !== right.executableName ||
+    left.signingTeam !== right.signingTeam ||
+    left.appVersion !== right.appVersion ||
+    left.appBuild !== right.appBuild
+  ) {
+    return false;
+  }
+  const leftKeys = Object.keys(left.hostHashes).sort();
+  const rightKeys = Object.keys(right.hostHashes).sort();
+  if (leftKeys.length !== rightKeys.length) return false;
+  for (let index = 0; index < leftKeys.length; index += 1) {
+    const key = leftKeys[index]!;
+    if (key !== rightKeys[index]) return false;
+    if (left.hostHashes[key] !== right.hostHashes[key]) return false;
+  }
+  return true;
+}
+
 function incompleteContract(options: {
+  frozenHost: Phase0FrozenHost | null;
   appBuild: string;
+  appVersion?: string | null;
   reason: string;
   knobMatrix: Phase0KnobVerdict[];
   retainedKnobs?: Phase0CandidateKnob[];
   launchMarker?: LaunchMarkerContract | null;
   isolation?: Phase0LaunchContract["isolation"];
   sanitizedLaunchDescriptor?: SanitizedLaunchDescriptor;
-  clockIso?: string | null;
 }): Phase0LaunchContract {
   return {
     schemaVersion: PHASE0_CONTRACT_SCHEMA_VERSION,
     status: "incomplete",
+    frozenHost: options.frozenHost,
     appBuild: options.appBuild,
+    appVersion: options.appVersion ?? options.frozenHost?.appVersion ?? null,
     retainedKnobs: options.retainedKnobs ?? [],
     knobMatrix: options.knobMatrix,
     launchMarker: options.launchMarker ?? null,
@@ -206,25 +255,34 @@ function validatePathSeparation(
 
 /**
  * Evaluate independent Phase 0 knob observations into the minimal retained launch contract.
- * Incomplete or ambiguous evidence keeps lifecycle mutation and compatibility probing disabled.
+ * Incomplete, ambiguous, or active-operation host-drift evidence keeps mutation disabled.
+ * Historical difference from dated observations is not a blocker; only the operation freeze is.
  */
 export function evaluatePhase0LaunchContract(
   input: Phase0EvaluationInput,
 ): Phase0EvaluationResult {
-  if (input.appBuild !== input.authorizedBuild) {
-    const matrix = PHASE0_CANDIDATE_KNOBS.map((knob) =>
-      evaluateKnob(knob, observationFor(input.observations, knob)),
-    );
-    const contract = incompleteContract({
-      appBuild: input.appBuild,
-      reason: `Phase 0 app build '${input.appBuild}' is not the authorized build '${input.authorizedBuild}'. Live evidence may not claim a different baseline.`,
-      knobMatrix: matrix,
-    });
-    return {
-      contract,
-      allowsLifecycleMutation: false,
-      allowsCompatibilityProbe: false,
-    };
+  const frozenHost = freezeHostIdentity(input.frozenHost);
+
+  if (input.recheckedHost !== undefined && input.recheckedHost !== null) {
+    const rechecked = freezeHostIdentity(input.recheckedHost);
+    if (!frozenHostEquals(frozenHost, rechecked)) {
+      const matrix = PHASE0_CANDIDATE_KNOBS.map((knob) =>
+        evaluateKnob(knob, observationFor(input.observations, knob)),
+      );
+      const contract = incompleteContract({
+        frozenHost,
+        appBuild: frozenHost.appBuild,
+        appVersion: frozenHost.appVersion,
+        reason:
+          "Active-operation host identity drifted from the frozen Phase 0 identity; abort without reconnect or authority transfer.",
+        knobMatrix: matrix,
+      });
+      return {
+        contract,
+        allowsLifecycleMutation: false,
+        allowsCompatibilityProbe: false,
+      };
+    }
   }
 
   const knobMatrix: Phase0KnobVerdict[] = [];
@@ -248,12 +306,13 @@ export function evaluatePhase0LaunchContract(
   );
   if (missingOrAmbiguous.length > 0) {
     const contract = incompleteContract({
-      appBuild: input.appBuild,
+      frozenHost,
+      appBuild: frozenHost.appBuild,
+      appVersion: frozenHost.appVersion,
       reason: `Incomplete or ambiguous Phase 0 knob evidence: ${missingOrAmbiguous
         .map((entry) => entry.name)
         .join(", ")}.`,
       knobMatrix,
-      clockIso: input.clockIso,
     });
     return {
       contract,
@@ -269,7 +328,9 @@ export function evaluatePhase0LaunchContract(
   // Marker is always required for exact ownership (architecture §15.2 / VAL-HOST-007).
   if (!retainedKnobs.includes("launch-marker")) {
     const contract = incompleteContract({
-      appBuild: input.appBuild,
+      frozenHost,
+      appBuild: frozenHost.appBuild,
+      appVersion: frozenHost.appVersion,
       reason: "Phase 0 must retain an exact secret-free launch marker with independent observability.",
       knobMatrix,
       retainedKnobs,
@@ -284,7 +345,9 @@ export function evaluatePhase0LaunchContract(
   // CDP port is always required for the exact development-role endpoint.
   if (!retainedKnobs.includes("cdp-port")) {
     const contract = incompleteContract({
-      appBuild: input.appBuild,
+      frozenHost,
+      appBuild: frozenHost.appBuild,
+      appVersion: frozenHost.appVersion,
       reason: "Phase 0 must retain the declared development CDP port 9444 as the role endpoint.",
       knobMatrix,
       retainedKnobs,
@@ -303,7 +366,9 @@ export function evaluatePhase0LaunchContract(
   );
   if (isolationHomeKnobs.length === 0) {
     const contract = incompleteContract({
-      appBuild: input.appBuild,
+      frozenHost,
+      appBuild: frozenHost.appBuild,
+      appVersion: frozenHost.appVersion,
       reason:
         "Phase 0 must retain at least one demonstrated profile/home isolation knob (electron-user-data, CODEX_HOME, or EXPLODEX_HOME).",
       knobMatrix,
@@ -320,7 +385,9 @@ export function evaluatePhase0LaunchContract(
   const markerResult = validateMarker(markerObservation, input.proposedMarker);
   if (!markerResult.ok) {
     const contract = incompleteContract({
-      appBuild: input.appBuild,
+      frozenHost,
+      appBuild: frozenHost.appBuild,
+      appVersion: frozenHost.appVersion,
       reason: markerResult.reason,
       knobMatrix,
       retainedKnobs,
@@ -372,7 +439,9 @@ export function evaluatePhase0LaunchContract(
   const contract: Phase0LaunchContract = {
     schemaVersion: PHASE0_CONTRACT_SCHEMA_VERSION,
     status: "proven",
-    appBuild: input.appBuild,
+    frozenHost,
+    appBuild: frozenHost.appBuild,
+    appVersion: frozenHost.appVersion,
     retainedKnobs,
     knobMatrix,
     launchMarker: markerResult.marker,
@@ -391,13 +460,18 @@ export function evaluatePhase0LaunchContract(
 
 /** Create a disabled contract used before any Phase 0 evidence is collected. */
 export function createDisabledPhase0Contract(options: {
-  appBuild: string;
+  appBuild?: string;
+  appVersion?: string | null;
+  frozenHost?: Phase0FrozenHost | null;
   reason?: string;
 }): Phase0LaunchContract {
+  const frozenHost = options.frozenHost ?? null;
   return {
     schemaVersion: PHASE0_CONTRACT_SCHEMA_VERSION,
     status: "disabled",
-    appBuild: options.appBuild,
+    frozenHost,
+    appBuild: frozenHost?.appBuild ?? options.appBuild ?? "unknown",
+    appVersion: frozenHost?.appVersion ?? options.appVersion ?? null,
     retainedKnobs: [],
     knobMatrix: PHASE0_CANDIDATE_KNOBS.map((name) => ({
       name,
@@ -418,6 +492,33 @@ export function createDisabledPhase0Contract(options: {
     reason: options.reason ?? "Phase 0 launch-isolation proof has not been completed.",
   };
 }
+function parseFrozenHost(value: unknown): Phase0FrozenHost | null {
+  if (value === null) return null;
+  if (!isRecord(value)) return null;
+  if (!isNonEmptyString(value.bundlePath)) return null;
+  if (!isNonEmptyString(value.executablePath)) return null;
+  if (!isNonEmptyString(value.bundleId)) return null;
+  if (!isNonEmptyString(value.executableName)) return null;
+  if (!isNonEmptyString(value.signingTeam)) return null;
+  if (!isNonEmptyString(value.appVersion)) return null;
+  if (!isNonEmptyString(value.appBuild)) return null;
+  if (!isRecord(value.hostHashes)) return null;
+  const hostHashes: Record<string, string> = {};
+  for (const [key, hash] of Object.entries(value.hostHashes)) {
+    if (!isNonEmptyString(hash)) return null;
+    hostHashes[key] = hash;
+  }
+  return {
+    bundlePath: value.bundlePath,
+    executablePath: value.executablePath,
+    bundleId: value.bundleId,
+    executableName: value.executableName,
+    signingTeam: value.signingTeam,
+    appVersion: value.appVersion,
+    appBuild: value.appBuild,
+    hostHashes,
+  };
+}
 
 export function parsePhase0LaunchContract(value: unknown): Phase0LaunchContract | null {
   if (!isRecord(value)) return null;
@@ -426,6 +527,7 @@ export function parsePhase0LaunchContract(value: unknown): Phase0LaunchContract 
     return null;
   }
   if (!isNonEmptyString(value.appBuild)) return null;
+  if (!(value.appVersion === null || typeof value.appVersion === "string")) return null;
   if (!Array.isArray(value.retainedKnobs)) return null;
   if (!Array.isArray(value.knobMatrix)) return null;
   if (!isRecord(value.isolation)) return null;
@@ -434,6 +536,15 @@ export function parsePhase0LaunchContract(value: unknown): Phase0LaunchContract 
   if (!isRecord(value.sanitizedLaunchDescriptor)) return null;
   if (!Array.isArray(value.sanitizedLaunchDescriptor.argv)) return null;
   if (!Array.isArray(value.sanitizedLaunchDescriptor.envKeys)) return null;
+
+  const frozenHost =
+    value.frozenHost === undefined ? null : parseFrozenHost(value.frozenHost);
+  if (value.frozenHost !== undefined && value.frozenHost !== null && frozenHost === null) {
+    return null;
+  }
+  // Proven contracts must carry a complete frozen host identity.
+  if (value.status === "proven" && frozenHost === null) return null;
+  if (frozenHost !== null && frozenHost.appBuild !== value.appBuild) return null;
 
   const retainedKnobs: Phase0CandidateKnob[] = [];
   for (const knob of value.retainedKnobs) {
@@ -502,7 +613,9 @@ export function parsePhase0LaunchContract(value: unknown): Phase0LaunchContract 
   return {
     schemaVersion: 1,
     status: value.status,
+    frozenHost,
     appBuild: value.appBuild,
+    appVersion: value.appVersion,
     retainedKnobs,
     knobMatrix,
     launchMarker,
