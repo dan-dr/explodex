@@ -146,6 +146,7 @@ class FixtureCdpAdapter implements CdpAdapter {
     let closed = false;
     const session = {
       targetId,
+      isOpen: () => !closed,
       listExecutionContexts: async () => {
         await this.beforeListExecutionContexts?.();
         return (this.contexts[targetId] ?? []).map((item) => ({ ...item }));

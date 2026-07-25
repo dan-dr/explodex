@@ -30,10 +30,10 @@ export type StageLockError = Error & {
 };
 
 /**
- * Acquire one mutation lease inside the declared stage bound. The returned
- * handle is already registered for unconditional descriptor close on cleanup.
- * Owner publication and registration are fenced to the stage abort/deadline so
- * a timed-out continuation cannot leak an unregistered advisory lease.
+ * Acquire one mutation lease inside the declared stage bound. Residual lease
+ * authority is registered immediately on open (before delayed publication/stat),
+ * so a late continuation cannot vanish past a finite settlement fence and leave
+ * false-clean inventory. The returned handle reuses that residual registration.
  */
 export async function acquireStageLock(
   ctx: OperationContext,
@@ -41,6 +41,10 @@ export async function acquireStageLock(
 ): Promise<LockHandle> {
   return ctx.runExternalWait("lock-acquisition", async (ctl) => {
     const boundMs = Math.max(1, Math.floor(ctl.remainingMs()));
+    const residualLabel = `${options.label ?? options.resource}-residual`;
+    let residualId: string | null = null;
+    let openResidual: ResidualLockAuthority | null = null;
+
     const acquired = await acquireOperationLock({
       adapters: ctx.adapters,
       explodexHome: options.explodexHome,
@@ -49,16 +53,27 @@ export async function acquireStageLock(
       waitBoundMs: boundMs,
       pollIntervalMs: options.pollIntervalMs ?? 50,
       abortSignal: ctl.signal,
+      onLeaseOpened(residual) {
+        // Register before any delayed publication/stat work so terminal cleanup
+        // and inventory always observe post-open authority.
+        openResidual = residual;
+        residualId = tryRegisterResidual(ctx, {
+          label: residualLabel,
+          residual,
+        });
+      },
     });
     if (!acquired.ok) {
       if (acquired.code === "lock_interrupted") throw new InterruptError("lock-acquisition");
       if (acquired.code === "lock_cleanup_failed") {
-        // Residual authority must remain reachable for bounded disposal/retry.
-        // Registration may race terminal dispose; never lose residual on the error.
-        tryRegisterResidual(ctx, {
-          label: `${options.label ?? options.resource}-residual`,
-          residual: acquired.residual,
-        });
+        // Residual was registered at open when possible; re-attempt if dispose
+        // already blocked the first registration, and always keep it on the error.
+        if (residualId === null) {
+          residualId = tryRegisterResidual(ctx, {
+            label: residualLabel,
+            residual: acquired.residual,
+          });
+        }
         throw Object.assign(new Error(acquired.message), {
           code: "lock_cleanup_failed" as const,
           stage: "cleanup" as const,
@@ -68,6 +83,8 @@ export async function acquireStageLock(
           residual: acquired.residual,
         } satisfies Omit<StageLockError, keyof Error>);
       }
+      // Abandon closed successfully: residual authority is gone.
+      if (residualId !== null) ctx.scope.markDisposed(residualId);
       throw Object.assign(new Error(acquired.message), {
         code: acquired.code,
         stage: acquired.stage,
@@ -75,14 +92,14 @@ export async function acquireStageLock(
       } satisfies Omit<StageLockError, keyof Error>);
     }
     // Stage may have timed out while acquisition was still settling. Never
-    // register or return a handle that the operation can no longer observe.
+    // return a handle that the operation can no longer observe.
     if (!ctl.tryCommitEffect()) {
       try {
         await acquired.handle.release({ abortSignal: undefined });
+        if (residualId !== null) ctx.scope.markDisposed(residualId);
       } catch (cleanupError: unknown) {
-        // Never swallow stage-fence cleanup faults. Capture residual authority
-        // so dispose/retry can reach the still-held advisory lease.
-        const residual: ResidualLockAuthority = {
+        // Residual was registered at open and remains held after release fault.
+        const residual = openResidual ?? {
           path: acquired.handle.path,
           leasePath: acquired.handle.leasePath,
           descriptor: acquired.handle.descriptor,
@@ -91,10 +108,12 @@ export async function acquireStageLock(
           dispose: (disposeOptions?: { abortSignal?: AbortSignal; timeoutMs?: number }) =>
             acquired.handle.release(disposeOptions),
         };
-        tryRegisterResidual(ctx, {
-          label: `${options.label ?? options.resource}-residual`,
-          residual,
-        });
+        if (residualId === null) {
+          residualId = tryRegisterResidual(ctx, {
+            label: residualLabel,
+            residual,
+          });
+        }
         const cleanupMessage = cleanupError instanceof Error
           ? cleanupError.message
           : String(cleanupError);
@@ -115,16 +134,45 @@ export async function acquireStageLock(
       ctl.throwIfInterrupted();
       throw new TimeoutError("lock-acquisition", boundMs);
     }
-    ctx.scope.register({
-      kind: "lock",
-      label: options.label ?? options.resource,
-      disposition: "command-owned",
-      lockState: () => {
-        const state = acquired.handle.state();
-        return { descriptorOpen: state.descriptorOpen, leaseHeld: state.leaseHeld };
-      },
-      dispose: (control) => acquired.handle.release({ abortSignal: control.signal }),
-    });
+    // Success: residual registered at open already tracks the upgraded handle.
+    // Do not double-register; only ensure registration if open-time register failed.
+    if (residualId === null) {
+      residualId = tryRegisterResidual(ctx, {
+        label: options.label ?? options.resource,
+        residual: {
+          path: acquired.handle.path,
+          leasePath: acquired.handle.leasePath,
+          descriptor: acquired.handle.descriptor,
+          handle: acquired.handle,
+          state: () => acquired.handle.state(),
+          dispose: (disposeOptions?: { abortSignal?: AbortSignal; timeoutMs?: number }) =>
+            acquired.handle.release(disposeOptions),
+        },
+      });
+      if (residualId === null) {
+        // Scope already disposing: still return the handle, but residual must
+        // remain reachable through the caller's error/result path if needed.
+        throw Object.assign(
+          new Error(
+            `Lock ${options.resource} could not register residual authority before terminal dispose`,
+          ),
+          {
+            code: "lock_cleanup_failed" as const,
+            stage: "cleanup" as const,
+            boundMs,
+            residual: {
+              path: acquired.handle.path,
+              leasePath: acquired.handle.leasePath,
+              descriptor: acquired.handle.descriptor,
+              handle: acquired.handle,
+              state: () => acquired.handle.state(),
+              dispose: (disposeOptions?: { abortSignal?: AbortSignal; timeoutMs?: number }) =>
+                acquired.handle.release(disposeOptions),
+            },
+          } satisfies Omit<StageLockError, keyof Error>,
+        );
+      }
+    }
     return acquired.handle;
   });
 }
@@ -132,9 +180,9 @@ export async function acquireStageLock(
 function tryRegisterResidual(
   ctx: OperationContext,
   options: { label: string; residual: ResidualLockAuthority },
-): void {
+): string | null {
   try {
-    ctx.scope.register({
+    return ctx.scope.register({
       kind: "lock",
       label: options.label,
       disposition: "command-owned",
@@ -148,5 +196,6 @@ function tryRegisterResidual(
   } catch {
     // Terminal dispose may already have started. Residual remains on the thrown
     // error for bounded dispose/retry and inventory truthfulness.
+    return null;
   }
 }

@@ -2598,4 +2598,86 @@ describe("lock defect fixes (P1/P2/P3 audit)", () => {
     }
     harness.clearLockFaults();
   });
+
+  test("M1-F03R: continuation delayed beyond settlement fence cannot publish false-clean inventory", async () => {
+    const harness = createFakeRuntimeHarness();
+    const home = "/tmp/explodex-beyond-settlement-fence";
+    // Lease is acquired immediately; owner publication is delayed far beyond the
+    // stage bound + finite settlement fence so late work settles after dispose.
+    harness.setAtomicWriteDelay(500);
+    // Late reverse-close and residual dispose both fail so ground truth remains held.
+    harness.setLockFault("lease-close", 10);
+
+    const work = runBoundedOperation({
+      adapters: harness.adapters,
+      operation: "install",
+      operationId: "op-beyond-settlement-fence",
+      stageBounds: {
+        // settlement fence = min(stageBound, owned-child-shutdown) = 20
+        "lock-acquisition": 20,
+        "owned-child-shutdown": 30,
+      },
+      run: async (ctx) => acquireStageLock(ctx, {
+        explodexHome: home,
+        resource: "plugins-state",
+        pollIntervalMs: 5,
+      }),
+    });
+
+    let settled = false;
+    let result: Awaited<typeof work> | undefined;
+    let caught: unknown;
+    void work.then(
+      (value) => {
+        settled = true;
+        result = value;
+      },
+      (error: unknown) => {
+        settled = true;
+        caught = error;
+      },
+    );
+
+    // Prove the lease is acquired before the stage timeout (20ms).
+    for (let i = 0; i < 8 && !settled; i += 1) {
+      harness.advanceMs(1);
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+    expect(harness.heldLeaseCount()).toBe(1);
+    expect(harness.openLockDescriptorCount()).toBe(1);
+
+    // Drive through stage timeout, settlement fence, and terminal dispose.
+    let steps = 0;
+    while (!settled && steps < 200) {
+      harness.advanceMs(10);
+      steps += 1;
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+    if (!settled) throw new Error("beyond-fence operation did not settle");
+    if (caught !== undefined) throw caught;
+    if (result === undefined) throw new Error("missing result");
+
+    // Drain the late continuation that settles after the fence (publication delay 500).
+    for (let i = 0; i < 80; i += 1) {
+      if (harness.pendingTimerCount() === 0) break;
+      harness.advanceMs(50);
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+
+    const groundOpen = harness.openLockDescriptorCount();
+    const groundHeld = harness.heldLeaseCount();
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    // Terminal inventory must match delayed ground truth; never false-clean.
+    expect(groundOpen).toBeGreaterThan(0);
+    expect(groundHeld).toBeGreaterThan(0);
+    expect(result.residualInventory.openLockDescriptors).toBe(groundOpen);
+    expect(result.residualInventory.advisoryLeasesHeld).toBe(groundHeld);
+    expect(result.residualInventory.locksHeld).toBeGreaterThan(0);
+    expect(result.residualInventory.hasResidentControlPlane).toBe(true);
+    harness.clearLockFaults();
+  });
 });

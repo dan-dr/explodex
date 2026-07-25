@@ -37,8 +37,9 @@ export type LockAcquireFailureCode =
   | "lock_cleanup_failed";
 
 /**
- * Reachable residual lease authority after acquisition abandon or stage-fence
- * cleanup fails. Callers must dispose/retry rather than leave an invisible lease.
+ * Reachable residual lease authority after post-open abandon, stage-fence
+ * cleanup, or a late continuation that cannot register into a disposing scope.
+ * Callers must dispose/retry rather than leave an invisible lease.
  */
 export type ResidualLockAuthority = {
   path: string;
@@ -46,7 +47,10 @@ export type ResidualLockAuthority = {
   descriptor: number;
   state(): LockHandleState;
   dispose(options?: { abortSignal?: AbortSignal; timeoutMs?: number }): Promise<void>;
-  /** Present when owner metadata was published before the abandon path. */
+  /**
+   * Present once owner metadata has been published and a handle was created.
+   * May be attached later to the same residual that was published at open time.
+   */
   handle: LockHandle | null;
 };
 
@@ -132,6 +136,12 @@ export type AcquireLockOptions = {
   waitBoundMs?: number;
   pollIntervalMs?: number;
   abortSignal?: AbortSignal;
+  /**
+   * Invoked immediately after the parent-held advisory lease is acquired and
+   * before any potentially delayed stat/publication work. Callers must register
+   * residual authority here so a late continuation cannot vanish untracked.
+   */
+  onLeaseOpened?: (residual: ResidualLockAuthority) => void;
 };
 
 /** Declared finite bound for the `lock-acquisition` stage. */
@@ -501,6 +511,10 @@ async function closeAfterFailure(
   throw error;
 }
 
+/**
+ * Residual authority created at open time. Once a handle is attached, dispose
+ * and state delegate to the handle so publication-era reverse cleanup is used.
+ */
 function residualFromOpenLease(
   lease: AdvisoryLease,
   path: string,
@@ -508,40 +522,31 @@ function residualFromOpenLease(
 ): ResidualLockAuthority {
   let descriptorOpen = true;
   let leaseHeld = true;
-  return {
+  const residual: ResidualLockAuthority = {
     path,
     leasePath,
     descriptor: lease.descriptor,
     handle: null,
     state() {
+      if (residual.handle !== null) return residual.handle.state();
       return {
         descriptorOpen,
         leaseHeld,
         releasedMetadataWritten: false,
       };
     },
-    async dispose() {
+    async dispose(options) {
+      if (residual.handle !== null) {
+        await residual.handle.release(options);
+        return;
+      }
       if (!descriptorOpen) return;
       await lease.close();
       descriptorOpen = false;
       leaseHeld = false;
     },
   };
-}
-
-function residualFromHandle(handle: LockHandle): ResidualLockAuthority {
-  return {
-    path: handle.path,
-    leasePath: handle.leasePath,
-    descriptor: handle.descriptor,
-    handle,
-    state() {
-      return handle.state();
-    },
-    dispose(options) {
-      return handle.release(options);
-    },
-  };
+  return residual;
 }
 
 function createHandle(
@@ -813,6 +818,13 @@ export async function acquireOperationLock(options: AcquireLockOptions): Promise
     if (opened.status === "acquired") {
       const lease = opened.lease;
       /**
+       * Publish residual authority immediately at open, before any potentially
+       * delayed stat/publication work. A late continuation must never own an
+       * untracked descriptor or held lease after a finite settlement fence.
+       */
+      const residual = residualFromOpenLease(lease, path, state.leasePath);
+      options.onLeaseOpened?.(residual);
+      /**
        * Owner publication and handle return are fenced to the acquisition
        * abort/deadline. A timed-out or interrupted continuation must never
        * leave a published advisory lease without a reachable handle.
@@ -829,7 +841,6 @@ export async function acquireOperationLock(options: AcquireLockOptions): Promise
         primaryMessage: string,
         holder: OperationLockRecord | null,
         cleanupError: unknown,
-        residual: ResidualLockAuthority,
       ): LockAcquireResult => {
         const cleanupMessage = cleanupError instanceof Error
           ? cleanupError.message
@@ -857,30 +868,14 @@ export async function acquireOperationLock(options: AcquireLockOptions): Promise
         publishedHandle?: LockHandle,
       ): Promise<LockAcquireResult> => {
         if (publishedHandle !== undefined) {
-          try {
-            await publishedHandle.release();
-            return failure(code, message, holder, path, state.leasePath, waitBoundMs);
-          } catch (cleanupError: unknown) {
-            return cleanupFailed(
-              code,
-              message,
-              holder,
-              cleanupError,
-              residualFromHandle(publishedHandle),
-            );
-          }
+          residual.handle = publishedHandle;
         }
         try {
-          await lease.close();
+          // Always dispose through residual so open-time tracking stays truthful.
+          await residual.dispose();
           return failure(code, message, holder, path, state.leasePath, waitBoundMs);
         } catch (cleanupError: unknown) {
-          return cleanupFailed(
-            code,
-            message,
-            holder,
-            cleanupError,
-            residualFromOpenLease(lease, path, state.leasePath),
-          );
+          return cleanupFailed(code, message, holder, cleanupError);
         }
       };
       try {
@@ -1016,6 +1011,8 @@ export async function acquireOperationLock(options: AcquireLockOptions): Promise
         }
 
         const handle = createHandle(adapters, state, record, lease);
+        // Upgrade residual so dispose uses handle.release (metadata + close).
+        residual.handle = handle;
         return {
           ok: true,
           record,
@@ -1027,6 +1024,18 @@ export async function acquireOperationLock(options: AcquireLockOptions): Promise
           handle,
         };
       } catch (error: unknown) {
+        // Unexpected post-open throw: close through residual so authority stays
+        // reachable when the descriptor cannot be closed.
+        try {
+          await residual.dispose();
+        } catch (closeError: unknown) {
+          return cleanupFailed(
+            primaryCodeFromError(error),
+            error instanceof Error ? error.message : String(error),
+            lastHolder,
+            closeError,
+          );
+        }
         return closeAfterFailure(
           lease,
           error,

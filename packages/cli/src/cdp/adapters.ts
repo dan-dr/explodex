@@ -11,6 +11,8 @@ export type CdpEvaluationResult = {
 
 export type CdpTargetSession = {
   targetId: string;
+  /** True while the underlying websocket is not fully CLOSED. */
+  isOpen(): boolean;
   listExecutionContexts(options: { signal?: AbortSignal }): Promise<CdpExecutionContext[]>;
   evaluate(input: {
     executionContextId: number;
@@ -19,6 +21,25 @@ export type CdpTargetSession = {
     signal?: AbortSignal;
   }): Promise<CdpEvaluationResult>;
   close(options?: { timeoutMs?: number }): Promise<void>;
+};
+
+/**
+ * Reachable residual CDP session authority after registration fails and the
+ * bounded close times out or rejects while the socket remains non-closed.
+ */
+export type ResidualSessionAuthority = {
+  targetId: string;
+  session: CdpTargetSession;
+  isOpen(): boolean;
+  dispose(options?: { timeoutMs?: number }): Promise<void>;
+};
+
+export type SessionRegistrationCleanupError = Error & {
+  code: "cdp_session_registration_cleanup_failed";
+  registrationError: unknown;
+  cleanupError: unknown;
+  residual: ResidualSessionAuthority;
+  boundMs: number;
 };
 
 export type CdpAdapter = {
@@ -321,6 +342,10 @@ class NodeCdpTargetSession implements CdpTargetSession {
     return { value };
   }
 
+  isOpen(): boolean {
+    return !this.closed && this.socket.readyState !== WebSocket.CLOSED;
+  }
+
   async close(options: { timeoutMs?: number } = {}): Promise<void> {
     if (this.socket.readyState === WebSocket.CLOSED) {
       this.closed = true;
@@ -362,7 +387,7 @@ class NodeCdpTargetSession implements CdpTargetSession {
 }
 
 /** Declared bound for emergency close when session registration fails. */
-const DEFAULT_SESSION_CLOSE_BOUND_MS = 5_000;
+const REGISTRATION_SESSION_CLOSE_BOUND_MS = 250;
 
 export function createNodeCdpAdapter(): CdpAdapter {
   return {
@@ -407,16 +432,41 @@ export function createNodeCdpAdapter(): CdpAdapter {
       });
       try {
         input.onSessionOpened?.(session);
-      } catch (error: unknown) {
-        // Registration (or any post-open callback) failure must not leave an
-        // unreachable open session/websocket. Close within the declared bound.
-        const closeBoundMs = DEFAULT_SESSION_CLOSE_BOUND_MS;
+      } catch (registrationError: unknown) {
+        // Registration failure must not leave an unreachable open session.
+        // Close within the declared bound; close timeout/rejection must surface
+        // residual session authority rather than discarding it.
+        const closeBoundMs = REGISTRATION_SESSION_CLOSE_BOUND_MS;
         try {
           await session.close({ timeoutMs: closeBoundMs });
-        } catch {
-          // Prefer the original registration failure; close faults are secondary.
+        } catch (cleanupError: unknown) {
+          const residual: ResidualSessionAuthority = {
+            targetId: session.targetId,
+            session,
+            isOpen: () => session.isOpen(),
+            dispose: (options) => session.close(options),
+          };
+          const registrationMessage = registrationError instanceof Error
+            ? registrationError.message
+            : String(registrationError);
+          const cleanupMessage = cleanupError instanceof Error
+            ? cleanupError.message
+            : String(cleanupError);
+          const combined: SessionRegistrationCleanupError = Object.assign(
+            new Error(
+              `${registrationMessage}; residual CDP session cleanup failed: ${cleanupMessage}`,
+            ),
+            {
+              code: "cdp_session_registration_cleanup_failed" as const,
+              registrationError,
+              cleanupError,
+              residual,
+              boundMs: closeBoundMs,
+            },
+          );
+          throw combined;
         }
-        throw error;
+        throw registrationError;
       }
       return session;
     },

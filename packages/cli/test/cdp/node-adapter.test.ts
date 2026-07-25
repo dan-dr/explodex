@@ -16,6 +16,8 @@ class FakeWebSocket extends EventTarget {
 
   static instances: FakeWebSocket[] = [];
   static closeDelayMs = 0;
+  /** "success" closes; "reject" fires error; "hang" never reaches CLOSED. */
+  static closeMode: "success" | "reject" | "hang" = "success";
   static omitContextUniqueId = false;
   static evaluateMode:
     | "success"
@@ -114,6 +116,16 @@ class FakeWebSocket extends EventTarget {
   close(): void {
     if (this.readyState === FakeWebSocket.CLOSED || this.readyState === FakeWebSocket.CLOSING) return;
     this.readyState = FakeWebSocket.CLOSING;
+    if (FakeWebSocket.closeMode === "hang") {
+      // Never reach CLOSED; production close must time out truthfully.
+      return;
+    }
+    if (FakeWebSocket.closeMode === "reject") {
+      setTimeout(() => {
+        this.dispatchEvent(new Event("error"));
+      }, FakeWebSocket.closeDelayMs);
+      return;
+    }
     setTimeout(() => {
       this.readyState = FakeWebSocket.CLOSED;
       this.dispatchEvent(new CloseEvent("close", { code: 1000, reason: "fixture" }));
@@ -132,6 +144,7 @@ afterEach(() => {
   globalThis.WebSocket = OriginalWebSocket;
   FakeWebSocket.instances = [];
   FakeWebSocket.closeDelayMs = 0;
+  FakeWebSocket.closeMode = "success";
   FakeWebSocket.omitContextUniqueId = false;
   FakeWebSocket.evaluateMode = "success";
 });
@@ -365,5 +378,87 @@ describe("production CDP adapter", () => {
     // Wait for the adapter's bounded close to complete.
     await new Promise<void>((resolve) => setTimeout(resolve, 30));
     expect(socket?.readyState).toBe(FakeWebSocket.CLOSED);
+  });
+
+  test("M1-F03R: registration close timeout surfaces residual session authority", async () => {
+    FakeWebSocket.closeMode = "hang";
+    const adapter = installProductionAdapterFixture();
+    const targets = await adapter.listTargets({ host: "127.0.0.1", port: 9444 });
+    const target = targets[0];
+    if (target === undefined) throw new Error("fixture target unavailable");
+
+    let thrown: unknown;
+    try {
+      await adapter.openTargetSession({
+        host: "127.0.0.1",
+        port: 9444,
+        target,
+        onSessionOpened() {
+          throw new Error("registration callback failed");
+        },
+      });
+    } catch (error: unknown) {
+      thrown = error;
+    }
+
+    expect(thrown).toMatchObject({
+      code: "cdp_session_registration_cleanup_failed",
+      boundMs: 250,
+    });
+    const residual = (thrown as {
+      residual: {
+        targetId: string;
+        isOpen(): boolean;
+        dispose(options?: { timeoutMs?: number }): Promise<void>;
+      };
+      cleanupError: unknown;
+      registrationError: unknown;
+    }).residual;
+    expect(residual.targetId).toBe("PAGE-1");
+    expect(residual.isOpen()).toBe(true);
+    expect(String((thrown as { cleanupError: unknown }).cleanupError)).toMatch(
+      /cdp_session_close_timeout|timed out/i,
+    );
+    expect(String((thrown as { registrationError: unknown }).registrationError)).toMatch(
+      /registration callback failed/,
+    );
+    // Socket never reached CLOSED; residual remains reachable for dispose/retry.
+    expect(FakeWebSocket.instances[0]?.readyState).not.toBe(FakeWebSocket.CLOSED);
+  });
+
+  test("M1-F03R: registration close rejection surfaces residual session authority", async () => {
+    FakeWebSocket.closeMode = "reject";
+    FakeWebSocket.closeDelayMs = 5;
+    const adapter = installProductionAdapterFixture();
+    const targets = await adapter.listTargets({ host: "127.0.0.1", port: 9444 });
+    const target = targets[0];
+    if (target === undefined) throw new Error("fixture target unavailable");
+
+    let thrown: unknown;
+    try {
+      await adapter.openTargetSession({
+        host: "127.0.0.1",
+        port: 9444,
+        target,
+        onSessionOpened() {
+          throw new Error("registration callback failed");
+        },
+      });
+    } catch (error: unknown) {
+      thrown = error;
+    }
+
+    expect(thrown).toMatchObject({
+      code: "cdp_session_registration_cleanup_failed",
+    });
+    const residual = (thrown as {
+      residual: { targetId: string; isOpen(): boolean };
+      cleanupError: unknown;
+    }).residual;
+    expect(residual.targetId).toBe("PAGE-1");
+    expect(residual.isOpen()).toBe(true);
+    expect(String((thrown as { cleanupError: unknown }).cleanupError)).toMatch(
+      /failed while closing/i,
+    );
   });
 });
