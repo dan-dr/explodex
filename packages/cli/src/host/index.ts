@@ -6,4 +6,6 @@ export * from "./compatibility-state.ts";
 export * from "./compatibility-gate.ts";
 export * from "./identity.ts";
 export * from "./report.ts";
+export * from "./process-adapters.ts";
+export * from "./status.ts";
 export { resolveExplodexHome, compatibilityStatePath, stateDirectory } from "../home/paths.ts";

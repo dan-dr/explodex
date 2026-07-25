@@ -16,6 +16,15 @@ export const MISSION_BASELINE_APP_VERSION = "26.715.61943";
 /** Mission baseline application build (CFBundleVersion). */
 export const MISSION_BASELINE_APP_BUILD = "5628";
 
+/** The only declared role endpoints. Normal commands never scan or fall back. */
+export const DECLARED_ROLE_ENDPOINTS = {
+  main: { host: "127.0.0.1", port: 9333 },
+  development: { host: "127.0.0.1", port: 9444 },
+} as const;
+
+/** The only compatible renderer page URL. */
+export const EXACT_RENDERER_URL = "app://-/index.html" as const;
+
 /** Compatibility key / record schema version. */
 export const COMPATIBILITY_SCHEMA_VERSION = 1 as const;
 

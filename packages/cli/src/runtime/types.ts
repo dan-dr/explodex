@@ -103,6 +103,17 @@ export type BoundedOperationErrorCode =
   | "lock_release_interrupted"
   | "lock_stale_unrecoverable"
   | "lock_invariant_violation"
+  | "target_not_found"
+  | "target_ambiguous"
+  | "context_not_found"
+  | "context_ambiguous"
+  | "endpoint_identity_mismatch"
+  | "host_identity_drift"
+  | "process_identity_drift"
+  | "port_owner_drift"
+  | "browser_identity_drift"
+  | "target_identity_drift"
+  | "context_identity_drift"
   | "cleanup_failed"
   | "resident_control_plane_forbidden";
 

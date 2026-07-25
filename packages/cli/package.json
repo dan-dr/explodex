@@ -19,6 +19,14 @@
       "types": "./dist/host/*.d.ts",
       "import": "./dist/host/*.js"
     },
+    "./cdp": {
+      "types": "./dist/cdp/index.d.ts",
+      "import": "./dist/cdp/index.js"
+    },
+    "./cdp/*": {
+      "types": "./dist/cdp/*.d.ts",
+      "import": "./dist/cdp/*.js"
+    },
     "./runtime": {
       "types": "./dist/runtime/index.d.ts",
       "import": "./dist/runtime/index.js"

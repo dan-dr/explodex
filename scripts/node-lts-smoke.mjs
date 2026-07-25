@@ -85,10 +85,80 @@ try {
   const probe = join(scratch, "fixture", "probe.mjs");
   await writeFile(probe, `
 import { LOCK_ACQUISITION_BOUND_MS, createSystemRuntimeClock } from "explodex/runtime";
+import { roleEndpoint } from "explodex/host";
+import { createNodeCdpAdapter, selectExactPageAndContext } from "explodex/cdp";
 const bunAbsent = !(process.env.PATH || "").split(":").some((part) => part.toLowerCase().includes("bun"));
 if (!bunAbsent) throw new Error("Bun unexpectedly present in runtime PATH");
 if (LOCK_ACQUISITION_BOUND_MS !== 2000) throw new Error("Unexpected lock bound");
-console.log(JSON.stringify({ runtime: process.version, bunAbsent, nowType: typeof createSystemRuntimeClock().nowMs() }));
+if (roleEndpoint("main").port !== 9333 || roleEndpoint("development").port !== 9444) throw new Error("Unexpected role endpoint");
+const selected = selectExactPageAndContext({
+  targets: [{ id: "PAGE", type: "page", url: "app://-/index.html", title: "ChatGPT" }],
+  contextsByTarget: { PAGE: [{ id: 7, uniqueId: "unique-7", targetId: "PAGE", frameId: "FRAME-7", isDefault: true, origin: "app://-", name: "" }] },
+});
+if (selected.kind !== "selected" || selected.context.uniqueId !== "unique-7") throw new Error("Packed CDP selector failed");
+
+class SmokeWebSocket extends EventTarget {
+  static OPEN = 1;
+  static CLOSED = 3;
+  constructor(url) {
+    super();
+    this.url = String(url);
+    this.readyState = 0;
+    queueMicrotask(() => {
+      this.readyState = SmokeWebSocket.OPEN;
+      this.dispatchEvent(new Event("open"));
+    });
+  }
+  send(raw) {
+    const request = JSON.parse(raw);
+    const message = (payload) => queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(payload) })));
+    if (request.method === "Runtime.enable") {
+      message({ method: "Runtime.executionContextCreated", params: { context: { id: 17, uniqueId: "unique-context-17", origin: "app://-", name: "", auxData: { isDefault: true, frameId: "FRAME-17" } } } });
+      message({ id: request.id, result: {} });
+      return;
+    }
+    if (request.method === "Runtime.evaluate" && request.params.expression === "throw") {
+      message({ id: request.id, result: { result: { type: "undefined" }, exceptionDetails: { text: "fixture" } } });
+      return;
+    }
+    if (request.method === "Runtime.evaluate") {
+      if (request.params.uniqueContextId !== "unique-context-17" || "contextId" in request.params) throw new Error("Packed adapter used unsafe context identity");
+      message({ id: request.id, result: { result: { type: "string", value: "ok" } } });
+      return;
+    }
+    message({ id: request.id, result: {} });
+  }
+  close() {
+    setTimeout(() => {
+      this.readyState = SmokeWebSocket.CLOSED;
+      this.dispatchEvent(new Event("close"));
+    }, 15);
+  }
+}
+globalThis.WebSocket = SmokeWebSocket;
+globalThis.fetch = async (input) => {
+  const url = String(input);
+  if (url.endsWith("/json/list")) return new Response(JSON.stringify([{ id: "PAGE", type: "page", url: "app://-/index.html", title: "ChatGPT", webSocketDebuggerUrl: "ws://127.0.0.1:9444/devtools/page/PAGE" }]));
+  throw new Error("Unexpected smoke fetch " + url);
+};
+const cdp = createNodeCdpAdapter();
+const targets = await cdp.listTargets({ host: "127.0.0.1", port: 9444 });
+const session = await cdp.openTargetSession({ host: "127.0.0.1", port: 9444, target: targets[0] });
+const contexts = await session.listExecutionContexts({});
+if (contexts[0]?.frameId !== "FRAME-17" || contexts[0]?.targetId !== "PAGE") throw new Error("Packed adapter confused frame and target identity");
+const evaluation = await session.evaluate({ executionContextId: contexts[0].id, executionContextUniqueId: contexts[0].uniqueId, expression: "ok" });
+if (evaluation.value !== "ok") throw new Error("Packed adapter evaluation failed");
+let rejectedException = false;
+try {
+  await session.evaluate({ executionContextId: contexts[0].id, executionContextUniqueId: contexts[0].uniqueId, expression: "throw" });
+} catch (error) {
+  rejectedException = String(error).includes("exceptionDetails");
+}
+if (!rejectedException) throw new Error("Packed adapter accepted Runtime.evaluate exceptionDetails");
+const closeStarted = Date.now();
+await session.close({ timeoutMs: 250 });
+if (Date.now() - closeStarted < 10) throw new Error("Packed adapter did not await websocket closure");
+console.log(JSON.stringify({ runtime: process.version, bunAbsent, nowType: typeof createSystemRuntimeClock().nowMs(), mainPort: roleEndpoint("main").port, target: selected.target.id, productionAdapter: true }));
 `, { mode: 0o600 });
 
   const packageJson = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));

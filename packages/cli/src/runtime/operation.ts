@@ -516,7 +516,7 @@ export async function runBoundedOperation<T>(
           message,
           stage: errorStage,
           boundMs: errorBoundMs,
-          details: error instanceof Error ? { name: error.name } : undefined,
+          details: readRuntimeErrorDetails(error),
         },
       );
     }
@@ -526,7 +526,7 @@ export async function runBoundedOperation<T>(
       message,
       stage: errorStage,
       boundMs: errorBoundMs,
-      details: error instanceof Error ? { name: error.name } : undefined,
+      details: readRuntimeErrorDetails(error),
     });
   } finally {
     unsubInt();
@@ -579,6 +579,17 @@ function readRuntimeErrorCode(error: unknown): BoundedOperationFailure["error"][
   if (code === "lock_release_interrupted") return code;
   if (code === "lock_stale_unrecoverable") return code;
   if (code === "lock_invariant_violation") return code;
+  if (code === "target_not_found") return code;
+  if (code === "target_ambiguous") return code;
+  if (code === "context_not_found") return code;
+  if (code === "context_ambiguous") return code;
+  if (code === "endpoint_identity_mismatch") return code;
+  if (code === "host_identity_drift") return code;
+  if (code === "process_identity_drift") return code;
+  if (code === "port_owner_drift") return code;
+  if (code === "browser_identity_drift") return code;
+  if (code === "target_identity_drift") return code;
+  if (code === "context_identity_drift") return code;
   return "operation_failed";
 }
 
@@ -592,6 +603,15 @@ function readRuntimeErrorBoundMs(error: unknown): number | undefined {
   if (typeof error !== "object" || error === null || !("boundMs" in error)) return undefined;
   const boundMs = (error as { boundMs?: unknown }).boundMs;
   return typeof boundMs === "number" && Number.isFinite(boundMs) ? boundMs : undefined;
+}
+
+function readRuntimeErrorDetails(error: unknown): unknown {
+  if (!(error instanceof Error)) return undefined;
+  if ("details" in error) {
+    const details = (error as Error & { details?: unknown }).details;
+    if (details !== undefined) return details;
+  }
+  return { name: error.name };
 }
 
 function failureResult(
