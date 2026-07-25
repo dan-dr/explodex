@@ -14,3 +14,12 @@ if (!result.success) {
   for (const log of result.logs) console.error(log);
   process.exit(1);
 }
+
+const cliBuild = Bun.spawn(["bun", "run", "build"], {
+  cwd: join(root, "packages", "cli"),
+  stdin: "ignore",
+  stdout: "inherit",
+  stderr: "inherit",
+});
+const cliExitCode = await cliBuild.exited;
+if (cliExitCode !== 0) process.exit(cliExitCode);

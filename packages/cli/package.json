@@ -11,16 +11,30 @@
     "darwin"
   ],
   "exports": {
-    "./host": "./src/host/index.ts",
-    "./host/*": "./src/host/*",
-    "./runtime": "./src/runtime/index.ts",
-    "./runtime/*": "./src/runtime/*"
+    "./host": {
+      "types": "./dist/host/index.d.ts",
+      "import": "./dist/host/index.js"
+    },
+    "./host/*": {
+      "types": "./dist/host/*.d.ts",
+      "import": "./dist/host/*.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime/index.d.ts",
+      "import": "./dist/runtime/index.js"
+    },
+    "./runtime/*": {
+      "types": "./dist/runtime/*.d.ts",
+      "import": "./dist/runtime/*.js"
+    }
   },
   "files": [
-    "src/",
+    "dist/",
     "package.json"
   ],
   "scripts": {
+    "build": "bun scripts/build.ts",
+    "prepack": "bun run build",
     "test": "bun test test"
   }
 }

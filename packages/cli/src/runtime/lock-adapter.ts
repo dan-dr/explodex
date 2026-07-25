@@ -43,7 +43,12 @@ export type LockFileSystem = {
   mkdir(path: string, options?: { recursive?: boolean; mode?: number }): Promise<void>;
   createDirectoryExclusive(path: string, mode?: number): Promise<boolean>;
   writeFileExclusive(path: string, data: string, mode?: number): Promise<boolean>;
-  writeTextAtomic(path: string, data: string, mode?: number): Promise<void>;
+  writeTextAtomic(
+    path: string,
+    data: string,
+    mode?: number,
+    options?: { abortSignal?: AbortSignal; deadlineMs?: number },
+  ): Promise<void>;
   /**
    * Move a complete staging container to its final name with one rename.
    * A populated container at the destination means another process published first.
@@ -168,7 +173,7 @@ export async function createNodeLockFileSystem(): Promise<LockFileSystem> {
         throw error;
       }
     },
-    async writeTextAtomic(path, data, mode = PRIVATE_FILE_MODE) {
+    async writeTextAtomic(path, data, mode = PRIVATE_FILE_MODE, options = {}) {
       const { dirname, join } = await import("node:path");
       const { randomBytes } = await import("node:crypto");
       const directory = dirname(path);
@@ -176,14 +181,30 @@ export async function createNodeLockFileSystem(): Promise<LockFileSystem> {
         directory,
         `.owner-${process.pid}-${randomBytes(8).toString("hex")}.tmp`,
       );
+      const throwIfFenced = (): void => {
+        if (options.abortSignal?.aborted) {
+          throw Object.assign(new Error("Atomic owner write was interrupted"), {
+            code: "ABORT_ERR",
+          });
+        }
+        if (options.deadlineMs !== undefined && Date.now() > options.deadlineMs) {
+          throw Object.assign(new Error("Atomic owner write exceeded its release deadline"), {
+            code: "ETIMEDOUT",
+          });
+        }
+      };
       let handle: FileHandle | null = null;
       try {
+        throwIfFenced();
         handle = await fs.open(temporaryPath, constants.O_WRONLY | constants.O_CREAT |
           constants.O_EXCL | constants.O_NOFOLLOW | DARWIN_O_CLOEXEC, mode);
         await handle.writeFile(data, "utf8");
+        throwIfFenced();
         await handle.sync();
+        throwIfFenced();
         await handle.close();
         handle = null;
+        throwIfFenced();
         await fs.rename(temporaryPath, path);
         await syncDirectory(directory);
       } catch (error: unknown) {

@@ -1489,6 +1489,112 @@ describe("operation locks (parent-held Darwin lease)", () => {
     expect(harness.openLockDescriptorCount()).toBe(0);
   });
 
+  test("delayed release publication times out truthfully, closes, and cannot publish late", async () => {
+    const harness = createFakeRuntimeHarness();
+    const home = "/tmp/explodex-release-timeout";
+    const acquired = await acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: home,
+      resource: "plugins-state",
+      identity: identity(harness, "op-release-timeout"),
+      waitBoundMs: 0,
+    });
+    expect(acquired.ok).toBe(true);
+    if (!acquired.ok) return;
+    harness.setAtomicWriteDelay(100);
+    const release = releaseOperationLock(harness.adapters, acquired.handle, { timeoutMs: 20 });
+    let error: unknown;
+    try {
+      await runWithClockPump(harness, release, { stepMs: 5, maxSteps: 40 });
+    } catch (caught: unknown) {
+      error = caught;
+    }
+    expect(error).toEqual(expect.objectContaining({
+      code: "lock_release_timeout",
+      stage: "cleanup",
+      boundMs: 20,
+    }));
+    expect(acquired.handle.state()).toEqual({
+      descriptorOpen: false,
+      leaseHeld: false,
+      releasedMetadataWritten: false,
+    });
+    expect(harness.openLockDescriptorCount()).toBe(0);
+    const recordAfterTimeout = JSON.parse(
+      harness.files.get(ownerPath(home, "plugins-state")) ?? "null",
+    );
+    expect(recordAfterTimeout.state).toBe("held");
+    harness.advanceMs(500);
+    await Promise.resolve();
+    expect(JSON.parse(harness.files.get(ownerPath(home, "plugins-state")) ?? "null"))
+      .toEqual(recordAfterTimeout);
+  });
+
+  test.each(["lease-stat", "path-stat"] as const)(
+    "delayed %s release observation reports the declared timeout and closes",
+    async (delayedOperation) => {
+      const harness = createFakeRuntimeHarness();
+      const acquired = await acquireOperationLock({
+        adapters: harness.adapters,
+        explodexHome: `/tmp/explodex-release-delayed-${delayedOperation}`,
+        resource: "plugins-state",
+        identity: identity(harness, `op-release-delayed-${delayedOperation}`),
+        waitBoundMs: 0,
+      });
+      expect(acquired.ok).toBe(true);
+      if (!acquired.ok) return;
+      harness.setLockDelay(delayedOperation, 50);
+      const release = acquired.handle.release({ timeoutMs: 20 });
+      let error: unknown;
+      try {
+        await runWithClockPump(harness, release, { stepMs: 5, maxSteps: 40 });
+      } catch (caught: unknown) {
+        error = caught;
+      }
+      expect(error).toEqual(expect.objectContaining({
+        code: "lock_release_timeout",
+        stage: "cleanup",
+        boundMs: 20,
+      }));
+      expect(acquired.handle.state().descriptorOpen).toBe(false);
+      expect(acquired.handle.state().leaseHeld).toBe(false);
+      expect(harness.openLockDescriptorCount()).toBe(0);
+    },
+  );
+
+  test("invalid and aborted release bounds close the descriptor unconditionally", async () => {
+    for (const mode of ["invalid", "aborted"] as const) {
+      const harness = createFakeRuntimeHarness();
+      const acquired = await acquireOperationLock({
+        adapters: harness.adapters,
+        explodexHome: `/tmp/explodex-release-${mode}-bound`,
+        resource: "plugins-state",
+        identity: identity(harness, `op-release-${mode}-bound`),
+        waitBoundMs: 0,
+      });
+      expect(acquired.ok).toBe(true);
+      if (!acquired.ok) continue;
+      const abort = new AbortController();
+      if (mode === "aborted") abort.abort();
+      let error: unknown;
+      try {
+        await releaseOperationLock(harness.adapters, acquired.handle, {
+          abortSignal: abort.signal,
+          timeoutMs: mode === "invalid" ? Number.POSITIVE_INFINITY : 20,
+        });
+      } catch (caught: unknown) {
+        error = caught;
+      }
+      expect(error).toEqual(expect.objectContaining({
+        code: mode === "invalid" ? "invalid_stage_bound" : "lock_release_interrupted",
+        stage: "cleanup",
+      }));
+      expect(acquired.handle.state().descriptorOpen).toBe(false);
+      expect(acquired.handle.state().leaseHeld).toBe(false);
+      expect(harness.openLockDescriptorCount()).toBe(0);
+    }
+  });
+
   test("release generation mismatch and path substitution both close the descriptor", async () => {
     for (const mode of ["generation", "path"] as const) {
       const harness = createFakeRuntimeHarness();
@@ -1516,6 +1622,96 @@ describe("operation locks (parent-held Darwin lease)", () => {
     }
   });
 
+  test("delayed descriptor close reports the release bound then converges without residue", async () => {
+    const harness = createFakeRuntimeHarness();
+    const acquired = await acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: "/tmp/explodex-delayed-close",
+      resource: "plugins-state",
+      identity: identity(harness, "op-delayed-close"),
+      waitBoundMs: 0,
+    });
+    expect(acquired.ok).toBe(true);
+    if (!acquired.ok) return;
+    harness.setLockDelay("lease-close", 100);
+    const release = acquired.handle.release({ timeoutMs: 20 });
+    let error: unknown;
+    try {
+      await runWithClockPump(harness, release, { stepMs: 5, maxSteps: 20 });
+    } catch (caught: unknown) {
+      error = caught;
+    }
+    expect(error).toEqual(expect.objectContaining({
+      code: "lock_release_timeout",
+      stage: "cleanup",
+      boundMs: 20,
+    }));
+    expect(acquired.handle.state().descriptorOpen).toBe(true);
+    expect(acquired.handle.state().leaseHeld).toBe(true);
+    harness.advanceMs(200);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(acquired.handle.state().descriptorOpen).toBe(false);
+    expect(acquired.handle.state().leaseHeld).toBe(false);
+    expect(harness.openLockDescriptorCount()).toBe(0);
+  });
+
+  test("release timeout plus close failure preserves structured bound and retryable residue", async () => {
+    const harness = createFakeRuntimeHarness();
+    const acquired = await acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: "/tmp/explodex-timeout-close-failure",
+      resource: "plugins-state",
+      identity: identity(harness, "op-timeout-close-failure"),
+      waitBoundMs: 0,
+    });
+    expect(acquired.ok).toBe(true);
+    if (!acquired.ok) return;
+    harness.setAtomicWriteDelay(100);
+    harness.setLockFault("lease-close");
+    const release = acquired.handle.release({ timeoutMs: 20 });
+    let error: unknown;
+    try {
+      await runWithClockPump(harness, release, { stepMs: 5, maxSteps: 40 });
+    } catch (caught: unknown) {
+      error = caught;
+    }
+    expect(error).toEqual(expect.objectContaining({
+      code: "lock_release_timeout",
+      stage: "cleanup",
+      boundMs: 20,
+    }));
+    expect(acquired.handle.state().descriptorOpen).toBe(true);
+    expect(acquired.handle.state().leaseHeld).toBe(true);
+    harness.setAtomicWriteDelay(0);
+    await acquired.handle.release();
+    expect(acquired.handle.state().descriptorOpen).toBe(false);
+    expect(harness.openLockDescriptorCount()).toBe(0);
+  });
+
+  test("combined release publication and close failures retain truthful retryable residue", async () => {
+    const harness = createFakeRuntimeHarness();
+    const acquired = await acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: "/tmp/explodex-combined-release-failure",
+      resource: "plugins-state",
+      identity: identity(harness, "op-combined-release-failure"),
+      waitBoundMs: 0,
+    });
+    expect(acquired.ok).toBe(true);
+    if (!acquired.ok) return;
+    harness.setLockFault("atomic-write");
+    harness.setLockFault("lease-close");
+    await expect(acquired.handle.release()).rejects.toThrow(/Injected atomic write failure/);
+    expect(acquired.handle.state().descriptorOpen).toBe(true);
+    expect(acquired.handle.state().leaseHeld).toBe(true);
+    expect(harness.openLockDescriptorCount()).toBe(1);
+    await acquired.handle.release();
+    expect(acquired.handle.state().descriptorOpen).toBe(false);
+    expect(acquired.handle.state().leaseHeld).toBe(false);
+    expect(harness.openLockDescriptorCount()).toBe(0);
+  });
+
   test("descriptor close failure is reported as truthful lock residue", async () => {
     const harness = createFakeRuntimeHarness();
     const acquired = await acquireOperationLock({
@@ -1531,6 +1727,10 @@ describe("operation locks (parent-held Darwin lease)", () => {
     await expect(acquired.handle.release()).rejects.toThrow(/Injected lease close failure/);
     expect(acquired.handle.state().descriptorOpen).toBe(true);
     expect(harness.openLockDescriptorCount()).toBe(1);
+    await acquired.handle.release();
+    expect(acquired.handle.state().descriptorOpen).toBe(false);
+    expect(acquired.handle.state().leaseHeld).toBe(false);
+    expect(harness.openLockDescriptorCount()).toBe(0);
   });
 
   test("bounded contention and SIGINT leave no contender descriptor or late work", async () => {
@@ -1604,6 +1804,64 @@ describe("operation locks (parent-held Darwin lease)", () => {
     expect(parseOperationLockRecord({ ...acquired.record, schemaVersion: 1 })).toBe(null);
     expect(parseOperationLockRecord({ ...acquired.record, protocol: "legacy" })).toBe(null);
     await acquired.handle.release();
+  });
+
+  test("scope reports metadata release failure without claiming a closed lease remains held", async () => {
+    const harness = createFakeRuntimeHarness();
+    const acquired = await acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: "/tmp/explodex-scope-release-metadata-failure",
+      resource: "plugins-state",
+      identity: identity(harness, "op-scope-release-metadata-failure"),
+      waitBoundMs: 0,
+    });
+    expect(acquired.ok).toBe(true);
+    if (!acquired.ok) return;
+    harness.setLockFault("atomic-write");
+    const result = await runBoundedOperation({
+      adapters: harness.adapters,
+      operation: "install",
+      operationId: "op-scope-release-metadata-failure-runtime",
+      run: async (ctx) => {
+        ctx.scope.register({
+          kind: "lock",
+          label: "plugins-state",
+          disposition: "command-owned",
+          lockState: () => acquired.handle.state(),
+          dispose: () => acquired.handle.release({ timeoutMs: 20 }),
+        });
+        return { locked: true };
+      },
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("cleanup_failed");
+    expect(result.residualInventory.locksHeld).toBe(0);
+    expect(result.residualInventory.openLockDescriptors).toBe(0);
+    expect(result.residualInventory.advisoryLeasesHeld).toBe(0);
+    expect(result.residualInventory.hasResidentControlPlane).toBe(false);
+  });
+
+  test("bounded operation preserves a direct release timeout stage and bound", async () => {
+    const harness = createFakeRuntimeHarness();
+    const resultPromise = runBoundedOperation({
+      adapters: harness.adapters,
+      operation: "install",
+      operationId: "op-direct-release-timeout",
+      run: async () => {
+        throw Object.assign(new Error("release timed out"), {
+          code: "lock_release_timeout",
+          stage: "cleanup",
+          boundMs: 25,
+        });
+      },
+    });
+    const result = await resultPromise;
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("lock_release_timeout");
+    expect(result.error.stage).toBe("cleanup");
+    expect(result.error.boundMs).toBe(25);
   });
 
   test("resource-scope cleanup reports a real descriptor close failure", async () => {

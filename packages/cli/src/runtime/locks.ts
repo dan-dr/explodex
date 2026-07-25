@@ -63,6 +63,12 @@ export type LockHandleState = {
   releasedMetadataWritten: boolean;
 };
 
+export type LockReleaseError = Error & {
+  code: "lock_release_timeout" | "lock_release_interrupted" | "invalid_stage_bound";
+  stage: "cleanup";
+  boundMs?: number;
+};
+
 export type LockHandle = {
   readonly path: string;
   readonly leasePath: string;
@@ -425,71 +431,167 @@ function createHandle(
     options: { abortSignal?: AbortSignal; timeoutMs?: number } = {},
   ): Promise<void> => {
     const timeoutMs = options.timeoutMs;
+    if (!descriptorOpen) return;
     const deadline = timeoutMs === undefined ? null : adapters.clock.nowMs() + timeoutMs;
-    const requireBudget = (): void => {
+    const releaseError = (
+      code: LockReleaseError["code"],
+      message: string,
+    ): LockReleaseError => Object.assign(new Error(message), {
+      code,
+      stage: "cleanup" as const,
+      ...(timeoutMs === undefined ? {} : { boundMs: timeoutMs }),
+    });
+    const requireActive = (): void => {
+      if (options.abortSignal?.aborted) {
+        throw releaseError(
+          "lock_release_interrupted",
+          `Lock ${record.resource} release metadata was interrupted`,
+        );
+      }
       if (deadline !== null && adapters.clock.nowMs() > deadline) {
-        throw new Error(
+        throw releaseError(
+          "lock_release_timeout",
           `Lock ${record.resource} release metadata exceeded the declared ${String(timeoutMs)}ms bound`,
         );
       }
     };
-    let releaseError: unknown = null;
-    try {
-      if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) {
-        throw Object.assign(
-          new Error(`Lock ${record.resource} release bound must be finite and positive`),
-          { code: "invalid_stage_bound" },
+    const awaitControlled = async <T>(
+      work: (signal: AbortSignal) => Promise<T>,
+    ): Promise<T> => {
+      requireActive();
+      const remainingMs = deadline === null ? null : deadline - adapters.clock.nowMs();
+      if (remainingMs !== null && remainingMs <= 0) {
+        throw releaseError(
+          "lock_release_timeout",
+          `Lock ${record.resource} release metadata exceeded the declared ${String(timeoutMs)}ms bound`,
         );
       }
-      const descriptorStat = await lease.stat();
-      const pathStat = await adapters.fs.statPath(state.leasePath);
-      validatePrivatePath(
-        pathStat,
-        "regular-file",
-        PRIVATE_FILE_MODE,
-        adapters.fs.currentUid(),
-        `Lock ${record.resource} lease during release`,
-      );
-      if (!sameLeaseIdentity(descriptorStat, pathStat) ||
-        descriptorStat.device !== record.leaseDevice ||
-        descriptorStat.inode !== record.leaseInode) {
-        throw new Error(`Lock ${record.resource} lease path was substituted before release`);
-      }
-      requireBudget();
-      const current = await readOwnerRecord(adapters, state);
-      if (current === null || current.state !== "held" || !sameLockOwner(current, record)) {
-        throw new Error(`Lock ${record.resource} owner generation changed before release`);
-      }
-      requireBudget();
-      if (options.abortSignal?.aborted) {
-        throw Object.assign(new Error(`Lock ${record.resource} release metadata was interrupted`), {
-          code: "ABORT_ERR",
-        });
-      }
-      const released: OperationLockRecord = {
-        ...record,
-        state: "released",
-        releasedAt: adapters.clock.nowIso(),
+      const operationAbort = new AbortController();
+      let timeoutHandle: { clear(): void } | null = null;
+      let rejectBoundary: ((error: LockReleaseError) => void) | null = null;
+      const boundary = new Promise<never>((_resolve, reject) => {
+        rejectBoundary = reject;
+      });
+      const onAbort = (): void => {
+        operationAbort.abort();
+        rejectBoundary?.(releaseError(
+          "lock_release_interrupted",
+          `Lock ${record.resource} release metadata was interrupted`,
+        ));
       };
-      await adapters.fs.writeTextAtomic(state.ownerPath, serialized(released), PRIVATE_FILE_MODE);
-      releasedMetadataWritten = true;
+      if (options.abortSignal?.aborted) onAbort();
+      else options.abortSignal?.addEventListener("abort", onAbort, { once: true });
+      if (remainingMs !== null) {
+        timeoutHandle = adapters.timers.setTimeout(() => {
+          operationAbort.abort();
+          rejectBoundary?.(releaseError(
+            "lock_release_timeout",
+            `Lock ${record.resource} release metadata exceeded the declared ${String(timeoutMs)}ms bound`,
+          ));
+        }, remainingMs);
+      }
+      const pendingWork = Promise.resolve().then(() => work(operationAbort.signal));
+      void pendingWork.catch(() => undefined);
+      try {
+        const result = await Promise.race([pendingWork, boundary]);
+        requireActive();
+        return result;
+      } finally {
+        timeoutHandle?.clear();
+        options.abortSignal?.removeEventListener("abort", onAbort);
+      }
+    };
+    let pendingReleaseError: unknown = null;
+    try {
+      if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) {
+        throw releaseError(
+          "invalid_stage_bound",
+          `Lock ${record.resource} release bound must be finite and positive`,
+        );
+      }
+      if (!releasedMetadataWritten) {
+        const descriptorStat = await awaitControlled(() => lease.stat());
+        const pathStat = await awaitControlled(() => adapters.fs.statPath(state.leasePath));
+        validatePrivatePath(
+          pathStat,
+          "regular-file",
+          PRIVATE_FILE_MODE,
+          adapters.fs.currentUid(),
+          `Lock ${record.resource} lease during release`,
+        );
+        if (!sameLeaseIdentity(descriptorStat, pathStat) ||
+          descriptorStat.device !== record.leaseDevice ||
+          descriptorStat.inode !== record.leaseInode) {
+          throw new Error(`Lock ${record.resource} lease path was substituted before release`);
+        }
+        const current = await awaitControlled(() => readOwnerRecord(adapters, state));
+        if (current === null || current.state !== "held" || !sameLockOwner(current, record)) {
+          throw new Error(`Lock ${record.resource} owner generation changed before release`);
+        }
+        const released: OperationLockRecord = {
+          ...record,
+          state: "released",
+          releasedAt: adapters.clock.nowIso(),
+        };
+        await awaitControlled((signal) => adapters.fs.writeTextAtomic(
+          state.ownerPath,
+          serialized(released),
+          PRIVATE_FILE_MODE,
+          { abortSignal: signal, deadlineMs: deadline ?? undefined },
+        ));
+        releasedMetadataWritten = true;
+      }
     } catch (error: unknown) {
-      releaseError = error;
+      if (systemErrorCode(error) === "ABORT_ERR") {
+        pendingReleaseError = releaseError(
+          "lock_release_interrupted",
+          `Lock ${record.resource} release metadata was interrupted`,
+        );
+      } else if (systemErrorCode(error) === "ETIMEDOUT") {
+        pendingReleaseError = releaseError(
+          "lock_release_timeout",
+          `Lock ${record.resource} release metadata exceeded the declared ${String(timeoutMs)}ms bound`,
+        );
+      } else {
+        pendingReleaseError = error;
+      }
     } finally {
       try {
-        await lease.close();
-        descriptorOpen = false;
-        leaseHeld = false;
+        const closePromise = lease.close();
+        void closePromise.then(
+          () => {
+            descriptorOpen = false;
+            leaseHeld = false;
+          },
+          () => undefined,
+        );
+        await awaitControlled(() => closePromise);
       } catch (closeError: unknown) {
-        if (releaseError === null) releaseError = closeError;
+        if (pendingReleaseError === null) pendingReleaseError = closeError;
         else {
-          const first = releaseError instanceof Error ? releaseError.message : String(releaseError);
+          const first = pendingReleaseError instanceof Error
+            ? pendingReleaseError.message
+            : String(pendingReleaseError);
           const second = closeError instanceof Error ? closeError.message : String(closeError);
-          releaseError = new Error(`${first}; advisory lease descriptor close failed: ${second}`);
+          const combined = new Error(
+            `${first}; advisory lease descriptor close failed: ${second}`,
+          );
+          const code = systemErrorCode(pendingReleaseError);
+          if (code !== null) Object.assign(combined, { code });
+          if (typeof pendingReleaseError === "object" && pendingReleaseError !== null) {
+            const structured = pendingReleaseError as { stage?: unknown; boundMs?: unknown };
+            if (typeof structured.stage === "string") {
+              Object.assign(combined, { stage: structured.stage });
+            }
+            if (typeof structured.boundMs === "number" && Number.isFinite(structured.boundMs)) {
+              Object.assign(combined, { boundMs: structured.boundMs });
+            }
+          }
+          pendingReleaseError = combined;
         }
       }
     }
-    if (releaseError !== null) throw releaseError;
+    if (pendingReleaseError !== null) throw pendingReleaseError;
   };
 
   return {
@@ -502,7 +604,12 @@ function createHandle(
       return { descriptorOpen, leaseHeld, releasedMetadataWritten };
     },
     release(options) {
-      if (releasePromise === null) releasePromise = performRelease(options);
+      if (releasePromise === null) {
+        releasePromise = performRelease(options).catch((error: unknown) => {
+          if (descriptorOpen) releasePromise = null;
+          throw error;
+        });
+      }
       return releasePromise;
     },
   };

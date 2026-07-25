@@ -52,6 +52,8 @@ export type FakeRuntimeHarness = {
   ): void;
   setSignalBarrier(barrier: (() => void) | null): void;
   setLockFault(fault: LockFault, count?: number): void;
+  setAtomicWriteDelay(ms: number): void;
+  setLockDelay(fault: "lease-stat" | "path-stat" | "lease-close", ms: number): void;
   clearLockFaults(): void;
   replacePath(path: string, node: {
     kind: Exclude<LockPathKind, "missing">;
@@ -107,6 +109,8 @@ export function createFakeRuntimeHarness(
   const leaseOwners = new Map<string, number>();
   const externallyBusyLeases = new Set<string>();
   const faults = new Map<LockFault, number>();
+  const delays = new Map<"lease-stat" | "path-stat" | "lease-close", number>();
+  let atomicWriteDelayMs = 0;
   let nextInode = 1000;
   let nextDescriptor = 20;
   let openDescriptors = 0;
@@ -235,6 +239,12 @@ export function createFakeRuntimeHarness(
 
   const fs: LockFileSystem = {
     async statPath(path) {
+      const delay = delays.get("path-stat") ?? 0;
+      if (delay > 0) {
+        await new Promise<void>((resolve) => {
+          runtimeTimers.setTimeout(resolve, delay);
+        });
+      }
       if (consumeFault("path-stat")) throw error("EIO", "Injected path stat failure");
       return statRecord(nodes.get(path));
     },
@@ -268,9 +278,18 @@ export function createFakeRuntimeHarness(
       setNode(path, nextNode("regular-file", { mode, text: data }));
       return true;
     },
-    async writeTextAtomic(path, data, mode = 0o600) {
+    async writeTextAtomic(path, data, mode = 0o600, writeOptions = {}) {
       if (consumeFault("atomic-write")) throw error("EIO", "Injected atomic write failure");
       if (nodes.get(parentPath(path))?.kind !== "directory") throw error("ENOENT");
+      if (atomicWriteDelayMs > 0) {
+        await new Promise<void>((resolve) => {
+          runtimeTimers.setTimeout(resolve, atomicWriteDelayMs);
+        });
+      }
+      if (writeOptions.abortSignal?.aborted) throw error("ABORT_ERR", "Atomic write aborted");
+      if (writeOptions.deadlineMs !== undefined && now > writeOptions.deadlineMs) {
+        throw error("ETIMEDOUT", "Atomic write deadline exceeded");
+      }
       setNode(path, nextNode("regular-file", { mode, text: data }));
     },
     async publishDirectoryExclusive(stagingPath, finalPath) {
@@ -309,11 +328,23 @@ export function createFakeRuntimeHarness(
         closeOnExec: true,
         async stat() {
           if (closed) throw new Error("closed");
+          const delay = delays.get("lease-stat") ?? 0;
+          if (delay > 0) {
+            await new Promise<void>((resolve) => {
+              runtimeTimers.setTimeout(resolve, delay);
+            });
+          }
           if (consumeFault("lease-stat")) throw error("EIO", "Injected lease stat failure");
           return statRecord(node);
         },
         async close() {
           if (closed) return;
+          const delay = delays.get("lease-close") ?? 0;
+          if (delay > 0) {
+            await new Promise<void>((resolve) => {
+              runtimeTimers.setTimeout(resolve, delay);
+            });
+          }
           if (consumeFault("lease-close")) throw error("EIO", "Injected lease close failure");
           closed = true;
           leaseOwners.delete(path);
@@ -365,8 +396,16 @@ export function createFakeRuntimeHarness(
     setLockFault(fault, count = 1) {
       faults.set(fault, count);
     },
+    setAtomicWriteDelay(ms) {
+      atomicWriteDelayMs = ms;
+    },
+    setLockDelay(fault, ms) {
+      delays.set(fault, ms);
+    },
     clearLockFaults() {
       faults.clear();
+      delays.clear();
+      atomicWriteDelayMs = 0;
     },
     replacePath(path, replacement) {
       setNode(path, nextNode(replacement.kind, {

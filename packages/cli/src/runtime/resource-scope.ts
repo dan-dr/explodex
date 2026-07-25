@@ -104,8 +104,8 @@ function countKind(
         inv.sessions += 1;
         break;
       case "lock": {
-        inv.locksHeld += 1;
         const state = r.lockState?.();
+        if (state === undefined || state.leaseHeld) inv.locksHeld += 1;
         if (state?.descriptorOpen) inv.openLockDescriptors += 1;
         if (state?.leaseHeld) inv.advisoryLeasesHeld += 1;
         break;

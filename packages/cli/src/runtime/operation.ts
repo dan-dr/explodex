@@ -494,6 +494,7 @@ export async function runBoundedOperation<T>(
       error instanceof Error ? error.message : "Operation failed with a non-Error throw";
     const errorCode = readRuntimeErrorCode(error);
     const errorStage = readRuntimeErrorStage(error) ?? currentStage ?? partial.stalledStage;
+    const errorBoundMs = readRuntimeErrorBoundMs(error);
 
     const cleanup = await finalizeDispose(
       scope,
@@ -514,6 +515,7 @@ export async function runBoundedOperation<T>(
           code: errorCode,
           message,
           stage: errorStage,
+          boundMs: errorBoundMs,
           details: error instanceof Error ? { name: error.name } : undefined,
         },
       );
@@ -523,6 +525,7 @@ export async function runBoundedOperation<T>(
       code: errorCode,
       message,
       stage: errorStage,
+      boundMs: errorBoundMs,
       details: error instanceof Error ? { name: error.name } : undefined,
     });
   } finally {
@@ -572,6 +575,8 @@ function readRuntimeErrorCode(error: unknown): BoundedOperationFailure["error"][
   if (code === "external_wait_requires_bound") return code;
   if (code === "invalid_stage_bound") return code;
   if (code === "lock_busy") return code;
+  if (code === "lock_release_timeout") return code;
+  if (code === "lock_release_interrupted") return code;
   if (code === "lock_stale_unrecoverable") return code;
   if (code === "lock_invariant_violation") return code;
   return "operation_failed";
@@ -581,6 +586,12 @@ function readRuntimeErrorStage(error: unknown): OperationStage | null {
   if (typeof error !== "object" || error === null || !("stage" in error)) return null;
   const stage = (error as { stage?: unknown }).stage;
   return typeof stage === "string" ? (stage as OperationStage) : null;
+}
+
+function readRuntimeErrorBoundMs(error: unknown): number | undefined {
+  if (typeof error !== "object" || error === null || !("boundMs" in error)) return undefined;
+  const boundMs = (error as { boundMs?: unknown }).boundMs;
+  return typeof boundMs === "number" && Number.isFinite(boundMs) ? boundMs : undefined;
 }
 
 function failureResult(
