@@ -42,8 +42,16 @@ describe("installed ChatGPT.app read-only inspection", () => {
       `${CANONICAL_BUNDLE_PATH}/Contents/MacOS/${CANONICAL_EXECUTABLE_NAME}`,
     );
     expect(result.host.signingTeam).toBe(CANONICAL_SIGNING_TEAM);
-    expect(result.host.appVersion).toBe(MISSION_BASELINE_APP_VERSION);
-    expect(result.host.appBuild).toBe(MISSION_BASELINE_APP_BUILD);
+    // Mission baseline constants stay fixed; a later host update remains a valid
+    // host (VAL-HOST-003) and must not silently rewrite the mission baseline.
+    expect(result.host.appVersion).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(result.host.appBuild).toMatch(/^\d+$/);
+    if (result.host.appBuild === MISSION_BASELINE_APP_BUILD) {
+      expect(result.host.appVersion).toBe(MISSION_BASELINE_APP_VERSION);
+    } else {
+      expect(result.host.appVersion).not.toBe(MISSION_BASELINE_APP_VERSION);
+      expect(result.host.appBuild).not.toBe(MISSION_BASELINE_APP_BUILD);
+    }
     expect(result.host.hostHashes["Contents/Info.plist"]).toMatch(/^[a-f0-9]{64}$/);
     expect(result.host.hostHashes["Contents/MacOS/ChatGPT"]).toMatch(/^[a-f0-9]{64}$/);
     expect(result.host.hostHashes["Contents/Resources/app.asar"]).toMatch(/^[a-f0-9]{64}$/);

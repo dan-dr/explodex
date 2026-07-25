@@ -96,9 +96,33 @@ function noBunOnPath(): boolean {
   return !paths.some((entry) => entry.toLowerCase().includes("bun"));
 }
 
+function assertGenuineNodeRuntime(): { nodeMajor: number; bunAbsentFromRuntime: true } {
+  // Bun exposes process.versions.node; reject any runtime that also exposes bun.
+  if (process.versions.bun !== undefined) {
+    throw new Error(
+      `Bun runtime is not a genuine Node evidence target (process.versions.bun=${process.versions.bun})`,
+    );
+  }
+  const major = Number(String(process.versions.node ?? "").split(".")[0]);
+  if (!Number.isInteger(major) || major <= 0) {
+    throw new Error(`Unable to determine Node major from process.versions.node=${process.versions.node}`);
+  }
+  const expected = process.env.EXPLODEX_WORKER_EXPECTED_NODE_MAJOR;
+  if (expected !== undefined) {
+    const expectedMajor = Number(expected);
+    if (!Number.isInteger(expectedMajor) || major !== expectedMajor) {
+      throw new Error(
+        `Worker expected Node ${expectedMajor} but observed Node ${major} (${process.versions.node})`,
+      );
+    }
+  }
+  return { nodeMajor: major, bunAbsentFromRuntime: true };
+}
+
 async function main(): Promise<void> {
   const command = process.argv[2] as WorkerCommand | undefined;
   if (command === undefined) throw new Error("Missing worker command");
+  const runtimeProof = assertGenuineNodeRuntime();
   const home = requiredEnv("EXPLODEX_WORKER_HOME");
   const operationId = requiredEnv("EXPLODEX_WORKER_OPERATION_ID");
   const { adapters, publication } = await createAdapters();
@@ -132,6 +156,8 @@ async function main(): Promise<void> {
       pid: process.pid,
       elapsedMs: Date.now() - startedAt,
       bunAbsentFromPath: noBunOnPath(),
+      bunAbsentFromRuntime: runtimeProof.bunAbsentFromRuntime,
+      nodeMajor: runtimeProof.nodeMajor,
       publication: publication(),
     }));
     process.exitCode = result.ok ? 0 : result.error.code === "operation_interrupted" ? 130 : 2;
@@ -157,6 +183,8 @@ async function main(): Promise<void> {
     pid: process.pid,
     elapsedMs: Date.now() - startedAt,
     bunAbsentFromPath: noBunOnPath(),
+    bunAbsentFromRuntime: runtimeProof.bunAbsentFromRuntime,
+    nodeMajor: runtimeProof.nodeMajor,
     publication: publication(),
   };
   if (!acquired.ok) {

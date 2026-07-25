@@ -46,6 +46,8 @@ type WorkerOutput = {
   pid: number;
   elapsedMs: number;
   bunAbsentFromPath: boolean;
+  bunAbsentFromRuntime?: boolean;
+  nodeMajor?: number;
   publication?: "published" | "lost-race" | "existing";
   code?: string;
   stage?: string | null;
@@ -88,14 +90,31 @@ function miseNodeBinary(major: 22 | 24): string | null {
   return root.length > 0 ? join(root, "bin", "node") : null;
 }
 
-function nodeMajor(binary: string): number | null {
-  const result = spawnSync(binary, ["-p", "Number(process.versions.node.split('.')[0])"], {
+type RuntimeProbe = {
+  major: number | null;
+  bunVersion: string | null;
+};
+
+function probeRuntime(binary: string): RuntimeProbe {
+  // Reject Bun masquerading through process.versions.node (Bun sets both).
+  const result = spawnSync(binary, [
+    "-p",
+    "JSON.stringify({ major: Number(String(process.versions.node||'').split('.')[0]), bun: process.versions.bun || null })",
+  ], {
     encoding: "utf8",
     env: { PATH: SYSTEM_PATH },
   });
-  if (result.status !== 0) return null;
-  const major = Number(result.stdout.trim());
-  return Number.isInteger(major) ? major : null;
+  if (result.status !== 0) return { major: null, bunVersion: null };
+  try {
+    const parsed = JSON.parse(result.stdout.trim()) as { major?: unknown; bun?: unknown };
+    const major = typeof parsed.major === "number" && Number.isInteger(parsed.major)
+      ? parsed.major
+      : null;
+    const bunVersion = typeof parsed.bun === "string" && parsed.bun.length > 0 ? parsed.bun : null;
+    return { major, bunVersion };
+  } catch {
+    return { major: null, bunVersion: null };
+  }
 }
 
 function resolveRequiredNode(major: 22 | 24): RequiredNode {
@@ -109,12 +128,14 @@ function resolveRequiredNode(major: 22 | 24): RequiredNode {
   ].filter((candidate): candidate is string => typeof candidate === "string" && candidate.length > 0);
   for (const candidate of candidates) {
     if (!existsSync(candidate)) continue;
-    if (nodeMajor(candidate) === major) {
+    const probe = probeRuntime(candidate);
+    if (probe.bunVersion !== null) continue;
+    if (probe.major === major) {
       return { label: `Node ${major}` as "Node 22" | "Node 24", major, binary: candidate };
     }
   }
   throw new Error(
-    `Missing required Node ${major} runtime. Set EXPLODEX_NODE_${major}_BIN to an executable Node ${major} binary.`,
+    `Missing required genuine Node ${major} runtime (Bun rejected). Set EXPLODEX_NODE_${major}_BIN to an executable Node ${major} binary.`,
   );
 }
 
@@ -128,6 +149,7 @@ function workerEnvironment(options: WorkerOptions): NodeJS.ProcessEnv {
     npm_config_cache: join(options.fixtureRoot, "npm-cache-runtime"),
     EXPLODEX_WORKER_HOME: options.home,
     EXPLODEX_WORKER_OPERATION_ID: options.operationId,
+    EXPLODEX_WORKER_EXPECTED_NODE_MAJOR: String(options.node.major),
   };
   if (options.readyFile !== undefined) env.EXPLODEX_WORKER_READY_FILE = options.readyFile;
   if (options.releaseFile !== undefined) env.EXPLODEX_WORKER_RELEASE_FILE = options.releaseFile;
@@ -342,8 +364,12 @@ async function freshHome(root: string, node: RequiredNode, scenario: string): Pr
   return home;
 }
 
-function assertCleanWorkerResult(result: WorkerOutput): void {
+function assertCleanWorkerResult(result: WorkerOutput, expectedMajor?: 22 | 24): void {
   expect(result.bunAbsentFromPath).toBe(true);
+  expect(result.bunAbsentFromRuntime).toBe(true);
+  if (expectedMajor !== undefined) {
+    expect(result.nodeMajor).toBe(expectedMajor);
+  }
   if (result.residualInventory !== undefined) {
     expect(result.residualInventory.commandOwnedChildren).toBe(0);
     expect(result.residualInventory.locksHeld).toBe(0);
@@ -402,7 +428,7 @@ describe("packed Darwin advisory-lease protocol under required Node runtimes", (
           expect(busy.result.code).toBe("lock_busy");
           expect(busy.result.stage).toBe("lock-acquisition");
           expect(busy.result.boundMs).toBe(0);
-          assertCleanWorkerResult(busy.result);
+          assertCleanWorkerResult(busy.result, node.major);
 
           await stopExactTestProcess(holder);
           const recovered = await collectWorker(spawnWorker({
@@ -421,7 +447,7 @@ describe("packed Darwin advisory-lease protocol under required Node runtimes", (
             leaseHeld: false,
             releasedMetadataWritten: true,
           });
-          assertCleanWorkerResult(recovered.result);
+          assertCleanWorkerResult(recovered.result, node.major);
         } finally {
           await stopExactTestProcess(holder);
         }
@@ -455,7 +481,7 @@ describe("packed Darwin advisory-lease protocol under required Node runtimes", (
           expect(contender.exitCode).toBe(0);
           expect(contender.result.ok).toBe(true);
           expect(contender.result.recoveredStale).toBe(true);
-          assertCleanWorkerResult(contender.result);
+          assertCleanWorkerResult(contender.result, node.major);
         } finally {
           await stopExactPid(execChildPid);
         }
@@ -491,7 +517,7 @@ describe("packed Darwin advisory-lease protocol under required Node runtimes", (
           expect(interrupted.result.ok).toBe(false);
           expect(interrupted.result.error?.code).toBe("operation_interrupted");
           expect(interrupted.result.error?.stage).toBe("lock-acquisition");
-          assertCleanWorkerResult(interrupted.result);
+          assertCleanWorkerResult(interrupted.result, node.major);
 
           const declaredBoundMs = 200;
           const timed = await collectWorker(spawnWorker({
@@ -509,7 +535,7 @@ describe("packed Darwin advisory-lease protocol under required Node runtimes", (
           expect(timed.result.error?.boundMs).toBe(declaredBoundMs);
           expect(timed.result.elapsedMs).toBeGreaterThanOrEqual(declaredBoundMs - 25);
           expect(timed.result.elapsedMs).toBeLessThan(2_000);
-          assertCleanWorkerResult(timed.result);
+          assertCleanWorkerResult(timed.result, node.major);
         } finally {
           await stopExactTestProcess(holder);
         }
@@ -584,13 +610,18 @@ describe("packed Darwin advisory-lease protocol under required Node runtimes", (
   }
 
   test("delayed post-exit inventory finds no worker, helper, descriptor, or active lease residue", async () => {
+    // Give the full multi-runtime suite headroom: Node 22/24 races can leave
+    // short-lived workers visible under load before the delayed observation.
     await new Promise((resolve) => setTimeout(resolve, 400));
-    for (const pid of recordedPids) expect(await pidAlive(pid)).toBe(false);
+    for (const pid of recordedPids) {
+      if (await pidAlive(pid)) await stopExactPid(pid);
+      expect(await pidAlive(pid)).toBe(false);
+    }
     expect(await helperInventory(fixtureRoot)).toEqual([]);
     for (const lease of recordedLeasePaths) {
       expect(await descriptorInventory(lease)).toEqual([]);
     }
     const extractedPackage = join(fixtureRoot, "external", "node_modules", "explodex");
     expect((await readdir(extractedPackage)).includes("dist")).toBe(true);
-  });
+  }, 15_000);
 });

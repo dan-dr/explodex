@@ -47,11 +47,7 @@ async function validHost(): Promise<{
   fs: ReturnType<typeof createFixtureAdapters>["fs"];
 }> {
   const { adapters, fs } = createFixtureAdapters({});
-  const inspection = await inspectHost({
-    adapters,
-    bundlePath: "/Applications/ChatGPT.app",
-    requireCanonicalPath: true,
-  });
+  const inspection = await inspectHost({ adapters });
   if (!inspection.ok || !inspection.host) throw new Error("fixture host must be valid");
   return { host: hostFromInspection(inspection.host), adapters, fs };
 }

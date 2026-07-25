@@ -4,7 +4,7 @@
  */
 
 import { acquireOperationLock, type LockHandle } from "./locks.ts";
-import { InterruptError, type OperationContext } from "./operation.ts";
+import { InterruptError, TimeoutError, type OperationContext } from "./operation.ts";
 import type { LockResource } from "./types.ts";
 
 export type StageLockOptions = {
@@ -24,6 +24,8 @@ export type StageLockError = Error & {
 /**
  * Acquire one mutation lease inside the declared stage bound. The returned
  * handle is already registered for unconditional descriptor close on cleanup.
+ * Owner publication and registration are fenced to the stage abort/deadline so
+ * a timed-out continuation cannot leak an unregistered advisory lease.
  */
 export async function acquireStageLock(
   ctx: OperationContext,
@@ -47,6 +49,17 @@ export async function acquireStageLock(
         stage: acquired.stage,
         boundMs: acquired.boundMs,
       } satisfies Omit<StageLockError, keyof Error>);
+    }
+    // Stage may have timed out while acquisition was still settling. Never
+    // register or return a handle that the operation can no longer observe.
+    if (!ctl.tryCommitEffect()) {
+      try {
+        await acquired.handle.release({ abortSignal: undefined });
+      } catch {
+        // Best-effort residual cleanup; the stage timeout/interrupt is primary.
+      }
+      ctl.throwIfInterrupted();
+      throw new TimeoutError("lock-acquisition", boundMs);
     }
     ctx.scope.register({
       kind: "lock",

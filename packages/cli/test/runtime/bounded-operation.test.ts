@@ -7,6 +7,7 @@ import {
   createResourceScope,
   assertNoResidentControlPlane,
   acquireOperationLock,
+  acquireStageLock,
   releaseOperationLock,
   withOperationLock,
   parseOperationLockRecord,
@@ -2163,6 +2164,139 @@ describe("lock defect fixes (P1/P2/P3 audit)", () => {
     expect(result.code).toBe("lock_busy");
     expect(result.value).toBeUndefined();
     await owner.handle.release();
+  });
+
+  test("M1-F00R: acquisition abort during delayed owner publication closes without a handle", async () => {
+    const harness = createFakeRuntimeHarness();
+    const home = "/tmp/explodex-acq-abort-publication";
+    const abort = new AbortController();
+    harness.setAtomicWriteDelay(50);
+    const pending = acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: home,
+      resource: "plugins-state",
+      identity: identity(harness, "op-acq-abort-publication"),
+      waitBoundMs: 0,
+      abortSignal: abort.signal,
+    });
+    const resultPromise = runWithClockPump(harness, pending, { stepMs: 5, maxSteps: 40 });
+    harness.adapters.timers.setTimeout(() => abort.abort(), 10);
+    const result = await resultPromise;
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe("lock_interrupted");
+    expect(result.stage).toBe("lock-acquisition");
+    expect(harness.openLockDescriptorCount()).toBe(0);
+    expect(harness.heldLeaseCount()).toBe(0);
+    expect(harness.files.has(ownerPath(home, "plugins-state"))).toBe(false);
+  });
+
+  test("M1-F00R: acquisition deadline during delayed owner publication closes without a handle", async () => {
+    const harness = createFakeRuntimeHarness();
+    const home = "/tmp/explodex-acq-deadline-publication";
+    harness.setAtomicWriteDelay(80);
+    const pending = acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: home,
+      resource: "plugins-state",
+      identity: identity(harness, "op-acq-deadline-publication"),
+      waitBoundMs: 25,
+      pollIntervalMs: 5,
+    });
+    const result = await runWithClockPump(harness, pending, { stepMs: 5, maxSteps: 40 });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe("lock_busy");
+    expect(result.stage).toBe("lock-acquisition");
+    expect(result.boundMs).toBe(25);
+    expect(harness.openLockDescriptorCount()).toBe(0);
+    expect(harness.heldLeaseCount()).toBe(0);
+    expect(harness.files.has(ownerPath(home, "plugins-state"))).toBe(false);
+  });
+
+  test("M1-F00R: stage lock registration is fenced so timed-out acquisition cannot leak a lease", async () => {
+    const harness = createFakeRuntimeHarness();
+    const home = "/tmp/explodex-stage-lock-fence";
+    harness.setAtomicWriteDelay(80);
+    const boundMs = 25;
+    const work = runBoundedOperation({
+      adapters: harness.adapters,
+      operation: "install",
+      operationId: "op-stage-lock-fence",
+      stageBounds: { "lock-acquisition": boundMs, "owned-child-shutdown": 100 },
+      run: async (ctx) => {
+        return acquireStageLock(ctx, {
+          explodexHome: home,
+          resource: "plugins-state",
+          pollIntervalMs: 5,
+        });
+      },
+    });
+    const result = await runWithClockPump(harness, work, { stepMs: 5, maxSteps: 60 });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code === "operation_timeout" || result.error.code === "lock_busy").toBe(true);
+    expect(result.residualInventory.openLockDescriptors).toBe(0);
+    expect(result.residualInventory.advisoryLeasesHeld).toBe(0);
+    expect(result.residualInventory.locksHeld).toBe(0);
+    expect(harness.openLockDescriptorCount()).toBe(0);
+    expect(harness.heldLeaseCount()).toBe(0);
+  });
+
+  test("M1-F00R: withOperationLock preserves work and release failures with residual authority", async () => {
+    const harness = createFakeRuntimeHarness();
+    const home = "/tmp/explodex-with-lock-combined-failure";
+    let thrown: unknown;
+    try {
+      await withOperationLock(
+        {
+          adapters: harness.adapters,
+          explodexHome: home,
+          resource: "plugins-state",
+          identity: identity(harness, "op-with-lock-combined-failure"),
+          waitBoundMs: 0,
+        },
+        async () => {
+          // Force both release publication and descriptor close to fail so residual
+          // authority remains reachable on the returned handle.
+          harness.setLockFault("atomic-write");
+          harness.setLockFault("lease-close");
+          throw new Error("work failed while holding the lease");
+        },
+      );
+    } catch (error: unknown) {
+      thrown = error;
+    }
+    expect(thrown).toEqual(expect.objectContaining({
+      code: "lock_work_and_release_failed",
+      message: expect.stringContaining("work failed while holding the lease"),
+    }));
+    const combined = thrown as {
+      workError: unknown;
+      releaseError: unknown;
+      handle: {
+        state(): {
+          descriptorOpen: boolean;
+          leaseHeld: boolean;
+          releasedMetadataWritten: boolean;
+        };
+        release(): Promise<void>;
+      };
+    };
+    expect(combined.workError).toEqual(expect.objectContaining({
+      message: "work failed while holding the lease",
+    }));
+    expect(combined.releaseError).toBeDefined();
+    expect(String(combined.releaseError)).toMatch(/Injected atomic write failure/);
+    // Release failure is not discarded; residual handle authority remains reachable.
+    expect(combined.handle.state().descriptorOpen).toBe(true);
+    expect(combined.handle.state().leaseHeld).toBe(true);
+    expect(combined.handle.state().releasedMetadataWritten).toBe(false);
+    expect(harness.openLockDescriptorCount()).toBe(1);
+    harness.clearLockFaults();
+    await combined.handle.release();
+    expect(combined.handle.state().descriptorOpen).toBe(false);
+    expect(harness.openLockDescriptorCount()).toBe(0);
   });
 
   test("P2-5: lock failure result includes stage and boundMs", async () => {

@@ -684,27 +684,38 @@ export async function acquireOperationLock(options: AcquireLockOptions): Promise
     }
     if (opened.status === "acquired") {
       const lease = opened.lease;
-      try {
-        if (options.abortSignal?.aborted) {
+      /**
+       * Owner publication and handle return are fenced to the acquisition
+       * abort/deadline. A timed-out or interrupted continuation must never
+       * leave a published advisory lease without a reachable handle.
+       */
+      const acquisitionActive = (): boolean => {
+        if (options.abortSignal?.aborted) return false;
+        // waitBoundMs === 0 is one nonblocking attempt; its duration is not a wall deadline.
+        // Positive bounds fence every post-open effect, including the first attempt.
+        if (waitBoundMs > 0 && adapters.clock.nowMs() > deadline) return false;
+        return true;
+      };
+      const abandonAcquiredLease = async (
+        code: "lock_interrupted" | "lock_busy",
+        message: string,
+        holder: OperationLockRecord | null,
+      ): Promise<LockAcquireResult> => {
+        try {
           await lease.close();
-          return failure(
-            "lock_interrupted",
-            `Lock ${resource} acquisition was interrupted`,
-            lastHolder,
-            path,
-            state.leasePath,
-            waitBoundMs,
-          );
+        } catch {
+          // Preserve the acquisition outcome; residual close is best-effort.
         }
-        if (!firstAttempt && adapters.clock.nowMs() > deadline) {
-          await lease.close();
-          return failure(
-            "lock_busy",
-            `Lock ${resource} acquisition ended after the declared bound`,
+        return failure(code, message, holder, path, state.leasePath, waitBoundMs);
+      };
+      try {
+        if (!acquisitionActive()) {
+          return await abandonAcquiredLease(
+            options.abortSignal?.aborted ? "lock_interrupted" : "lock_busy",
+            options.abortSignal?.aborted
+              ? `Lock ${resource} acquisition was interrupted`
+              : `Lock ${resource} acquisition ended after the declared bound`,
             lastHolder,
-            path,
-            state.leasePath,
-            waitBoundMs,
           );
         }
 
@@ -730,6 +741,16 @@ export async function acquireOperationLock(options: AcquireLockOptions): Promise
           );
         }
 
+        if (!acquisitionActive()) {
+          return await abandonAcquiredLease(
+            options.abortSignal?.aborted ? "lock_interrupted" : "lock_busy",
+            options.abortSignal?.aborted
+              ? `Lock ${resource} acquisition was interrupted before owner publication`
+              : `Lock ${resource} acquisition ended after the declared bound before owner publication`,
+            prior ?? lastHolder,
+          );
+        }
+
         let recoveredStale = false;
         if (prior?.state === "held") {
           const live = await adapters.process.isAlive(
@@ -751,6 +772,16 @@ export async function acquireOperationLock(options: AcquireLockOptions): Promise
           recoveredStale = true;
         }
 
+        if (!acquisitionActive()) {
+          return await abandonAcquiredLease(
+            options.abortSignal?.aborted ? "lock_interrupted" : "lock_busy",
+            options.abortSignal?.aborted
+              ? `Lock ${resource} acquisition was interrupted before owner publication`
+              : `Lock ${resource} acquisition ended after the declared bound before owner publication`,
+            prior ?? lastHolder,
+          );
+        }
+
         const record: OperationLockRecord = {
           schemaVersion: LOCK_SCHEMA_VERSION,
           protocol: LOCK_PROTOCOL,
@@ -766,18 +797,61 @@ export async function acquireOperationLock(options: AcquireLockOptions): Promise
           leaseDevice: descriptorStat.device,
           leaseInode: descriptorStat.inode,
         };
-        if (options.abortSignal?.aborted) {
-          await lease.close();
+        const publicationDeadlineMs = waitBoundMs > 0 ? deadline : undefined;
+        try {
+          await adapters.fs.writeTextAtomic(
+            state.ownerPath,
+            serialized(record),
+            PRIVATE_FILE_MODE,
+            {
+              abortSignal: options.abortSignal,
+              deadlineMs: publicationDeadlineMs,
+            },
+          );
+        } catch (error: unknown) {
+          const code = systemErrorCode(error);
+          if (code === "ABORT_ERR" || options.abortSignal?.aborted) {
+            return await abandonAcquiredLease(
+              "lock_interrupted",
+              `Lock ${resource} acquisition was interrupted during owner publication`,
+              prior ?? lastHolder,
+            );
+          }
+          if (code === "ETIMEDOUT" || (waitBoundMs > 0 && adapters.clock.nowMs() > deadline)) {
+            return await abandonAcquiredLease(
+              "lock_busy",
+              `Lock ${resource} acquisition ended after the declared bound during owner publication`,
+              prior ?? lastHolder,
+            );
+          }
+          throw error;
+        }
+
+        // A late write that completed after abort/deadline must not return a handle
+        // that callers cannot observe. Reverse publication when possible and close.
+        if (!acquisitionActive()) {
+          const lateHandle = createHandle(adapters, state, record, lease);
+          try {
+            await lateHandle.release();
+          } catch {
+            try {
+              await lease.close();
+            } catch {
+              // Best-effort residual cleanup after a timed-out late publication.
+            }
+          }
           return failure(
-            "lock_interrupted",
-            `Lock ${resource} acquisition was interrupted before owner publication`,
-            prior,
+            options.abortSignal?.aborted ? "lock_interrupted" : "lock_busy",
+            options.abortSignal?.aborted
+              ? `Lock ${resource} acquisition was interrupted after owner publication`
+              : `Lock ${resource} acquisition ended after the declared bound after owner publication`,
+            prior ?? lastHolder,
             path,
             state.leasePath,
             waitBoundMs,
           );
         }
-        await adapters.fs.writeTextAtomic(state.ownerPath, serialized(record), PRIVATE_FILE_MODE);
+
         const handle = createHandle(adapters, state, record, lease);
         return {
           ok: true,
@@ -843,9 +917,18 @@ export type WithOperationLockResult<T> =
   | { ok: true; record: OperationLockRecord; recoveredStale: boolean; value: T }
   | (Extract<LockAcquireResult, { ok: false }> & { value?: undefined });
 
+export type CombinedLockWorkError = Error & {
+  code: "lock_work_and_release_failed";
+  workError: unknown;
+  releaseError: unknown;
+  /** Residual handle state after the failed release attempt. */
+  handle: LockHandle;
+};
+
 /**
  * Acquire the lease, run `work` while it is held, then release it on every path.
- * A release failure surfaces even when the work itself succeeded.
+ * A release failure surfaces even when the work itself succeeded. When both work
+ * and release fail, both failures are preserved with residual handle authority.
  */
 export async function withOperationLock<T>(
   options: AcquireLockOptions,
@@ -857,9 +940,30 @@ export async function withOperationLock<T>(
   let value: T;
   try {
     value = await work(acquired.handle);
-  } catch (error: unknown) {
-    await acquired.handle.release(releaseOptions).catch(() => undefined);
-    throw error;
+  } catch (workError: unknown) {
+    let releaseError: unknown = null;
+    try {
+      await acquired.handle.release(releaseOptions);
+    } catch (error: unknown) {
+      releaseError = error;
+    }
+    if (releaseError !== null) {
+      const workMessage = workError instanceof Error ? workError.message : String(workError);
+      const releaseMessage = releaseError instanceof Error
+        ? releaseError.message
+        : String(releaseError);
+      const combined: CombinedLockWorkError = Object.assign(
+        new Error(`${workMessage}; lock release failed: ${releaseMessage}`),
+        {
+          code: "lock_work_and_release_failed" as const,
+          workError,
+          releaseError,
+          handle: acquired.handle,
+        },
+      );
+      throw combined;
+    }
+    throw workError;
   }
   await acquired.handle.release(releaseOptions);
   return {

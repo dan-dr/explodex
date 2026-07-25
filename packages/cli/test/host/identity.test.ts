@@ -7,7 +7,12 @@ import {
   MISSION_BASELINE_APP_BUILD,
   MISSION_BASELINE_APP_VERSION,
 } from "../../src/host/constants.ts";
-import { inspectHost } from "../../src/host/identity.ts";
+import {
+  HOST_TEST_INSPECTION_AUTHORITY,
+  inspectHost,
+  inspectHostForTests,
+} from "../../src/host/identity.ts";
+import { reportHost } from "../../src/host/report.ts";
 import {
   createFixtureAdapters,
   defaultCanonicalBundleOptions,
@@ -19,11 +24,7 @@ describe("inspectHost canonical resolution (VAL-HOST-001)", () => {
       bundles: [defaultCanonicalBundleOptions()],
     });
 
-    const result = await inspectHost({
-      adapters,
-      bundlePath: CANONICAL_BUNDLE_PATH,
-      requireCanonicalPath: true,
-    });
+    const result = await inspectHost({ adapters });
 
     expect(result.ok).toBe(true);
     if (!result.ok || !result.host) throw new Error("expected success");
@@ -59,18 +60,14 @@ describe("inspectHost canonical resolution (VAL-HOST-001)", () => {
       ],
     });
 
-    const result = await inspectHost({
-      adapters,
-      bundlePath: CANONICAL_BUNDLE_PATH,
-      requireCanonicalPath: true,
-    });
+    const result = await inspectHost({ adapters });
     expect(result.ok).toBe(true);
     if (!result.ok || !result.host) throw new Error("expected success");
     expect(result.host.bundlePath).toBe(CANONICAL_BUNDLE_PATH);
     expect(result.host.bundlePath.includes("Codex")).toBe(false);
   });
 
-  test("rejects a renamed duplicate that does not resolve to the canonical path", async () => {
+  test("production path never inspects a renamed duplicate outside the canonical path", async () => {
     const { adapters } = createFixtureAdapters({
       bundles: [
         defaultCanonicalBundleOptions({
@@ -79,14 +76,10 @@ describe("inspectHost canonical resolution (VAL-HOST-001)", () => {
       ],
     });
 
-    const result = await inspectHost({
-      adapters,
-      bundlePath: "/Users/me/Applications/ChatGPT.app",
-      requireCanonicalPath: true,
-    });
+    const result = await inspectHost({ adapters });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected failure");
-    expect(result.error.code).toBe("host_not_canonical_path");
+    expect(result.error.code).toBe("host_missing");
     expect(result.selected).toBe(false);
     expect(result.host).toBeNull();
   });
@@ -100,15 +93,69 @@ describe("inspectHost canonical resolution (VAL-HOST-001)", () => {
       ],
     });
 
-    const result = await inspectHost({
-      adapters,
-      bundlePath: CANONICAL_BUNDLE_PATH,
-      requireCanonicalPath: true,
-    });
+    const result = await inspectHost({ adapters });
     expect(result.ok).toBe(true);
     if (!result.ok || !result.host) throw new Error("expected success");
     expect(result.host.bundlePath).toBe(CANONICAL_BUNDLE_PATH);
     expect(result.host.bundlePath).not.toBe(alternate);
+  });
+
+  test("public production APIs ignore forged noncanonical path overrides", async () => {
+    const alternate = "/Users/me/Applications/ChatGPT.app";
+    const { adapters } = createFixtureAdapters({
+      bundles: [
+        defaultCanonicalBundleOptions(),
+        defaultCanonicalBundleOptions({ bundlePath: alternate }),
+      ],
+    });
+
+    const forged = {
+      adapters,
+      bundlePath: alternate,
+      requireCanonicalPath: false,
+      inspect: { bundlePath: alternate, requireCanonicalPath: false },
+    };
+    const direct = await inspectHost(forged as Parameters<typeof inspectHost>[0]);
+    expect(direct.ok).toBe(true);
+    if (!direct.ok || !direct.host) throw new Error("expected canonical success");
+    expect(direct.host.bundlePath).toBe(CANONICAL_BUNDLE_PATH);
+
+    const reported = await reportHost({
+      adapters,
+      explodexHome: "/tmp/explodex-host-report-canonical",
+      sdkRuntime: { version: "0.0.0-test", sha256: "a".repeat(64) },
+      ...(forged as object),
+    } as Parameters<typeof reportHost>[0]);
+    expect(reported.ok).toBe(true);
+    if (!reported.ok || !reported.host) throw new Error("expected report success");
+    expect(reported.host.bundlePath).toBe(CANONICAL_BUNDLE_PATH);
+
+    const forgedAuthority = await inspectHost({
+      adapters,
+      testOnly: {
+        authority: Symbol.for("not-the-real-authority") as typeof HOST_TEST_INSPECTION_AUTHORITY,
+        bundlePath: alternate,
+        requireCanonicalPath: false,
+      },
+    });
+    expect(forgedAuthority.ok).toBe(false);
+    if (forgedAuthority.ok) throw new Error("expected authority rejection");
+    expect(forgedAuthority.error.code).toBe("host_not_canonical_path");
+  });
+
+  test("test-only authority can inspect fixtures without production override", async () => {
+    const fixturePath = "/tmp/explodex-fixture/ChatGPT.app";
+    const { adapters } = createFixtureAdapters({
+      bundles: [defaultCanonicalBundleOptions({ bundlePath: fixturePath })],
+    });
+    const result = await inspectHostForTests({
+      adapters,
+      bundlePath: fixturePath,
+      requireCanonicalPath: false,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok || !result.host) throw new Error("expected fixture success");
+    expect(result.host.bundlePath).toBe(fixturePath);
   });
 });
 
@@ -116,11 +163,7 @@ describe("inspectHost failure matrix (VAL-HOST-002)", () => {
   test("missing host fails closed", async () => {
     const { adapters } = createFixtureAdapters({ bundles: [] });
     // Empty fs — no bundle seeded.
-    const result = await inspectHost({
-      adapters,
-      bundlePath: CANONICAL_BUNDLE_PATH,
-      requireCanonicalPath: true,
-    });
+    const result = await inspectHost({ adapters });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected failure");
     expect(result.error.code).toBe("host_missing");
@@ -132,11 +175,7 @@ describe("inspectHost failure matrix (VAL-HOST-002)", () => {
     const { adapters } = createFixtureAdapters({
       bundles: [defaultCanonicalBundleOptions({ omit: ["infoPlist"] })],
     });
-    const result = await inspectHost({
-      adapters,
-      bundlePath: CANONICAL_BUNDLE_PATH,
-      requireCanonicalPath: true,
-    });
+    const result = await inspectHost({ adapters });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected failure");
     expect(result.error.code).toBe("host_malformed");
@@ -147,11 +186,7 @@ describe("inspectHost failure matrix (VAL-HOST-002)", () => {
     const { adapters } = createFixtureAdapters({
       bundles: [defaultCanonicalBundleOptions({ bundleId: "com.example.other" })],
     });
-    const result = await inspectHost({
-      adapters,
-      bundlePath: CANONICAL_BUNDLE_PATH,
-      requireCanonicalPath: true,
-    });
+    const result = await inspectHost({ adapters });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected failure");
     expect(result.error.code).toBe("host_wrong_identity");
@@ -162,11 +197,7 @@ describe("inspectHost failure matrix (VAL-HOST-002)", () => {
     const { adapters } = createFixtureAdapters({
       bundles: [defaultCanonicalBundleOptions({ executableName: "Codex" })],
     });
-    const result = await inspectHost({
-      adapters,
-      bundlePath: CANONICAL_BUNDLE_PATH,
-      requireCanonicalPath: true,
-    });
+    const result = await inspectHost({ adapters });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected failure");
     expect(result.error.code).toBe("host_wrong_identity");
@@ -190,11 +221,7 @@ describe("inspectHost failure matrix (VAL-HOST-002)", () => {
     fs.seedFile(`${CANONICAL_BUNDLE_PATH}/Contents/MacOS/ChatGPT`, "stub");
     fs.setRealpath(`${CANONICAL_BUNDLE_PATH}/Contents/MacOS/ChatGPT`, outside);
 
-    const result = await inspectHost({
-      adapters,
-      bundlePath: CANONICAL_BUNDLE_PATH,
-      requireCanonicalPath: true,
-    });
+    const result = await inspectHost({ adapters });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected failure");
     expect(result.error.code).toBe("host_broken_executable_relationship");
@@ -205,11 +232,7 @@ describe("inspectHost failure matrix (VAL-HOST-002)", () => {
     const { adapters } = createFixtureAdapters({
       bundles: [defaultCanonicalBundleOptions({ signingTeam: "AAAAAAAAAA" })],
     });
-    const result = await inspectHost({
-      adapters,
-      bundlePath: CANONICAL_BUNDLE_PATH,
-      requireCanonicalPath: true,
-    });
+    const result = await inspectHost({ adapters });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected failure");
     expect(result.error.code).toBe("host_invalid_signature");
@@ -220,11 +243,7 @@ describe("inspectHost failure matrix (VAL-HOST-002)", () => {
     const { adapters } = createFixtureAdapters({
       bundles: [defaultCanonicalBundleOptions({ codesignBroken: true })],
     });
-    const result = await inspectHost({
-      adapters,
-      bundlePath: CANONICAL_BUNDLE_PATH,
-      requireCanonicalPath: true,
-    });
+    const result = await inspectHost({ adapters });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected failure");
     expect(result.error.code).toBe("host_invalid_signature");
@@ -241,11 +260,7 @@ describe("inspectHost failure matrix (VAL-HOST-002)", () => {
         }),
       ],
     });
-    const result = await inspectHost({
-      adapters,
-      bundlePath: CANONICAL_BUNDLE_PATH,
-      requireCanonicalPath: true,
-    });
+    const result = await inspectHost({ adapters });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected failure");
     expect(result.error.code).toBe("host_invalid_signature");
@@ -258,11 +273,7 @@ describe("inspectHost failure matrix (VAL-HOST-002)", () => {
     fs.seedFile(executablePath, "not-executable", 0o401);
     fs.setNonExecutable(executablePath);
 
-    const result = await inspectHost({
-      adapters,
-      bundlePath: CANONICAL_BUNDLE_PATH,
-      requireCanonicalPath: true,
-    });
+    const result = await inspectHost({ adapters });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected failure");
     expect(result.error.code).toBe("host_broken_executable_relationship");
@@ -273,11 +284,7 @@ describe("inspectHost failure matrix (VAL-HOST-002)", () => {
     const { adapters, fs } = createFixtureAdapters({});
     fs.entries.delete(`${CANONICAL_BUNDLE_PATH}/Contents/Resources/app.asar`);
 
-    const result = await inspectHost({
-      adapters,
-      bundlePath: CANONICAL_BUNDLE_PATH,
-      requireCanonicalPath: true,
-    });
+    const result = await inspectHost({ adapters });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected failure");
     expect(result.error.code).toBe("host_malformed");
@@ -295,11 +302,7 @@ describe("inspectHost failure matrix (VAL-HOST-002)", () => {
       ],
     });
 
-    const result = await inspectHost({
-      adapters,
-      bundlePath: CANONICAL_BUNDLE_PATH,
-      requireCanonicalPath: true,
-    });
+    const result = await inspectHost({ adapters });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected failure");
     expect(result.error.code).toBe("host_malformed");
@@ -313,11 +316,7 @@ describe("inspectHost failure matrix (VAL-HOST-002)", () => {
       bundles: [defaultCanonicalBundleOptions({ signingTeam: "BADTEAM0000" })],
     });
     const beforeKeys = [...fs.entries.keys()].sort();
-    const result = await inspectHost({
-      adapters,
-      bundlePath: CANONICAL_BUNDLE_PATH,
-      requireCanonicalPath: true,
-    });
+    const result = await inspectHost({ adapters });
     expect(result.ok).toBe(false);
     expect(result.selected).toBe(false);
     const afterKeys = [...fs.entries.keys()].sort();
@@ -329,11 +328,7 @@ describe("inspectHost failure matrix (VAL-HOST-002)", () => {
 describe("inspectHost identity reporting (VAL-HOST-003)", () => {
   test("reports version and build separately from compatibility", async () => {
     const { adapters } = createFixtureAdapters({});
-    const result = await inspectHost({
-      adapters,
-      bundlePath: CANONICAL_BUNDLE_PATH,
-      requireCanonicalPath: true,
-    });
+    const result = await inspectHost({ adapters });
     expect(result.ok).toBe(true);
     if (!result.ok || !result.host) throw new Error("expected success");
     expect(result.host.appVersion).toBe(MISSION_BASELINE_APP_VERSION);
@@ -352,11 +347,7 @@ describe("inspectHost identity reporting (VAL-HOST-003)", () => {
         }),
       ],
     });
-    const result = await inspectHost({
-      adapters,
-      bundlePath: CANONICAL_BUNDLE_PATH,
-      requireCanonicalPath: true,
-    });
+    const result = await inspectHost({ adapters });
     expect(result.ok).toBe(true);
     if (!result.ok || !result.host) throw new Error("expected success");
     expect(result.hostValid).toBe(true);
@@ -368,11 +359,7 @@ describe("inspectHost identity reporting (VAL-HOST-003)", () => {
 
   test("host identity is reportable without requiring a running process or CDP", async () => {
     const { adapters } = createFixtureAdapters({});
-    const result = await inspectHost({
-      adapters,
-      bundlePath: CANONICAL_BUNDLE_PATH,
-      requireCanonicalPath: true,
-    });
+    const result = await inspectHost({ adapters });
     expect(result.ok).toBe(true);
     // No CDP or process fields are required on the success path.
     expect("cdp" in result).toBe(false);

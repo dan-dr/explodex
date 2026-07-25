@@ -1,6 +1,6 @@
 import type { HostAdapters } from "./adapters.ts";
 import { evaluateCompatibility, loadCompatibilityRecord } from "./compatibility-state.ts";
-import { inspectHost, type InspectHostOptions } from "./identity.ts";
+import { inspectHost } from "./identity.ts";
 import type {
   CompatibilityReport,
   HostInspectionResult,
@@ -15,7 +15,6 @@ export type HostReportOptions = {
   sdkRuntime: SdkRuntimeIdentity;
   probe?: ProbeIdentity;
   runningProcess?: RunningProcessIdentity | null;
-  inspect?: Omit<InspectHostOptions, "adapters">;
 };
 
 export type HostReport = HostInspectionResult & {
@@ -25,12 +24,12 @@ export type HostReport = HostInspectionResult & {
 
 /**
  * Public host inspection + compatibility report for a home.
+ * Always resolves the canonical /Applications/ChatGPT.app only (VAL-HOST-001).
  * Read-only with respect to the host bundle; may read (not require) home state.
  */
 export async function reportHost(options: HostReportOptions): Promise<HostReport> {
   const inspection = await inspectHost({
     adapters: options.adapters,
-    ...options.inspect,
   });
 
   if (!inspection.ok || inspection.host === null) {
