@@ -3,6 +3,17 @@
  * Production uses Node timers/signals/process; tests supply controlled fixtures.
  */
 
+import type { LockFileSystem } from "./lock-adapter.ts";
+export type {
+  AdvisoryLease,
+  DirectoryPublishResult,
+  LeaseIdentity,
+  LeaseOpenResult,
+  LockFileSystem,
+  LockPathKind,
+  LockPathStat,
+} from "./lock-adapter.ts";
+
 export type RuntimeClock = {
   /** Monotonic-ish milliseconds for deadline math (Date.now is acceptable). */
   nowMs(): number;
@@ -60,40 +71,6 @@ export type RuntimeProcess = {
     signal: "SIGTERM" | "SIGINT",
     options?: { abortSignal?: AbortSignal; timeoutMs?: number },
   ): Promise<boolean>;
-};
-
-export type LockFileSystem = {
-  exists(path: string): Promise<boolean>;
-  readText(path: string): Promise<string>;
-  /**
-   * Atomic exclusive create. Returns false when the path already exists.
-   * Production uses O_EXCL and writes the complete record before closing.
-   */
-  writeFileExclusive(path: string, data: string, mode?: number): Promise<boolean>;
-  writeFile(path: string, data: string, mode?: number): Promise<void>;
-  mkdir(path: string, options?: { recursive?: boolean; mode?: number }): Promise<void>;
-  /** Atomic exclusive directory create. Returns false when the path already exists. */
-  createDirectoryExclusive(path: string, mode?: number): Promise<boolean>;
-  /** True only when the path exists as a regular file. */
-  isFile(path: string): Promise<boolean>;
-  /** True only when the path exists as a directory. */
-  isDirectory(path: string): Promise<boolean>;
-  /** Remove a lock directory only when its current owner record still matches. */
-  compareAndRemoveDirectory(
-    path: string,
-    recordName: string,
-    expectedData: string,
-    options?: { abortSignal?: AbortSignal; timeoutMs?: number },
-  ): Promise<boolean>;
-  removeDirectory(path: string): Promise<void>;
-  removeFile(path: string): Promise<void>;
-  /** Atomic no-replace rename. Returns false when destination already exists. */
-  renameExclusive(
-    from: string,
-    to: string,
-    options?: { abortSignal?: AbortSignal; timeoutMs?: number },
-  ): Promise<boolean>;
-  rename(from: string, to: string): Promise<void>;
 };
 
 export type RuntimeAdapters = {
@@ -296,135 +273,12 @@ export async function createNodeRuntimeProcess(): Promise<RuntimeProcess> {
   };
 }
 
-export async function createNodeLockFileSystem(): Promise<LockFileSystem> {
-  const fs = await import("node:fs/promises");
-  const { constants } = await import("node:fs");
-
-  return {
-    async exists(path) {
-      try {
-        await fs.access(path, constants.F_OK);
-        return true;
-      } catch {
-        return false;
-      }
-    },
-    async readText(path) {
-      return fs.readFile(path, "utf8");
-    },
-    async isFile(path) {
-      try {
-        return (await fs.lstat(path)).isFile();
-      } catch (error: unknown) {
-        const code =
-          typeof error === "object" && error !== null && "code" in error
-            ? (error as { code?: unknown }).code
-            : undefined;
-        if (code === "ENOENT") return false;
-        throw error;
-      }
-    },
-    async isDirectory(path) {
-      try {
-        return (await fs.lstat(path)).isDirectory();
-      } catch (error: unknown) {
-        const code =
-          typeof error === "object" && error !== null && "code" in error
-            ? (error as { code?: unknown }).code
-            : undefined;
-        if (code === "ENOENT") return false;
-        throw error;
-      }
-    },
-    async writeFileExclusive(path, data, mode = 0o600) {
-      try {
-        await fs.writeFile(path, data, { encoding: "utf8", flag: "wx", mode });
-        return true;
-      } catch (error: unknown) {
-        const err = error as { code?: string };
-        if (err.code === "EEXIST") return false;
-        throw error;
-      }
-    },
-    async writeFile(path, data, mode = 0o600) {
-      await fs.writeFile(path, data, { encoding: "utf8", mode });
-    },
-    async mkdir(path, options) {
-      await fs.mkdir(path, {
-        recursive: options?.recursive ?? true,
-        mode: options?.mode ?? 0o700,
-      });
-    },
-    async createDirectoryExclusive(path, mode = 0o700) {
-      try {
-        await fs.mkdir(path, { mode });
-        return true;
-      } catch (error: unknown) {
-        const code =
-          typeof error === "object" && error !== null && "code" in error
-            ? (error as { code?: unknown }).code
-            : undefined;
-        if (code === "EEXIST") return false;
-        throw error;
-      }
-    },
-    async compareAndRemoveDirectory(path, recordName, expectedData, removeOptions) {
-      try {
-        await runDarwinHelper(
-          ["compare-remove-directory", path, recordName, expectedData],
-          {
-            timeoutMs: removeOptions?.timeoutMs ?? 1_000,
-            abortSignal: removeOptions?.abortSignal,
-          },
-        );
-        return true;
-      } catch (error: unknown) {
-        if (helperStatus(error) === 3) return false;
-        throw error;
-      }
-    },
-    async removeDirectory(path) {
-      try {
-        await fs.rmdir(path);
-      } catch (error: unknown) {
-        const code =
-          typeof error === "object" && error !== null && "code" in error
-            ? (error as { code?: unknown }).code
-            : undefined;
-        if (code !== "ENOENT") throw error;
-      }
-    },
-    async removeFile(path) {
-      try {
-        await fs.unlink(path);
-      } catch (error: unknown) {
-        const err = error as { code?: string };
-        if (err.code !== "ENOENT") throw error;
-      }
-    },
-    async renameExclusive(from, to, renameOptions) {
-      try {
-        await runDarwinHelper(["rename-exclusive", from, to], {
-          timeoutMs: renameOptions?.timeoutMs ?? 1_000,
-          abortSignal: renameOptions?.abortSignal,
-        });
-        return true;
-      } catch (error: unknown) {
-        if (helperStatus(error) === 3) return false;
-        throw error;
-      }
-    },
-    async rename(from, to) {
-      await fs.rename(from, to);
-    },
-  };
-}
-
 export async function createDefaultRuntimeAdapters(): Promise<RuntimeAdapters> {
-  const [processAdapter, fs] = await Promise.all([
+  const [{ createNodeLockFileSystem }, processAdapter] = await Promise.all([
+    import("./lock-adapter.ts"),
     createNodeRuntimeProcess(),
-    createNodeLockFileSystem(),
   ]);
+  const fs = await createNodeLockFileSystem();
   return {
     clock: createSystemRuntimeClock(),
     timers: createNodeRuntimeTimers(),

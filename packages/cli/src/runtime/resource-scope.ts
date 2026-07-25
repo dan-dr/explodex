@@ -25,6 +25,8 @@ export type RegisterResourceInput = {
   disposition: ProcessDisposition;
   pid?: number;
   processStartedAt?: string;
+  /** Real lock-handle state used to report open descriptors and active leases. */
+  lockState?: () => { descriptorOpen: boolean; leaseHeld: boolean };
   /** Cleanup work must fence externally visible effects through the supplied control. */
   dispose: (control: ResourceCleanupControl) => void | Promise<void>;
 };
@@ -77,12 +79,19 @@ function emptyInventory(): ResidualInventory {
     approvalListeners: 0,
     daemons: 0,
     supervisors: 0,
+    openLockDescriptors: 0,
+    advisoryLeasesHeld: 0,
     hasResidentControlPlane: false,
   };
 }
 
 function countKind(
-  resources: ReadonlyArray<{ kind: ResourceKind; disposition: ProcessDisposition; disposed: boolean }>,
+  resources: ReadonlyArray<{
+    kind: ResourceKind;
+    disposition: ProcessDisposition;
+    disposed: boolean;
+    lockState?: () => { descriptorOpen: boolean; leaseHeld: boolean };
+  }>,
 ): ResidualInventory {
   const inv = emptyInventory();
   for (const r of resources) {
@@ -94,9 +103,13 @@ function countKind(
       case "session":
         inv.sessions += 1;
         break;
-      case "lock":
+      case "lock": {
         inv.locksHeld += 1;
+        const state = r.lockState?.();
+        if (state?.descriptorOpen) inv.openLockDescriptors += 1;
+        if (state?.leaseHeld) inv.advisoryLeasesHeld += 1;
         break;
+      }
       case "callback":
         inv.callbacks += 1;
         break;
@@ -133,6 +146,8 @@ function countKind(
     inv.futureDocuments > 0 ||
     inv.reconnectLoops > 0 ||
     inv.approvalListeners > 0 ||
+    inv.openLockDescriptors > 0 ||
+    inv.advisoryLeasesHeld > 0 ||
     inv.daemons > 0 ||
     inv.supervisors > 0;
   return inv;
@@ -191,6 +206,7 @@ export function createResourceScope(options: CreateResourceScopeOptions): Resour
         disposition: input.disposition,
         pid: input.pid,
         processStartedAt: input.processStartedAt,
+        lockState: input.lockState,
         dispose: input.dispose,
         disposed: false,
         disposeHookCompleted: false,

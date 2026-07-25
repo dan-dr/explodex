@@ -55,12 +55,19 @@ export type ResourceKind =
   | "transient-file";
 
 export type OperationLockRecord = {
-  schemaVersion: 1;
+  schemaVersion: 2;
+  protocol: "darwin-flock-v1";
   resource: LockResource;
+  containerId: string;
+  state: "held" | "released";
+  generation: string;
   operationId: string;
   pid: number;
   processStartedAt: string;
   acquiredAt: string;
+  releasedAt: string | null;
+  leaseDevice: string;
+  leaseInode: string;
 };
 
 export type OperationIdentity = {
@@ -93,6 +100,7 @@ export type BoundedOperationErrorCode =
   | "external_wait_requires_bound"
   | "lock_busy"
   | "lock_stale_unrecoverable"
+  | "lock_invariant_violation"
   | "cleanup_failed"
   | "resident_control_plane_forbidden";
 
@@ -141,6 +149,10 @@ export type ResidualInventory = {
   approvalListeners: number;
   daemons: number;
   supervisors: number;
+  /** Open command-owned lock descriptors that outlived cleanup. */
+  openLockDescriptors: number;
+  /** Kernel advisory leases that remained held after cleanup. */
+  advisoryLeasesHeld: number;
   /** True when any residual control-plane resource remains. */
   hasResidentControlPlane: boolean;
 };
@@ -153,6 +165,8 @@ export type RegisteredResource = {
   /** Optional OS pid for child processes. */
   pid?: number;
   processStartedAt?: string;
+  /** Optional real lock-handle state for descriptor/lease residue accounting. */
+  lockState?: () => { descriptorOpen: boolean; leaseHeld: boolean };
   /** Cleanup invoked at most once with a timeout-fenced control object. */
   dispose: (control: {
     signal: AbortSignal;

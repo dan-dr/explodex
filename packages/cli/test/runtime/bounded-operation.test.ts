@@ -8,8 +8,10 @@ import {
   assertNoResidentControlPlane,
   acquireOperationLock,
   releaseOperationLock,
+  withOperationLock,
   parseOperationLockRecord,
   lockPath,
+  leasePath,
 } from "../../src/runtime/index.ts";
 import { createFakeRuntimeHarness, runWithClockPump } from "./fixture-runtime.ts";
 
@@ -54,6 +56,8 @@ describe("bounded operation runtime — no resident control plane (VAL-HOST-027)
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.residualInventory.hasResidentControlPlane).toBe(false);
+    expect(result.residualInventory.openLockDescriptors).toBe(0);
+    expect(result.residualInventory.advisoryLeasesHeld).toBe(0);
     expect(result.residualInventory.sessions).toBe(0);
     expect(result.residualInventory.callbacks).toBe(0);
     expect(result.residualInventory.commandOwnedChildren).toBe(0);
@@ -585,6 +589,8 @@ describe("bounded operation runtime — no resident control plane (VAL-HOST-027)
         approvalListeners: 0,
         daemons: 0,
         supervisors: 0,
+        openLockDescriptors: 0,
+        advisoryLeasesHeld: 0,
         hasResidentControlPlane: true,
       }),
     ).toThrow(/resident_control_plane_forbidden/);
@@ -1243,322 +1249,324 @@ describe("bounded operation runtime — cooperative SIGINT (VAL-HOST-029)", () =
   });
 });
 
-describe("operation locks (command-lifetime coordination)", () => {
-  const ownerPath = (directory: string): string => `${directory}/owner.json`;
-  test("exclusive acquire and release", async () => {
-    const harness = createFakeRuntimeHarness();
-    const home = "/tmp/explodex-test-home-a";
-    const identity = {
-      operationId: "op-lock-1",
-      operation: "install",
-      startedAt: harness.adapters.clock.nowIso(),
-      ownerPid: harness.self.pid,
-      ownerProcessStartedAt: harness.self.processStartedAt,
-    };
+describe("operation locks (parent-held Darwin lease)", () => {
+  const ownerPath = (home: string, resource: "plugins-state" | "main-launch"): string =>
+    `${lockPath(home, resource)}/owner.json`;
+  const identity = (harness: ReturnType<typeof createFakeRuntimeHarness>, operationId: string) => ({
+    operationId,
+    operation: "test-operation",
+    startedAt: harness.adapters.clock.nowIso(),
+    ownerPid: harness.self.pid,
+    ownerProcessStartedAt: harness.self.processStartedAt,
+  });
 
-    const acquired = await acquireOperationLock({
+  test("persistent container retains one stable lease inode across acquire and release", async () => {
+    const harness = createFakeRuntimeHarness();
+    const home = "/tmp/explodex-stable-lock";
+    const first = await acquireOperationLock({
       adapters: harness.adapters,
       explodexHome: home,
       resource: "plugins-state",
-      identity,
+      identity: identity(harness, "op-first"),
       waitBoundMs: 0,
     });
-    expect(acquired.ok).toBe(true);
-    if (!acquired.ok) return;
-    expect(acquired.record.operationId).toBe("op-lock-1");
-    expect(harness.files.has(ownerPath(lockPath(home, "plugins-state")))).toBe(true);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    const stableStat = await harness.adapters.fs.statPath(first.leasePath);
+    expect(first.closeOnExec).toBe(true);
+    expect(harness.openLockDescriptorCount()).toBe(1);
+    expect(harness.heldLeaseCount()).toBe(1);
 
     const busy = await acquireOperationLock({
       adapters: harness.adapters,
       explodexHome: home,
       resource: "plugins-state",
-      identity: { ...identity, operationId: "op-lock-2", ownerPid: 9002, ownerProcessStartedAt: "other" },
+      identity: identity(harness, "op-busy"),
       waitBoundMs: 0,
     });
     expect(busy.ok).toBe(false);
     if (busy.ok) return;
     expect(busy.code).toBe("lock_busy");
 
-    await releaseOperationLock(harness.adapters, acquired.path, acquired.record);
-    expect(harness.files.has(ownerPath(lockPath(home, "plugins-state")))).toBe(false);
+    await releaseOperationLock(harness.adapters, first.handle);
+    expect(first.handle.state()).toEqual({
+      descriptorOpen: false,
+      leaseHeld: false,
+      releasedMetadataWritten: true,
+    });
+    expect(harness.openLockDescriptorCount()).toBe(0);
+    expect(harness.heldLeaseCount()).toBe(0);
+    expect(JSON.parse(harness.files.get(ownerPath(home, "plugins-state")) ?? "null").state)
+      .toBe("released");
 
-    const again = await acquireOperationLock({
+    const second = await acquireOperationLock({
       adapters: harness.adapters,
       explodexHome: home,
       resource: "plugins-state",
-      identity: { ...identity, operationId: "op-lock-3" },
+      identity: identity(harness, "op-second"),
       waitBoundMs: 0,
     });
-    expect(again.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    const repeatedStat = await harness.adapters.fs.statPath(second.leasePath);
+    expect(repeatedStat.inode).toBe(stableStat.inode);
+    await second.handle.release();
   });
 
-  test("aborted acquisition never publishes its prepared lock", async () => {
+  test("contended kernel lease is never broken from malformed or stale metadata", async () => {
     const harness = createFakeRuntimeHarness();
-    const home = "/tmp/explodex-test-home-aborted-lock";
-    const abort = new AbortController();
-    const originalRenameExclusive = harness.adapters.fs.renameExclusive;
-    harness.adapters.fs.renameExclusive = async (from, to, options) => {
-      abort.abort();
-      if (options?.abortSignal?.aborted) {
-        throw Object.assign(new Error("rename aborted"), { code: "ABORT_ERR" });
-      }
-      return originalRenameExclusive(from, to, options);
-    };
+    const home = "/tmp/explodex-contended-metadata";
+    const acquired = await acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: home,
+      resource: "plugins-state",
+      identity: identity(harness, "op-owner"),
+      waitBoundMs: 0,
+    });
+    expect(acquired.ok).toBe(true);
+    if (!acquired.ok) return;
+    harness.files.set(ownerPath(home, "plugins-state"), "{malformed");
+    const contender = await acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: home,
+      resource: "plugins-state",
+      identity: identity(harness, "op-contender"),
+      waitBoundMs: 0,
+    });
+    expect(contender.ok).toBe(false);
+    if (contender.ok) return;
+    expect(contender.code).toBe("lock_busy");
+    expect(harness.openLockDescriptorCount()).toBe(1);
+    harness.files.set(ownerPath(home, "plugins-state"), `${JSON.stringify(acquired.record)}\n`);
+    await acquired.handle.release();
+  });
 
+  test("free lease recovers exact dead or start-mismatched held metadata", async () => {
+    const harness = createFakeRuntimeHarness();
+    const home = "/tmp/explodex-stale-held";
+    const first = await acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: home,
+      resource: "main-launch",
+      identity: identity(harness, "op-dead"),
+      waitBoundMs: 0,
+    });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    await first.handle.release();
+    const stale = { ...first.record, state: "held" as const, releasedAt: null };
+    harness.files.set(ownerPath(home, "main-launch"), `${JSON.stringify(stale)}\n`);
+    harness.setProcessAlive(stale.pid, stale.processStartedAt, false);
+
+    const recovered = await acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: home,
+      resource: "main-launch",
+      identity: identity(harness, "op-recovered"),
+      waitBoundMs: 0,
+    });
+    expect(recovered.ok).toBe(true);
+    if (!recovered.ok) return;
+    expect(recovered.recoveredStale).toBe(true);
+    await recovered.handle.release();
+  });
+
+  test("free lease plus exact live recorded owner fails closed", async () => {
+    const harness = createFakeRuntimeHarness();
+    const home = "/tmp/explodex-live-free-invariant";
+    const first = await acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: home,
+      resource: "main-launch",
+      identity: identity(harness, "op-live"),
+      waitBoundMs: 0,
+    });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    await first.handle.release();
+    harness.files.set(ownerPath(home, "main-launch"), `${JSON.stringify(first.record)}\n`);
+    harness.setProcessAlive(first.record.pid, first.record.processStartedAt, true);
+
+    const refused = await acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: home,
+      resource: "main-launch",
+      identity: identity(harness, "op-refused"),
+      waitBoundMs: 0,
+    });
+    expect(refused.ok).toBe(false);
+    if (refused.ok) return;
+    expect(refused.code).toBe("lock_invariant_violation");
+    expect(harness.openLockDescriptorCount()).toBe(0);
+  });
+
+  test.each([
+    ["legacy regular file", "regular-file", 0o600],
+    ["symlink container", "symlink", 0o700],
+    ["special container", "special", 0o700],
+    ["wrong-mode container", "directory", 0o755],
+  ] as const)("fails closed for %s", async (_label, kind, mode) => {
+    const harness = createFakeRuntimeHarness();
+    const home = "/tmp/explodex-invalid-container";
+    const path = lockPath(home, "plugins-state");
+    await harness.adapters.fs.mkdir(`${home}/locks`, { recursive: true, mode: 0o700 });
+    harness.replacePath(path, { kind, mode });
+    const result = await acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: home,
+      resource: "plugins-state",
+      identity: identity(harness, "op-invalid"),
+      waitBoundMs: 0,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe("lock_stale_unrecoverable");
+  });
+
+  test("fails closed for symlink, special, wrong-owner, wrong-mode, and substituted lease paths", async () => {
+    const cases = [
+      { kind: "symlink" as const, mode: 0o600, uid: 501 },
+      { kind: "special" as const, mode: 0o600, uid: 501 },
+      { kind: "regular-file" as const, mode: 0o644, uid: 501 },
+      { kind: "regular-file" as const, mode: 0o600, uid: 777 },
+    ];
+    for (const [index, replacement] of cases.entries()) {
+      const harness = createFakeRuntimeHarness();
+      const home = `/tmp/explodex-invalid-lease-${index}`;
+      const first = await acquireOperationLock({
+        adapters: harness.adapters,
+        explodexHome: home,
+        resource: "plugins-state",
+        identity: identity(harness, `op-first-${index}`),
+        waitBoundMs: 0,
+      });
+      expect(first.ok).toBe(true);
+      if (!first.ok) continue;
+      await first.handle.release();
+      harness.replacePath(leasePath(home, "plugins-state"), replacement);
+      const result = await acquireOperationLock({
+        adapters: harness.adapters,
+        explodexHome: home,
+        resource: "plugins-state",
+        identity: identity(harness, `op-invalid-${index}`),
+        waitBoundMs: 0,
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) continue;
+      expect(result.code).toBe("lock_stale_unrecoverable");
+    }
+  });
+
+  test("held publication failure closes the descriptor", async () => {
+    const harness = createFakeRuntimeHarness();
+    harness.setLockFault("atomic-write");
     await expect(acquireOperationLock({
       adapters: harness.adapters,
-      explodexHome: home,
+      explodexHome: "/tmp/explodex-held-write-failure",
       resource: "plugins-state",
-      identity: {
-        operationId: "op-aborted-lock",
-        operation: "install",
-        startedAt: harness.adapters.clock.nowIso(),
-        ownerPid: harness.self.pid,
-        ownerProcessStartedAt: harness.self.processStartedAt,
-      },
-      waitBoundMs: 100,
-      abortSignal: abort.signal,
-    })).rejects.toThrow(/rename aborted/);
-
-    expect(harness.files.has(ownerPath(lockPath(home, "plugins-state")))).toBe(false);
+      identity: identity(harness, "op-held-write-failure"),
+      waitBoundMs: 0,
+    })).rejects.toThrow(/Injected atomic write failure/);
+    expect(harness.openLockDescriptorCount()).toBe(0);
+    expect(harness.heldLeaseCount()).toBe(0);
   });
 
-  test("retries when a contended lock disappears before owner read", async () => {
+  test("release publication failure still closes the descriptor unconditionally", async () => {
     const harness = createFakeRuntimeHarness();
-    const home = "/tmp/explodex-test-home-release-read-race";
-    const path = lockPath(home, "plugins-state");
-    const owner = {
-      schemaVersion: 1 as const,
-      resource: "plugins-state" as const,
-      operationId: "op-releasing",
-      pid: 12_390,
-      processStartedAt: "live-owner",
-      acquiredAt: "2026-07-01T00:00:01.000Z",
-    };
-    harness.setProcessAlive(owner.pid, owner.processStartedAt, true);
-    await harness.adapters.fs.mkdir(`${home}/locks`, { recursive: true });
-    await harness.adapters.fs.createDirectoryExclusive(path);
-    await harness.adapters.fs.writeFile(ownerPath(path), `${JSON.stringify(owner)}\n`);
-    const originalReadText = harness.adapters.fs.readText;
-    let releasedBeforeRead = false;
-    harness.adapters.fs.readText = async (readPath) => {
-      if (!releasedBeforeRead && readPath === ownerPath(path)) {
-        releasedBeforeRead = true;
-        harness.files.delete(ownerPath(path));
-        await harness.adapters.fs.removeDirectory(path);
+    const acquired = await acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: "/tmp/explodex-release-write-failure",
+      resource: "plugins-state",
+      identity: identity(harness, "op-release-write-failure"),
+      waitBoundMs: 0,
+    });
+    expect(acquired.ok).toBe(true);
+    if (!acquired.ok) return;
+    harness.setLockFault("atomic-write");
+    await expect(acquired.handle.release()).rejects.toThrow(/Injected atomic write failure/);
+    expect(acquired.handle.state().descriptorOpen).toBe(false);
+    expect(acquired.handle.state().leaseHeld).toBe(false);
+    expect(harness.openLockDescriptorCount()).toBe(0);
+  });
+
+  test("release generation mismatch and path substitution both close the descriptor", async () => {
+    for (const mode of ["generation", "path"] as const) {
+      const harness = createFakeRuntimeHarness();
+      const home = `/tmp/explodex-release-${mode}`;
+      const acquired = await acquireOperationLock({
+        adapters: harness.adapters,
+        explodexHome: home,
+        resource: "plugins-state",
+        identity: identity(harness, `op-${mode}`),
+        waitBoundMs: 0,
+      });
+      expect(acquired.ok).toBe(true);
+      if (!acquired.ok) continue;
+      if (mode === "generation") {
+        harness.files.set(ownerPath(home, "plugins-state"), `${JSON.stringify({
+          ...acquired.record,
+          generation: "generation_replaced",
+        })}\n`);
+      } else {
+        harness.replacePath(acquired.leasePath, { kind: "regular-file", mode: 0o600 });
       }
-      return originalReadText(readPath);
-    };
+      await expect(acquired.handle.release()).rejects.toThrow();
+      expect(acquired.handle.state().descriptorOpen).toBe(false);
+      expect(harness.openLockDescriptorCount()).toBe(0);
+    }
+  });
 
+  test("descriptor close failure is reported as truthful lock residue", async () => {
+    const harness = createFakeRuntimeHarness();
     const acquired = await acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: "/tmp/explodex-close-failure",
+      resource: "plugins-state",
+      identity: identity(harness, "op-close-failure"),
+      waitBoundMs: 0,
+    });
+    expect(acquired.ok).toBe(true);
+    if (!acquired.ok) return;
+    harness.setLockFault("lease-close");
+    await expect(acquired.handle.release()).rejects.toThrow(/Injected lease close failure/);
+    expect(acquired.handle.state().descriptorOpen).toBe(true);
+    expect(harness.openLockDescriptorCount()).toBe(1);
+  });
+
+  test("bounded contention and SIGINT leave no contender descriptor or late work", async () => {
+    const harness = createFakeRuntimeHarness();
+    const home = "/tmp/explodex-contended-timeout";
+    const owner = await acquireOperationLock({
       adapters: harness.adapters,
       explodexHome: home,
       resource: "plugins-state",
-      identity: {
-        operationId: "op-after-release",
-        operation: "install",
-        startedAt: harness.adapters.clock.nowIso(),
-        ownerPid: harness.self.pid,
-        ownerProcessStartedAt: harness.self.processStartedAt,
-      },
+      identity: identity(harness, "op-owner"),
+      waitBoundMs: 0,
+    });
+    expect(owner.ok).toBe(true);
+    if (!owner.ok) return;
+    const abort = new AbortController();
+    const pending = acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: home,
+      resource: "plugins-state",
+      identity: identity(harness, "op-interrupted"),
       waitBoundMs: 100,
+      pollIntervalMs: 10,
+      abortSignal: abort.signal,
     });
-
-    expect(acquired.ok).toBe(true);
-    if (!acquired.ok) return;
-    expect(acquired.record.operationId).toBe("op-after-release");
-  });
-
-  test("stale lock is recovered when owner is dead", async () => {
-    const harness = createFakeRuntimeHarness();
-    const home = "/tmp/explodex-test-home-stale";
-    const deadPid = 12_345;
-    const deadStart = "2026-07-01T00:00:00.000Z";
-    harness.setProcessAlive(deadPid, deadStart, false);
-
-    const path = lockPath(home, "main-launch");
-    const stale = {
-      schemaVersion: 1 as const,
-      resource: "main-launch" as const,
-      operationId: "op-dead",
-      pid: deadPid,
-      processStartedAt: deadStart,
-      acquiredAt: "2026-07-01T00:00:01.000Z",
-    };
-    await harness.adapters.fs.mkdir(`${home}/locks`, { recursive: true });
-    await harness.adapters.fs.createDirectoryExclusive(path);
-    await harness.adapters.fs.writeFile(ownerPath(path), `${JSON.stringify(stale)}\n`);
-
-    const identity = {
-      operationId: "op-recover",
-      operation: "launch",
-      startedAt: harness.adapters.clock.nowIso(),
-      ownerPid: harness.self.pid,
-      ownerProcessStartedAt: harness.self.processStartedAt,
-    };
-
-    const acquired = await acquireOperationLock({
-      adapters: harness.adapters,
-      explodexHome: home,
-      resource: "main-launch",
-      identity,
-      waitBoundMs: 0,
-    });
-    expect(acquired.ok).toBe(true);
-    if (!acquired.ok) return;
-    expect(acquired.recoveredStale).toBe(true);
-    expect(acquired.record.operationId).toBe("op-recover");
-  });
-
-  test("stale recovery does not unlink a replacement owner", async () => {
-    const harness = createFakeRuntimeHarness();
-    const home = "/tmp/explodex-test-home-stale-race";
-    const path = lockPath(home, "main-launch");
-    const stale = {
-      schemaVersion: 1 as const,
-      resource: "main-launch" as const,
-      operationId: "op-dead",
-      pid: 12_400,
-      processStartedAt: "dead-start",
-      acquiredAt: "2026-07-01T00:00:01.000Z",
-    };
-    const replacement = {
-      schemaVersion: 1 as const,
-      resource: "main-launch" as const,
-      operationId: "op-replacement",
-      pid: 12_401,
-      processStartedAt: "replacement-start",
-      acquiredAt: "2026-07-01T00:00:02.000Z",
-    };
-    harness.setProcessAlive(stale.pid, stale.processStartedAt, false);
-    harness.setProcessAlive(replacement.pid, replacement.processStartedAt, true);
-    await harness.adapters.fs.mkdir(`${home}/locks`, { recursive: true });
-    await harness.adapters.fs.createDirectoryExclusive(path);
-    await harness.adapters.fs.writeFile(ownerPath(path), `${JSON.stringify(stale)}\n`);
-    harness.setCompareRemoveBarrier(() => {
-      harness.files.set(ownerPath(path), `${JSON.stringify(replacement)}\n`);
-    });
-
-    const acquired = await acquireOperationLock({
-      adapters: harness.adapters,
-      explodexHome: home,
-      resource: "main-launch",
-      identity: {
-        operationId: "op-contender",
-        operation: "launch",
-        startedAt: harness.adapters.clock.nowIso(),
-        ownerPid: harness.self.pid,
-        ownerProcessStartedAt: harness.self.processStartedAt,
-      },
-      waitBoundMs: 0,
-    });
-
-    expect(acquired.ok).toBe(false);
-    expect(JSON.parse(harness.files.get(ownerPath(path)) ?? "null")).toEqual(replacement);
-  });
-
-  test("release does not unlink a replacement owner", async () => {
-    const harness = createFakeRuntimeHarness();
-    const home = "/tmp/explodex-test-home-release-race";
-    const path = lockPath(home, "plugins-state");
-    const original = {
-      schemaVersion: 1 as const,
-      resource: "plugins-state" as const,
-      operationId: "op-original",
-      pid: harness.self.pid,
-      processStartedAt: harness.self.processStartedAt,
-      acquiredAt: "2026-07-01T00:00:01.000Z",
-    };
-    const replacement = {
-      schemaVersion: 1 as const,
-      resource: "plugins-state" as const,
-      operationId: "op-replacement",
-      pid: 12_500,
-      processStartedAt: "replacement-start",
-      acquiredAt: "2026-07-01T00:00:02.000Z",
-    };
-    await harness.adapters.fs.mkdir(`${home}/locks`, { recursive: true });
-    await harness.adapters.fs.createDirectoryExclusive(path);
-    await harness.adapters.fs.writeFile(ownerPath(path), `${JSON.stringify(original)}\n`);
-    harness.setCompareRemoveBarrier(() => {
-      harness.files.set(ownerPath(path), `${JSON.stringify(replacement)}\n`);
-    });
-
-    await expect(releaseOperationLock(harness.adapters, path, original)).rejects.toThrow(
-      /could not atomically remove/,
-    );
-
-    expect(JSON.parse(harness.files.get(ownerPath(path)) ?? "null")).toEqual(replacement);
-  });
-
-  test("release preserves an owned directory when unexpected entries block removal", async () => {
-    const harness = createFakeRuntimeHarness();
-    const home = "/tmp/explodex-test-home-extra-lock-entry";
-    const path = lockPath(home, "plugins-state");
-    const owner = {
-      schemaVersion: 1 as const,
-      resource: "plugins-state" as const,
-      operationId: "op-extra-entry",
-      pid: harness.self.pid,
-      processStartedAt: harness.self.processStartedAt,
-      acquiredAt: "2026-07-01T00:00:01.000Z",
-    };
-    await harness.adapters.fs.mkdir(`${home}/locks`, { recursive: true });
-    await harness.adapters.fs.createDirectoryExclusive(path);
-    await harness.adapters.fs.writeFile(ownerPath(path), `${JSON.stringify(owner)}\n`);
-    harness.addDirectoryEntry(`${path}/unexpected`);
-
-    await expect(releaseOperationLock(harness.adapters, path, owner)).rejects.toThrow(
-      /could not atomically remove/,
-    );
-    expect(harness.files.get(ownerPath(path))).toBe(`${JSON.stringify(owner)}\n`);
-    expect(await harness.adapters.fs.isDirectory(path)).toBe(true);
-  });
-
-  test("release reports an ownerless lock directory instead of hiding residue", async () => {
-    const harness = createFakeRuntimeHarness();
-    const home = "/tmp/explodex-test-home-ownerless-lock";
-    const path = lockPath(home, "plugins-state");
-    await harness.adapters.fs.mkdir(`${home}/locks`, { recursive: true });
-    await harness.adapters.fs.createDirectoryExclusive(path);
-
-    await expect(releaseOperationLock(harness.adapters, path, {
-      schemaVersion: 1,
-      resource: "plugins-state",
-      operationId: "op-ownerless",
-      pid: harness.self.pid,
-      processStartedAt: harness.self.processStartedAt,
-      acquiredAt: "2026-07-01T00:00:01.000Z",
-    })).rejects.toThrow(/ENOENT/);
-    expect(await harness.adapters.fs.exists(path)).toBe(true);
-  });
-
-  test("malformed lock fails closed without deletion", async () => {
-    const harness = createFakeRuntimeHarness();
-    const home = "/tmp/explodex-test-home-malformed-lock";
-    const path = lockPath(home, "plugins-state");
-    await harness.adapters.fs.mkdir(`${home}/locks`, { recursive: true });
-    await harness.adapters.fs.createDirectoryExclusive(path);
-    await harness.adapters.fs.writeFile(ownerPath(path), "{partial");
-
-    const acquired = await acquireOperationLock({
-      adapters: harness.adapters,
-      explodexHome: home,
-      resource: "plugins-state",
-      identity: {
-        operationId: "op-contender",
-        operation: "install",
-        startedAt: harness.adapters.clock.nowIso(),
-        ownerPid: harness.self.pid,
-        ownerProcessStartedAt: harness.self.processStartedAt,
-      },
-      waitBoundMs: 0,
-    });
-
-    expect(acquired.ok).toBe(false);
-    if (acquired.ok) return;
-    expect(acquired.code).toBe("lock_stale_unrecoverable");
-    expect(harness.files.get(ownerPath(path))).toBe("{partial");
+    harness.adapters.timers.setTimeout(() => abort.abort(), 25);
+    const result = await runWithClockPump(harness, pending, { stepMs: 5, maxSteps: 30 });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe("lock_interrupted");
+    expect(result.stage).toBe("lock-acquisition");
+    expect(typeof result.boundMs).toBe("number");
+    expect(harness.openLockDescriptorCount()).toBe(1);
+    await owner.handle.release();
+    harness.advanceMs(1_000);
+    expect(harness.openLockDescriptorCount()).toBe(0);
+    expect(harness.heldLeaseCount()).toBe(0);
   });
 
   test.each([
@@ -1569,107 +1577,73 @@ describe("operation locks (command-lifetime coordination)", () => {
     { waitBoundMs: 10, pollIntervalMs: Number.POSITIVE_INFINITY },
   ])("rejects invalid lock timing configuration %#", async (timing) => {
     const harness = createFakeRuntimeHarness();
-    const acquired = await acquireOperationLock({
+    const result = await acquireOperationLock({
       adapters: harness.adapters,
-      explodexHome: "/tmp/explodex-invalid-lock-timing",
+      explodexHome: "/tmp/explodex-invalid-timing",
       resource: "plugins-state",
-      identity: {
-        operationId: "op-invalid-lock-timing",
-        operation: "install",
-        startedAt: harness.adapters.clock.nowIso(),
-        ownerPid: harness.self.pid,
-        ownerProcessStartedAt: harness.self.processStartedAt,
-      },
+      identity: identity(harness, "op-invalid-timing"),
       ...timing,
     });
-
-    expect(acquired.ok).toBe(false);
-    if (acquired.ok) return;
-    expect(acquired.code).toBe("invalid_stage_bound");
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe("invalid_stage_bound");
   });
 
-  test("hardened and legacy clients contend on the same canonical path", async () => {
+  test("parseOperationLockRecord accepts only complete schema-2 protocol records", async () => {
     const harness = createFakeRuntimeHarness();
-    const home = "/tmp/explodex-test-home-legacy-contention";
-    const path = lockPath(home, "plugins-state");
-    expect(path.endsWith("/plugins-state.lock")).toBe(true);
-    const legacy = {
-      schemaVersion: 1 as const,
-      resource: "plugins-state" as const,
-      operationId: "op-legacy",
-      pid: 12_700,
-      processStartedAt: "legacy-start",
-      acquiredAt: "2026-07-01T00:00:01.000Z",
-    };
-    await harness.adapters.fs.mkdir(`${home}/locks`, { recursive: true });
-    expect(await harness.adapters.fs.writeFileExclusive(path, `${JSON.stringify(legacy)}\n`)).toBe(true);
-
     const acquired = await acquireOperationLock({
       adapters: harness.adapters,
-      explodexHome: home,
+      explodexHome: "/tmp/explodex-parse-record",
       resource: "plugins-state",
-      identity: {
-        operationId: "op-hardened",
-        operation: "install",
-        startedAt: harness.adapters.clock.nowIso(),
-        ownerPid: harness.self.pid,
-        ownerProcessStartedAt: harness.self.processStartedAt,
-      },
-      waitBoundMs: 0,
-    });
-
-    expect(acquired.ok).toBe(false);
-    if (acquired.ok) return;
-    expect(acquired.code).toBe("lock_stale_unrecoverable");
-    expect(await harness.adapters.fs.isFile(path)).toBe(true);
-    expect(await harness.adapters.fs.isDirectory(path)).toBe(false);
-  });
-
-  test("legacy exclusive creation cannot acquire while a hardened directory owns the path", async () => {
-    const harness = createFakeRuntimeHarness();
-    const home = "/tmp/explodex-test-home-hardened-contention";
-    const acquired = await acquireOperationLock({
-      adapters: harness.adapters,
-      explodexHome: home,
-      resource: "plugins-state",
-      identity: {
-        operationId: "op-hardened-owner",
-        operation: "install",
-        startedAt: harness.adapters.clock.nowIso(),
-        ownerPid: harness.self.pid,
-        ownerProcessStartedAt: harness.self.processStartedAt,
-      },
+      identity: identity(harness, "op-parse"),
       waitBoundMs: 0,
     });
     expect(acquired.ok).toBe(true);
     if (!acquired.ok) return;
-
-    expect(await harness.adapters.fs.writeFileExclusive(
-      acquired.path,
-      "legacy replacement",
-    )).toBe(false);
-    expect(await harness.adapters.fs.isDirectory(acquired.path)).toBe(true);
+    expect(parseOperationLockRecord(acquired.record)).toEqual(acquired.record);
+    expect(parseOperationLockRecord({ ...acquired.record, schemaVersion: 1 })).toBe(null);
+    expect(parseOperationLockRecord({ ...acquired.record, protocol: "legacy" })).toBe(null);
+    await acquired.handle.release();
   });
 
-  test("parseOperationLockRecord rejects malformed records", () => {
-    expect(parseOperationLockRecord(null)).toBe(null);
-    expect(parseOperationLockRecord({ schemaVersion: 2 })).toBe(null);
-    expect(
-      parseOperationLockRecord({
-        schemaVersion: 1,
-        resource: "plugins-state",
-        operationId: "x",
-        pid: 1,
-        processStartedAt: "t",
-        acquiredAt: "t2",
-      }),
-    ).not.toBe(null);
-  });
-
-  test("lock integrates with resource scope dispose", async () => {
+  test("resource-scope cleanup reports a real descriptor close failure", async () => {
     const harness = createFakeRuntimeHarness();
-    const home = "/tmp/explodex-test-home-scope-lock";
+    const acquired = await acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: "/tmp/explodex-scope-close-failure",
+      resource: "plugins-state",
+      identity: identity(harness, "op-scope-close-failure"),
+      waitBoundMs: 0,
+    });
+    expect(acquired.ok).toBe(true);
+    if (!acquired.ok) return;
+    harness.setLockFault("lease-close");
+    const result = await runBoundedOperation({
+      adapters: harness.adapters,
+      operation: "install",
+      operationId: "op-scope-close-failure-runtime",
+      run: async (ctx) => {
+        ctx.scope.register({
+          kind: "lock",
+          label: "plugins-state",
+          disposition: "command-owned",
+          lockState: () => acquired.handle.state(),
+          dispose: () => acquired.handle.release(),
+        });
+        return { locked: true };
+      },
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("cleanup_failed");
+    expect(result.residualInventory.locksHeld).toBe(1);
+    expect(result.residualInventory.openLockDescriptors).toBe(1);
+    expect(result.residualInventory.advisoryLeasesHeld).toBe(1);
+  });
 
+  test("lock integrates with resource scope and leaves released metadata only", async () => {
+    const harness = createFakeRuntimeHarness();
+    const home = "/tmp/explodex-scope-lock";
     const result = await runBoundedOperation({
       adapters: harness.adapters,
       operation: "install",
@@ -1682,26 +1656,23 @@ describe("operation locks (command-lifetime coordination)", () => {
           identity: ctx.identity,
           waitBoundMs: 0,
         });
-        expect(acquired.ok).toBe(true);
         if (!acquired.ok) throw new Error("lock failed");
         ctx.scope.register({
           kind: "lock",
           label: "plugins-state",
           disposition: "command-owned",
-          dispose: async (control) => {
-            await releaseOperationLock(harness.adapters, acquired.path, acquired.record, {
-              abortSignal: control.signal,
-            });
-          },
+          lockState: () => acquired.handle.state(),
+          dispose: () => acquired.handle.release(),
         });
         return { locked: true };
       },
     });
-
     expect(result.ok).toBe(true);
-    expect(harness.files.has(ownerPath(lockPath(home, "plugins-state")))).toBe(false);
     if (!result.ok) return;
     expect(result.residualInventory.locksHeld).toBe(0);
+    expect(harness.openLockDescriptorCount()).toBe(0);
+    expect(JSON.parse(harness.files.get(ownerPath(home, "plugins-state")) ?? "null").state)
+      .toBe("released");
   });
 });
 
@@ -1760,5 +1731,205 @@ describe("representative one-shot command simulation", () => {
 
     expect(result.ok).toBe(true);
     expect(postExitActive).toBe(0);
+  });
+});
+
+describe("lock defect fixes (P1/P2/P3 audit)", () => {
+  const ownerPath = (home: string, resource: "plugins-state" | "main-launch"): string =>
+    `${lockPath(home, resource)}/owner.json`;
+  const identity = (harness: ReturnType<typeof createFakeRuntimeHarness>, operationId: string) => ({
+    operationId,
+    operation: "test-operation",
+    startedAt: harness.adapters.clock.nowIso(),
+    ownerPid: harness.self.pid,
+    ownerProcessStartedAt: harness.self.processStartedAt,
+  });
+
+  test("P1-1: real directory link count > 1 does not block acquisition", async () => {
+    const harness = createFakeRuntimeHarness();
+    const home = "/tmp/explodex-dir-linkcount";
+    const acquired = await acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: home,
+      resource: "plugins-state",
+      identity: identity(harness, "op-dir-linkcount"),
+      waitBoundMs: 0,
+    });
+    expect(acquired.ok).toBe(true);
+    if (!acquired.ok) return;
+    const containerStat = await harness.adapters.fs.statPath(lockPath(home, "plugins-state"));
+    expect(containerStat.kind).toBe("directory");
+    expect(containerStat.linkCount).toBeGreaterThanOrEqual(1);
+    await acquired.handle.release();
+  });
+
+  test("P1-3: atomic container publication uses single rename and preserves canonical inode", async () => {
+    const harness = createFakeRuntimeHarness();
+    const home = "/tmp/explodex-atomic-pub";
+    const first = await acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: home,
+      resource: "plugins-state",
+      identity: identity(harness, "op-atomic-first"),
+      waitBoundMs: 0,
+    });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    const stableInode = (await harness.adapters.fs.statPath(first.leasePath)).inode;
+    await first.handle.release();
+
+    const second = await acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: home,
+      resource: "plugins-state",
+      identity: identity(harness, "op-atomic-second"),
+      waitBoundMs: 0,
+    });
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    const repeatedInode = (await harness.adapters.fs.statPath(second.leasePath)).inode;
+    expect(repeatedInode).toBe(stableInode);
+    await second.handle.release();
+  });
+
+  test("P2-7: legacy schema-1 owner record inside valid container fails closed", async () => {
+    const harness = createFakeRuntimeHarness();
+    const home = "/tmp/explodex-legacy-schema";
+    const first = await acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: home,
+      resource: "plugins-state",
+      identity: identity(harness, "op-legacy-first"),
+      waitBoundMs: 0,
+    });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    await first.handle.release();
+    const legacyRecord = {
+      schemaVersion: 1,
+      protocol: "darwin-flock-v1",
+      resource: "plugins-state",
+      containerId: "legacy",
+      state: "held",
+      pid: 99999,
+      processStartedAt: "2020-01-01T00:00:00.000Z",
+    };
+    harness.files.set(ownerPath(home, "plugins-state"), `${JSON.stringify(legacyRecord)}\n`);
+    const result = await acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: home,
+      resource: "plugins-state",
+      identity: identity(harness, "op-legacy-contender"),
+      waitBoundMs: 0,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe("lock_stale_unrecoverable");
+  });
+
+  test("P2-8: missing lease file (ENOENT) after container exists fails closed", async () => {
+    const harness = createFakeRuntimeHarness();
+    const home = "/tmp/explodex-missing-lease";
+    const first = await acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: home,
+      resource: "plugins-state",
+      identity: identity(harness, "op-missing-first"),
+      waitBoundMs: 0,
+    });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    await first.handle.release();
+    const leaseFile = leasePath(home, "plugins-state");
+    await harness.adapters.fs.removePrivateDirectory(leaseFile);
+    const result = await acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: home,
+      resource: "plugins-state",
+      identity: identity(harness, "op-missing-contender"),
+      waitBoundMs: 0,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe("lock_stale_unrecoverable");
+  });
+
+  test("P3-10: withOperationLock acquires, runs work, and releases", async () => {
+    const harness = createFakeRuntimeHarness();
+    const home = "/tmp/explodex-with-lock";
+    const result = await withOperationLock(
+      {
+        adapters: harness.adapters,
+        explodexHome: home,
+        resource: "plugins-state",
+        identity: identity(harness, "op-with-lock"),
+        waitBoundMs: 0,
+      },
+      async (handle) => {
+        expect(handle.state().descriptorOpen).toBe(true);
+        expect(handle.state().leaseHeld).toBe(true);
+        return { worked: true };
+      },
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).toEqual({ worked: true });
+    expect(harness.openLockDescriptorCount()).toBe(0);
+    expect(harness.heldLeaseCount()).toBe(0);
+  });
+
+  test("P3-10: withOperationLock returns failure result without running work", async () => {
+    const harness = createFakeRuntimeHarness();
+    const home = "/tmp/explodex-with-lock-busy";
+    const owner = await acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: home,
+      resource: "plugins-state",
+      identity: identity(harness, "op-with-lock-owner"),
+      waitBoundMs: 0,
+    });
+    expect(owner.ok).toBe(true);
+    if (!owner.ok) return;
+    const result = await withOperationLock(
+      {
+        adapters: harness.adapters,
+        explodexHome: home,
+        resource: "plugins-state",
+        identity: identity(harness, "op-with-lock-contender"),
+        waitBoundMs: 0,
+      },
+      async () => ({ worked: true }),
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe("lock_busy");
+    expect(result.value).toBeUndefined();
+    await owner.handle.release();
+  });
+
+  test("P2-5: lock failure result includes stage and boundMs", async () => {
+    const harness = createFakeRuntimeHarness();
+    const home = "/tmp/explodex-stage-bound";
+    const owner = await acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: home,
+      resource: "plugins-state",
+      identity: identity(harness, "op-stage-bound-owner"),
+      waitBoundMs: 0,
+    });
+    expect(owner.ok).toBe(true);
+    if (!owner.ok) return;
+    const result = await acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: home,
+      resource: "plugins-state",
+      identity: identity(harness, "op-stage-bound-contender"),
+      waitBoundMs: 0,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.stage).toBe("lock-acquisition");
+    expect(typeof result.boundMs).toBe("number");
+    await owner.handle.release();
   });
 });

@@ -173,6 +173,8 @@ function emptyResidualInventory(): ResidualInventory {
     approvalListeners: 0,
     daemons: 0,
     supervisors: 0,
+    openLockDescriptors: 0,
+    advisoryLeasesHeld: 0,
     hasResidentControlPlane: false,
   };
 }
@@ -571,6 +573,7 @@ function readRuntimeErrorCode(error: unknown): BoundedOperationFailure["error"][
   if (code === "invalid_stage_bound") return code;
   if (code === "lock_busy") return code;
   if (code === "lock_stale_unrecoverable") return code;
+  if (code === "lock_invariant_violation") return code;
   return "operation_failed";
 }
 
