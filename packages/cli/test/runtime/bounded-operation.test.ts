@@ -1461,13 +1461,17 @@ describe("operation locks (parent-held Darwin lease)", () => {
   test("held publication failure closes the descriptor", async () => {
     const harness = createFakeRuntimeHarness();
     harness.setLockFault("atomic-write");
-    await expect(acquireOperationLock({
+    const result = await acquireOperationLock({
       adapters: harness.adapters,
       explodexHome: "/tmp/explodex-held-write-failure",
       resource: "plugins-state",
       identity: identity(harness, "op-held-write-failure"),
       waitBoundMs: 0,
-    })).rejects.toThrow(/Injected atomic write failure/);
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe("lock_stale_unrecoverable");
+    expect(result.message).toMatch(/Injected atomic write failure/);
     expect(harness.openLockDescriptorCount()).toBe(0);
     expect(harness.heldLeaseCount()).toBe(0);
   });
@@ -2525,5 +2529,73 @@ describe("lock defect fixes (P1/P2/P3 audit)", () => {
     expect(result.stage).toBe("lock-acquisition");
     expect(typeof result.boundMs).toBe("number");
     await owner.handle.release();
+  });
+
+  test("M1-F03R: lease-stat primary failure plus lease-close failure returns residual authority", async () => {
+    const harness = createFakeRuntimeHarness();
+    const home = "/tmp/explodex-stat-close-residual";
+    harness.setLockFault("lease-stat", 1);
+    harness.setLockFault("lease-close", 1);
+    const result = await acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: home,
+      resource: "plugins-state",
+      identity: identity(harness, "op-stat-close-residual"),
+      waitBoundMs: 0,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    // A plain Error must never hide an open descriptor or held lease.
+    expect(result.code).toBe("lock_cleanup_failed");
+    if (result.code !== "lock_cleanup_failed") return;
+    expect(result.primaryCode).toBe("lock_stale_unrecoverable");
+    expect(result.stage).toBe("lock-acquisition");
+    expect(result.residual.state().descriptorOpen).toBe(true);
+    expect(result.residual.state().leaseHeld).toBe(true);
+    expect(harness.openLockDescriptorCount()).toBe(1);
+    expect(harness.heldLeaseCount()).toBe(1);
+    await result.residual.dispose();
+    expect(result.residual.state().descriptorOpen).toBe(false);
+    expect(harness.openLockDescriptorCount()).toBe(0);
+    expect(harness.heldLeaseCount()).toBe(0);
+  });
+
+  test("M1-F03R: late stage-fence release failure cannot publish false-clean inventory", async () => {
+    const harness = createFakeRuntimeHarness();
+    const home = "/tmp/explodex-late-stage-fence-residual";
+    harness.setAtomicWriteDelay(80);
+    // Stage-fence reverse release and residual dispose both fail so residue remains visible.
+    harness.setLockFault("lease-close", 5);
+    let delayedGroundTruthOpen = -1;
+    let delayedGroundTruthHeld = -1;
+    const work = runBoundedOperation({
+      adapters: harness.adapters,
+      operation: "install",
+      operationId: "op-late-stage-fence-residual",
+      stageBounds: { "lock-acquisition": 25, "owned-child-shutdown": 100 },
+      run: async (ctx) => acquireStageLock(ctx, {
+        explodexHome: home,
+        resource: "plugins-state",
+        pollIntervalMs: 5,
+      }),
+      afterDispose: () => {
+        harness.advanceMs(1_000);
+        delayedGroundTruthOpen = harness.openLockDescriptorCount();
+        delayedGroundTruthHeld = harness.heldLeaseCount();
+      },
+    });
+    const result = await runWithClockPump(harness, work, { stepMs: 5, maxSteps: 100 });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    // Delayed ground truth must agree with the reported terminal inventory.
+    expect(delayedGroundTruthOpen).toBe(harness.openLockDescriptorCount());
+    expect(delayedGroundTruthHeld).toBe(harness.heldLeaseCount());
+    expect(result.residualInventory.openLockDescriptors).toBe(delayedGroundTruthOpen);
+    expect(result.residualInventory.advisoryLeasesHeld).toBe(delayedGroundTruthHeld);
+    if (delayedGroundTruthOpen > 0 || delayedGroundTruthHeld > 0) {
+      expect(result.residualInventory.hasResidentControlPlane).toBe(true);
+      expect(result.residualInventory.locksHeld).toBeGreaterThan(0);
+    }
+    harness.clearLockFaults();
   });
 });

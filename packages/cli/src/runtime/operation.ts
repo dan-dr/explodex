@@ -358,7 +358,12 @@ export async function runBoundedOperation<T>(
       });
 
       const workPromise = Promise.resolve().then(() => work(ctl));
-      void workPromise.catch(() => undefined);
+      // Observe settlement either way so late continuations can reverse/register
+      // residual authority before terminal dispose starts.
+      const settledWork = workPromise.then(
+        () => undefined,
+        () => undefined,
+      );
 
       try {
         const result = await Promise.race([workPromise, timeoutPromise]);
@@ -366,9 +371,20 @@ export async function runBoundedOperation<T>(
         if (!stageActive || adapters.clock.nowMs() > deadline) {
           stageActive = false;
           stageAbort.abort();
+          await fenceStageWorkSettlement(settledWork, adapters, boundMs);
           throw new TimeoutError(stage, boundMs);
         }
         return result;
+      } catch (error: unknown) {
+        // Timeout/interrupt won the race: fence late work settlement so residual
+        // authority can still register before terminal dispose. Bound the wait so
+        // a permanently hung stage cannot stall cleanup.
+        if (error instanceof TimeoutError || error instanceof InterruptError) {
+          stageActive = false;
+          stageAbort.abort();
+          await fenceStageWorkSettlement(settledWork, adapters, boundMs);
+        }
+        throw error;
       } finally {
         settled = true;
         stageActive = false;
@@ -540,6 +556,35 @@ async function finalizeDispose(
   boundMs: number,
 ): Promise<ResourceCleanupReport> {
   return scope.dispose(reason, boundMs);
+}
+
+/**
+ * After a stage times out or is interrupted, give the stage continuation a
+ * finite chance to reverse publication / register residual authority before
+ * terminal dispose begins. Never waits unbounded for hung stage work.
+ */
+function fenceStageWorkSettlement(
+  settledWork: Promise<void>,
+  adapters: RuntimeAdapters,
+  stageBoundMs: number,
+): Promise<void> {
+  // Settlement fence is finite and independent of the already-expired stage.
+  // Cap by the owned-child-shutdown bound so cleanup cannot be starved.
+  const settlementBoundMs = Math.max(
+    1,
+    Math.min(stageBoundMs, DEFAULT_STAGE_BOUNDS_MS["owned-child-shutdown"]),
+  );
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (): void => {
+      if (done) return;
+      done = true;
+      handle.clear();
+      resolve();
+    };
+    const handle = adapters.timers.setTimeout(finish, settlementBoundMs);
+    void settledWork.then(finish, finish);
+  });
 }
 
 function cleanupFailureResult(

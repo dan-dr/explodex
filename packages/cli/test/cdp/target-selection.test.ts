@@ -16,7 +16,7 @@ import type {
   ListenerObservation,
   VerifiedProcess,
 } from "../../src/host/status.ts";
-import { createFakeRuntimeHarness } from "../runtime/fixture-runtime.ts";
+import { createFakeRuntimeHarness, runWithClockPump } from "../runtime/fixture-runtime.ts";
 
 const EXECUTABLE = `${CANONICAL_BUNDLE_PATH}/Contents/MacOS/${CANONICAL_EXECUTABLE_NAME}`;
 const START_MAIN = "2026-07-25T12:00:00.000000000Z";
@@ -175,7 +175,12 @@ class FixtureCdpAdapter implements CdpAdapter {
         this.closeLog.push(targetId);
       },
     };
-    input.onSessionOpened?.(session);
+    try {
+      input.onSessionOpened?.(session);
+    } catch (error: unknown) {
+      await session.close();
+      throw error;
+    }
     await this.beforeSessionReturn?.();
     return session;
   }
@@ -424,10 +429,8 @@ describe("point-of-use identity revalidation", () => {
       revalidate: scenario.revalidate,
       evaluate: { expression: "op-discovery-timeout:sentinel" },
     });
-    await Promise.resolve();
-    await Promise.resolve();
-    runtime.advanceMs(10_000);
-    const result = await operation;
+    // Pump stage timeout plus the post-timeout settlement fence.
+    const result = await runWithClockPump(runtime, operation, { stepMs: 500, maxSteps: 40 });
 
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected discovery timeout");
@@ -438,6 +441,51 @@ describe("point-of-use identity revalidation", () => {
     });
     expect(scenario.adapter.closeLog).toEqual(["PAGE-1"]);
     expect(result.residualInventory.sessions).toBe(0);
+  });
+
+  test("M1-F03R: late open after discovery timeout closes session when registration throws", async () => {
+    const scenario = fixture();
+    const runtime = createFakeRuntimeHarness({ self: { pid: 8010, processStartedAt: "operation-start" } });
+    runtime.setProcessAlive(scenario.expectedProcess.pid, scenario.expectedProcess.processStartedAt, true);
+    // Delay open until after the discovery stage timeout so registration races
+    // terminal cleanup; the adapter must still close the unreachable session.
+    const originalOpen = scenario.adapter.openTargetSession.bind(scenario.adapter);
+    let openStarted = false;
+    scenario.adapter.openTargetSession = async (input) => {
+      openStarted = true;
+      await new Promise<void>((resolve) => {
+        runtime.adapters.timers.setTimeout(resolve, 12_000);
+      });
+      return originalOpen(input);
+    };
+    const operation = runExactTargetOperation({
+      runtime: runtime.adapters,
+      operationId: "op-late-open-registration",
+      operation: "fixture-evaluate",
+      role: scenario.role,
+      homeIdentity: "/tmp/home-late-open",
+      host: HOST,
+      process: scenario.expectedProcess,
+      endpoint: endpoint(scenario.role),
+      cdp: scenario.adapter,
+      revalidate: scenario.revalidate,
+      evaluate: { expression: "op-late-open:sentinel" },
+    });
+    // Pump through discovery timeout + settlement fence + delayed open completion.
+    const result = await runWithClockPump(runtime, operation, { stepMs: 500, maxSteps: 60 });
+
+    expect(openStarted).toBe(true);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected discovery timeout");
+    expect(
+      result.error.code === "operation_timeout" ||
+        result.error.code === "operation_failed" ||
+        result.error.code === "cleanup_failed",
+    ).toBe(true);
+    // No unreachable session/websocket remains after late open/registration.
+    expect(scenario.adapter.closeLog).toEqual(["PAGE-1"]);
+    expect(result.residualInventory.sessions).toBe(0);
+    expect(result.residualInventory.hasResidentControlPlane).toBe(false);
   });
 
   test.each([

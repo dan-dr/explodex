@@ -344,4 +344,26 @@ describe("production CDP adapter", () => {
     });
     expect(Date.now() - started).toBeLessThan(150);
   });
+
+  test("M1-F03R: closes the session when onSessionOpened registration throws", async () => {
+    const adapter = installProductionAdapterFixture();
+    const targets = await adapter.listTargets({ host: "127.0.0.1", port: 9444 });
+    const target = targets[0];
+    if (target === undefined) throw new Error("fixture target unavailable");
+
+    await expect(adapter.openTargetSession({
+      host: "127.0.0.1",
+      port: 9444,
+      target,
+      onSessionOpened() {
+        throw new Error("registration callback failed");
+      },
+    })).rejects.toThrow("registration callback failed");
+
+    const socket = FakeWebSocket.instances[0];
+    expect(socket).toBeDefined();
+    // Wait for the adapter's bounded close to complete.
+    await new Promise<void>((resolve) => setTimeout(resolve, 30));
+    expect(socket?.readyState).toBe(FakeWebSocket.CLOSED);
+  });
 });

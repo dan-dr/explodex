@@ -434,13 +434,69 @@ function failClosedMessage(error: unknown, resource: LockResource): string {
   return error instanceof Error ? error.message : `Lock ${resource} validation failed`;
 }
 
-async function closeAfterFailure(lease: AdvisoryLease, error: unknown): Promise<never> {
+function primaryCodeFromError(
+  error: unknown,
+): Exclude<LockAcquireFailureCode, "lock_cleanup_failed"> {
+  if (typeof error === "object" && error !== null && "code" in error) {
+    const code = (error as { code?: unknown }).code;
+    if (
+      code === "lock_busy" ||
+      code === "lock_interrupted" ||
+      code === "lock_stale_unrecoverable" ||
+      code === "lock_invariant_violation" ||
+      code === "invalid_stage_bound"
+    ) {
+      return code;
+    }
+  }
+  return "lock_stale_unrecoverable";
+}
+
+/**
+ * Close a just-acquired lease after a primary post-open failure.
+ * Close success rethrows/returns the primary path; close failure never hides the
+ * open descriptor behind a plain Error — residual authority is always reachable.
+ */
+async function closeAfterFailure(
+  lease: AdvisoryLease,
+  error: unknown,
+  path: string,
+  leasePath: string,
+  boundMs: number,
+  holder: OperationLockRecord | null,
+): Promise<LockAcquireResult> {
+  const primaryMessage = error instanceof Error ? error.message : String(error);
+  const primaryCode = primaryCodeFromError(error);
   try {
     await lease.close();
   } catch (closeError: unknown) {
-    const closeMessage = closeError instanceof Error ? closeError.message : String(closeError);
-    const original = error instanceof Error ? error.message : String(error);
-    throw new Error(`${original}; advisory lease descriptor close failed: ${closeMessage}`);
+    const cleanupMessage = closeError instanceof Error
+      ? closeError.message
+      : String(closeError);
+    return {
+      ok: false,
+      code: "lock_cleanup_failed",
+      message: `${primaryMessage}; residual lease cleanup failed: ${cleanupMessage}`,
+      primaryCode,
+      primaryMessage,
+      holder,
+      path,
+      leasePath,
+      stage: LOCK_STAGE,
+      boundMs,
+      cleanupError: closeError,
+      residual: residualFromOpenLease(lease, path, leasePath),
+    };
+  }
+  // Descriptor is closed; surface structured primary failure when possible.
+  if (
+    primaryCode === "lock_busy" ||
+    primaryCode === "lock_interrupted" ||
+    primaryCode === "lock_stale_unrecoverable" ||
+    primaryCode === "lock_invariant_violation" ||
+    primaryCode === "invalid_stage_bound"
+  ) {
+    return failure(primaryCode, primaryMessage, holder, path, leasePath, boundMs);
   }
   throw error;
 }
@@ -769,7 +825,7 @@ export async function acquireOperationLock(options: AcquireLockOptions): Promise
         return true;
       };
       const cleanupFailed = (
-        primaryCode: "lock_interrupted" | "lock_busy",
+        primaryCode: Exclude<LockAcquireFailureCode, "lock_cleanup_failed">,
         primaryMessage: string,
         holder: OperationLockRecord | null,
         cleanupError: unknown,
@@ -795,7 +851,7 @@ export async function acquireOperationLock(options: AcquireLockOptions): Promise
         };
       };
       const abandonAcquiredLease = async (
-        code: "lock_interrupted" | "lock_busy",
+        code: Exclude<LockAcquireFailureCode, "lock_cleanup_failed">,
         message: string,
         holder: OperationLockRecord | null,
         publishedHandle?: LockHandle,
@@ -848,15 +904,12 @@ export async function acquireOperationLock(options: AcquireLockOptions): Promise
           }
           prior = await readOwnerRecord(adapters, state);
         } catch (error: unknown) {
-          if (systemErrorCode(error) !== null) throw error;
-          await lease.close();
-          return failure(
+          // Any post-open validation failure must close the lease. Close faults
+          // surface structured residual authority rather than a plain Error.
+          return await abandonAcquiredLease(
             "lock_stale_unrecoverable",
             failClosedMessage(error, resource),
-            null,
-            path,
-            state.leasePath,
-            waitBoundMs,
+            lastHolder,
           );
         }
 
@@ -878,14 +931,10 @@ export async function acquireOperationLock(options: AcquireLockOptions): Promise
             { abortSignal: options.abortSignal, timeoutMs: IDENTITY_PROBE_BOUND_MS },
           );
           if (live) {
-            await lease.close();
-            return failure(
+            return await abandonAcquiredLease(
               "lock_invariant_violation",
               `Lock ${resource} kernel lease was free while recorded owner remained live`,
               prior,
-              path,
-              state.leasePath,
-              waitBoundMs,
             );
           }
           recoveredStale = true;
@@ -943,7 +992,12 @@ export async function acquireOperationLock(options: AcquireLockOptions): Promise
               prior ?? lastHolder,
             );
           }
-          throw error;
+          // Publication failure after open: close or surface residual authority.
+          return await abandonAcquiredLease(
+            "lock_stale_unrecoverable",
+            failClosedMessage(error, resource),
+            prior ?? lastHolder,
+          );
         }
 
         // A late write that completed after abort/deadline must not return a handle
@@ -973,7 +1027,14 @@ export async function acquireOperationLock(options: AcquireLockOptions): Promise
           handle,
         };
       } catch (error: unknown) {
-        return closeAfterFailure(lease, error);
+        return closeAfterFailure(
+          lease,
+          error,
+          path,
+          state.leasePath,
+          waitBoundMs,
+          lastHolder,
+        );
       }
     }
 

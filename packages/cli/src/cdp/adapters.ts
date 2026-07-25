@@ -361,6 +361,9 @@ class NodeCdpTargetSession implements CdpTargetSession {
   }
 }
 
+/** Declared bound for emergency close when session registration fails. */
+const DEFAULT_SESSION_CLOSE_BOUND_MS = 5_000;
+
 export function createNodeCdpAdapter(): CdpAdapter {
   return {
     async readEndpoint(input) {
@@ -402,7 +405,19 @@ export function createNodeCdpAdapter(): CdpAdapter {
         webSocketDebuggerUrl: url,
         signal: input.signal,
       });
-      input.onSessionOpened?.(session);
+      try {
+        input.onSessionOpened?.(session);
+      } catch (error: unknown) {
+        // Registration (or any post-open callback) failure must not leave an
+        // unreachable open session/websocket. Close within the declared bound.
+        const closeBoundMs = DEFAULT_SESSION_CLOSE_BOUND_MS;
+        try {
+          await session.close({ timeoutMs: closeBoundMs });
+        } catch {
+          // Prefer the original registration failure; close faults are secondary.
+        }
+        throw error;
+      }
       return session;
     },
   };
