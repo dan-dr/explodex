@@ -87,10 +87,31 @@ try {
 import { LOCK_ACQUISITION_BOUND_MS, createSystemRuntimeClock } from "explodex/runtime";
 import { roleEndpoint } from "explodex/host";
 import { createNodeCdpAdapter, selectExactPageAndContext } from "explodex/cdp";
+import {
+  createDisabledPhase0Contract,
+  gateDevelopmentLifecycleMutation,
+  ownershipFromLayoutOnly,
+  resolveDefaultDevRoot,
+} from "explodex/dev";
 const bunAbsent = !(process.env.PATH || "").split(":").some((part) => part.toLowerCase().includes("bun"));
 if (!bunAbsent) throw new Error("Bun unexpectedly present in runtime PATH");
 if (LOCK_ACQUISITION_BOUND_MS !== 2000) throw new Error("Unexpected lock bound");
 if (roleEndpoint("main").port !== 9333 || roleEndpoint("development").port !== 9444) throw new Error("Unexpected role endpoint");
+const defaultDevRoot = resolveDefaultDevRoot({ osHome: process.env.HOME || "/tmp" });
+if (!defaultDevRoot.endsWith("/.explodex/dev/plugin-dev")) throw new Error("Unexpected default development root");
+const disabledPhase0 = createDisabledPhase0Contract({ appBuild: "5628" });
+const blockedStart = gateDevelopmentLifecycleMutation({ operation: "dev-start", contract: disabledPhase0 });
+if (blockedStart.allowed) throw new Error("Disabled Phase 0 must block development lifecycle mutation");
+if (ownershipFromLayoutOnly({
+  rootPath: defaultDevRoot,
+  electronUserDataPath: defaultDevRoot + "/electron-user-data",
+  codexHomePath: defaultDevRoot + "/codex-home",
+  explodexStatePath: defaultDevRoot + "/explodex-state",
+  logsPath: defaultDevRoot + "/logs",
+  locksPath: defaultDevRoot + "/locks",
+  statePath: defaultDevRoot + "/state.json",
+  phase0ContractPath: defaultDevRoot + "/explodex-state/phase0-launch-contract.json",
+}).owned) throw new Error("Layout paths must never grant ownership");
 const selected = selectExactPageAndContext({
   targets: [{ id: "PAGE", type: "page", url: "app://-/index.html", title: "ChatGPT" }],
   contextsByTarget: { PAGE: [{ id: 7, uniqueId: "unique-7", targetId: "PAGE", frameId: "FRAME-7", isDefault: true, origin: "app://-", name: "" }] },

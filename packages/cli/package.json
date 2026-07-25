@@ -34,6 +34,14 @@
     "./runtime/*": {
       "types": "./dist/runtime/*.d.ts",
       "import": "./dist/runtime/*.js"
+    },
+    "./dev": {
+      "types": "./dist/dev/index.d.ts",
+      "import": "./dist/dev/index.js"
+    },
+    "./dev/*": {
+      "types": "./dist/dev/*.d.ts",
+      "import": "./dist/dev/*.js"
     }
   },
   "files": [
