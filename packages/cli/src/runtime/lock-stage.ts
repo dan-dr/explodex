@@ -3,7 +3,11 @@
  * and registers the parent-held lease as a command-owned scope resource.
  */
 
-import { acquireOperationLock, type LockHandle } from "./locks.ts";
+import {
+  acquireOperationLock,
+  type LockHandle,
+  type ResidualLockAuthority,
+} from "./locks.ts";
 import { InterruptError, TimeoutError, type OperationContext } from "./operation.ts";
 import type { LockResource } from "./types.ts";
 
@@ -16,9 +20,13 @@ export type StageLockOptions = {
 
 export type StageLockError = Error & {
   code: "lock_busy" | "lock_stale_unrecoverable" | "lock_invariant_violation" |
-    "invalid_stage_bound";
-  stage: "lock-acquisition";
+    "invalid_stage_bound" | "lock_cleanup_failed";
+  stage: "lock-acquisition" | "cleanup";
   boundMs: number;
+  primaryCode?: "lock_interrupted" | "lock_busy" | "lock_stale_unrecoverable" |
+    "lock_invariant_violation" | "invalid_stage_bound" | "lock_cleanup_failed";
+  cleanupError?: unknown;
+  residual?: ResidualLockAuthority;
 };
 
 /**
@@ -44,6 +52,28 @@ export async function acquireStageLock(
     });
     if (!acquired.ok) {
       if (acquired.code === "lock_interrupted") throw new InterruptError("lock-acquisition");
+      if (acquired.code === "lock_cleanup_failed") {
+        // Residual authority must remain reachable for bounded disposal/retry.
+        ctx.scope.register({
+          kind: "lock",
+          label: `${options.label ?? options.resource}-residual`,
+          disposition: "command-owned",
+          lockState: () => {
+            const state = acquired.residual.state();
+            return { descriptorOpen: state.descriptorOpen, leaseHeld: state.leaseHeld };
+          },
+          dispose: (control) =>
+            acquired.residual.dispose({ abortSignal: control.signal }),
+        });
+        throw Object.assign(new Error(acquired.message), {
+          code: "lock_cleanup_failed" as const,
+          stage: "cleanup" as const,
+          boundMs: acquired.boundMs,
+          primaryCode: acquired.primaryCode,
+          cleanupError: acquired.cleanupError,
+          residual: acquired.residual,
+        } satisfies Omit<StageLockError, keyof Error>);
+      }
       throw Object.assign(new Error(acquired.message), {
         code: acquired.code,
         stage: acquired.stage,
@@ -55,8 +85,44 @@ export async function acquireStageLock(
     if (!ctl.tryCommitEffect()) {
       try {
         await acquired.handle.release({ abortSignal: undefined });
-      } catch {
-        // Best-effort residual cleanup; the stage timeout/interrupt is primary.
+      } catch (cleanupError: unknown) {
+        // Never swallow stage-fence cleanup faults. Register residual authority
+        // so dispose/retry can reach the still-held advisory lease.
+        ctx.scope.register({
+          kind: "lock",
+          label: `${options.label ?? options.resource}-residual`,
+          disposition: "command-owned",
+          lockState: () => {
+            const state = acquired.handle.state();
+            return { descriptorOpen: state.descriptorOpen, leaseHeld: state.leaseHeld };
+          },
+          dispose: (control) =>
+            acquired.handle.release({ abortSignal: control.signal }),
+        });
+        const cleanupMessage = cleanupError instanceof Error
+          ? cleanupError.message
+          : String(cleanupError);
+        throw Object.assign(
+          new Error(
+            `Lock ${options.resource} stage-fence cleanup failed after abort/deadline: ${cleanupMessage}`,
+          ),
+          {
+            code: "lock_cleanup_failed" as const,
+            stage: "cleanup" as const,
+            boundMs,
+            primaryCode: "lock_cleanup_failed" as const,
+            cleanupError,
+            residual: {
+              path: acquired.handle.path,
+              leasePath: acquired.handle.leasePath,
+              descriptor: acquired.handle.descriptor,
+              handle: acquired.handle,
+              state: () => acquired.handle.state(),
+              dispose: (disposeOptions?: { abortSignal?: AbortSignal; timeoutMs?: number }) =>
+                acquired.handle.release(disposeOptions),
+            } satisfies ResidualLockAuthority,
+          } satisfies Omit<StageLockError, keyof Error>,
+        );
       }
       ctl.throwIfInterrupted();
       throw new TimeoutError("lock-acquisition", boundMs);

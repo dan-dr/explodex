@@ -575,6 +575,7 @@ function readRuntimeErrorCode(error: unknown): BoundedOperationFailure["error"][
   if (code === "external_wait_requires_bound") return code;
   if (code === "invalid_stage_bound") return code;
   if (code === "lock_busy") return code;
+  if (code === "lock_cleanup_failed") return code;
   if (code === "lock_release_timeout") return code;
   if (code === "lock_release_interrupted") return code;
   if (code === "lock_stale_unrecoverable") return code;

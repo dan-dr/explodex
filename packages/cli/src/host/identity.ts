@@ -15,32 +15,14 @@ import type {
 } from "./types.ts";
 
 /**
- * Test-only authority for alternate-bundle fixtures. Public production APIs
- * never accept a forged plain object as a substitute for this symbol.
- */
-export const HOST_TEST_INSPECTION_AUTHORITY: unique symbol = Symbol.for(
-  "explodex.host.test-inspection",
-);
-
-/**
  * Production host inspection options. Only the canonical installed path is
- * inspected; alternate bundle paths cannot be selected through public APIs.
+ * inspected. There is intentionally no path override, authority token, or
+ * alternate-bundle helper in this public module or package export surface.
+ * Controlled fixtures must seed or map content at `/Applications/ChatGPT.app`
+ * through injectable adapters.
  */
 export type InspectHostOptions = {
   adapters: HostAdapters;
-  /**
-   * Test-only alternate inspection. Production callers must omit this field.
-   * `reportHost` never accepts or forwards it, so VAL-HOST-001 cannot be bypassed.
-   */
-  testOnly?: {
-    authority: typeof HOST_TEST_INSPECTION_AUTHORITY;
-    bundlePath: string;
-    /**
-     * When true, require the resolved realpath to be exactly
-     * `/Applications/ChatGPT.app`. Defaults to false for fixture paths.
-     */
-    requireCanonicalPath?: boolean;
-  };
 };
 
 type PlistFields = {
@@ -165,25 +147,11 @@ function isInsideBundle(bundlePath: string, absolutePath: string): boolean {
 /**
  * Resolve and validate the canonical ChatGPT.app host read-only.
  * Never selects Codex.app, vendor copies, wrappers, or alternate bundles.
- * Alternate paths are available only under explicit test-only authority.
+ * Public production APIs cannot select any path except the canonical install.
  */
 export async function inspectHost(options: InspectHostOptions): Promise<HostInspectionResult> {
   const adapters = options.adapters;
-  const testOnly = options.testOnly;
-  let requireCanonicalPath = true;
-  let requestedPath = CANONICAL_BUNDLE_PATH;
-  if (testOnly !== undefined) {
-    if (testOnly.authority !== HOST_TEST_INSPECTION_AUTHORITY) {
-      return fail(
-        "host_not_canonical_path",
-        `Host inspection rejects non-test authority for alternate bundles; only ${CANONICAL_BUNDLE_PATH} is supported`,
-        ["canonical_path", "test_inspection_authority"],
-        [candidate(testOnly.bundlePath, "test_authority_rejected")],
-      );
-    }
-    requestedPath = testOnly.bundlePath;
-    requireCanonicalPath = testOnly.requireCanonicalPath ?? false;
-  }
+  const requestedPath = CANONICAL_BUNDLE_PATH;
   const failed: string[] = [];
   const candidates: HostCandidateSummary[] = [];
 
@@ -209,7 +177,7 @@ export async function inspectHost(options: InspectHostOptions): Promise<HostInsp
     );
   }
 
-  if (requireCanonicalPath && realBundlePath !== CANONICAL_BUNDLE_PATH) {
+  if (realBundlePath !== CANONICAL_BUNDLE_PATH) {
     candidates.push(
       candidate(realBundlePath, "not_canonical_path", {
         reason: `resolved path ${realBundlePath} is not ${CANONICAL_BUNDLE_PATH}`,
@@ -223,9 +191,9 @@ export async function inspectHost(options: InspectHostOptions): Promise<HostInsp
     );
   }
 
-  // Reject known non-product names even when controlled fixtures override the path.
+  // Reject known non-product names even if a fixture somehow shadows the path.
   const base = basename(realBundlePath);
-  if (base === "Codex.app" || (requireCanonicalPath && base !== "ChatGPT.app")) {
+  if (base !== "ChatGPT.app") {
     return fail(
       "host_wrong_identity",
       `Refusing non-canonical host bundle name ${base}`,
@@ -431,25 +399,4 @@ export async function inspectCanonicalHost(
   adapters: HostAdapters,
 ): Promise<HostInspectionResult> {
   return inspectHost({ adapters });
-}
-
-/**
- * Test-only host inspection of an explicit fixture path. Production report and
- * public host APIs never call this path and cannot select noncanonical bundles.
- */
-export async function inspectHostForTests(
-  options: {
-    adapters: HostAdapters;
-    bundlePath: string;
-    requireCanonicalPath?: boolean;
-  },
-): Promise<HostInspectionResult> {
-  return inspectHost({
-    adapters: options.adapters,
-    testOnly: {
-      authority: HOST_TEST_INSPECTION_AUTHORITY,
-      bundlePath: options.bundlePath,
-      requireCanonicalPath: options.requireCanonicalPath,
-    },
-  });
 }

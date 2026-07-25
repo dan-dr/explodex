@@ -2299,6 +2299,208 @@ describe("lock defect fixes (P1/P2/P3 audit)", () => {
     expect(harness.openLockDescriptorCount()).toBe(0);
   });
 
+  test("M1-F00R: abort abandon close fault surfaces residual authority for dispose/retry", async () => {
+    const harness = createFakeRuntimeHarness();
+    const home = "/tmp/explodex-acq-abort-close-fault";
+    const abort = new AbortController();
+    harness.setAtomicWriteDelay(80);
+    const pending = acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: home,
+      resource: "plugins-state",
+      identity: identity(harness, "op-acq-abort-close-fault"),
+      waitBoundMs: 0,
+      abortSignal: abort.signal,
+    });
+    // Pump until the lease is open, then abort and fault close so abandon cannot
+    // silently succeed before residual authority is observed.
+    let settled = false;
+    let result: Awaited<typeof pending> | undefined;
+    let caught: unknown;
+    void pending.then(
+      (value) => {
+        settled = true;
+        result = value;
+      },
+      (error: unknown) => {
+        settled = true;
+        caught = error;
+      },
+    );
+    let aborted = false;
+    for (let step = 0; !settled && step < 80; step += 1) {
+      if (!aborted && harness.openLockDescriptorCount() > 0) {
+        harness.setLockFault("lease-close", 1);
+        abort.abort();
+        aborted = true;
+      }
+      harness.advanceMs(5);
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+    if (!settled) throw new Error("abort residual test did not settle");
+    if (caught !== undefined) throw caught;
+    if (result === undefined) throw new Error("missing result");
+    expect(aborted).toBe(true);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe("lock_cleanup_failed");
+    if (result.code !== "lock_cleanup_failed") return;
+    expect(result.primaryCode).toBe("lock_interrupted");
+    expect(result.stage).toBe("lock-acquisition");
+    expect(result.residual.state().descriptorOpen).toBe(true);
+    expect(result.residual.state().leaseHeld).toBe(true);
+    expect(harness.openLockDescriptorCount()).toBe(1);
+    expect(harness.heldLeaseCount()).toBe(1);
+    // Residual authority is reachable; retry dispose after the one-shot fault is spent.
+    await result.residual.dispose();
+    expect(result.residual.state().descriptorOpen).toBe(false);
+    expect(harness.openLockDescriptorCount()).toBe(0);
+    expect(harness.heldLeaseCount()).toBe(0);
+  });
+
+  test("M1-F00R: deadline abandon close fault surfaces residual authority for dispose/retry", async () => {
+    const harness = createFakeRuntimeHarness();
+    const home = "/tmp/explodex-acq-deadline-close-fault";
+    harness.setAtomicWriteDelay(80);
+    harness.setLockFault("lease-close", 1);
+    const pending = acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: home,
+      resource: "plugins-state",
+      identity: identity(harness, "op-acq-deadline-close-fault"),
+      waitBoundMs: 25,
+      pollIntervalMs: 5,
+    });
+    const result = await runWithClockPump(harness, pending, { stepMs: 5, maxSteps: 40 });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe("lock_cleanup_failed");
+    if (result.code !== "lock_cleanup_failed") return;
+    expect(result.primaryCode).toBe("lock_busy");
+    expect(result.stage).toBe("lock-acquisition");
+    expect(result.boundMs).toBe(25);
+    expect(result.residual.state().descriptorOpen).toBe(true);
+    expect(harness.openLockDescriptorCount()).toBe(1);
+    await result.residual.dispose();
+    expect(result.residual.state().descriptorOpen).toBe(false);
+    expect(harness.openLockDescriptorCount()).toBe(0);
+    expect(harness.heldLeaseCount()).toBe(0);
+  });
+
+  test("M1-F00R: stage path registers residual when acquisition cleanup fails", async () => {
+    const harness = createFakeRuntimeHarness();
+    const home = "/tmp/explodex-stage-acq-cleanup-fault";
+    const setup = await acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: home,
+      resource: "plugins-state",
+      identity: identity(harness, "op-stage-acq-cleanup-setup"),
+      waitBoundMs: 0,
+    });
+    expect(setup.ok).toBe(true);
+    if (!setup.ok) return;
+    await setup.handle.release();
+
+    harness.setAtomicWriteDelay(50);
+    // First close during abandon fails; dispose retry during operation cleanup succeeds.
+    harness.setLockFault("lease-close", 1);
+    const work = runBoundedOperation({
+      adapters: harness.adapters,
+      operation: "install",
+      operationId: "op-stage-acq-cleanup-fault",
+      stageBounds: { "lock-acquisition": 2_000, "owned-child-shutdown": 100 },
+      run: async (ctx) => {
+        harness.adapters.timers.setTimeout(() => harness.emitSignal("SIGINT"), 20);
+        return acquireStageLock(ctx, {
+          explodexHome: home,
+          resource: "plugins-state",
+          pollIntervalMs: 5,
+        });
+      },
+    });
+    const result = await runWithClockPump(harness, work, { stepMs: 5, maxSteps: 80 });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(
+      result.error.code === "lock_cleanup_failed" ||
+        result.error.code === "operation_interrupted",
+    ).toBe(true);
+    // Operation cleanup disposed the registered residual; no invisible lease remains.
+    expect(result.residualInventory.openLockDescriptors).toBe(0);
+    expect(result.residualInventory.advisoryLeasesHeld).toBe(0);
+    expect(result.residualInventory.locksHeld).toBe(0);
+    expect(harness.openLockDescriptorCount()).toBe(0);
+    expect(harness.heldLeaseCount()).toBe(0);
+  });
+
+  test("M1-F00R: stage residual remains countable when dispose also fails", async () => {
+    const harness = createFakeRuntimeHarness();
+    const home = "/tmp/explodex-stage-residual-visible";
+    // Direct residual path: acquisition cleanup fails and the residual dispose
+    // also fails, so inventory must remain truthful and non-zero.
+    harness.setAtomicWriteDelay(80);
+    harness.setLockFault("lease-close", 10);
+    const pending = acquireOperationLock({
+      adapters: harness.adapters,
+      explodexHome: home,
+      resource: "plugins-state",
+      identity: identity(harness, "op-stage-residual-visible"),
+      waitBoundMs: 25,
+      pollIntervalMs: 5,
+    });
+    const acquired = await runWithClockPump(harness, pending, { stepMs: 5, maxSteps: 40 });
+    expect(acquired.ok).toBe(false);
+    if (acquired.ok) return;
+    expect(acquired.code).toBe("lock_cleanup_failed");
+    if (acquired.code !== "lock_cleanup_failed") return;
+    expect(acquired.residual.state().descriptorOpen).toBe(true);
+    const residual = acquired.residual;
+    const residualMessage = acquired.message;
+    const residualBoundMs = acquired.boundMs;
+
+    const work = runBoundedOperation({
+      adapters: harness.adapters,
+      operation: "install",
+      operationId: "op-stage-residual-visible",
+      stageBounds: { "owned-child-shutdown": 100 },
+      run: async (ctx) => {
+        ctx.scope.register({
+          kind: "lock",
+          label: "plugins-state-residual",
+          disposition: "command-owned",
+          lockState: () => {
+            const state = residual.state();
+            return {
+              descriptorOpen: state.descriptorOpen,
+              leaseHeld: state.leaseHeld,
+            };
+          },
+          dispose: (control) =>
+            residual.dispose({ abortSignal: control.signal }),
+        });
+        throw Object.assign(new Error(residualMessage), {
+          code: "lock_cleanup_failed" as const,
+          stage: "cleanup" as const,
+          boundMs: residualBoundMs,
+        });
+      },
+    });
+    const result = await work;
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(
+      result.error.code === "lock_cleanup_failed" ||
+        result.error.code === "cleanup_failed",
+    ).toBe(true);
+    expect(result.residualInventory.openLockDescriptors).toBe(1);
+    expect(result.residualInventory.advisoryLeasesHeld).toBe(1);
+    expect(result.residualInventory.locksHeld).toBe(1);
+    expect(result.residualInventory.hasResidentControlPlane).toBe(true);
+    expect(harness.openLockDescriptorCount()).toBe(1);
+    harness.clearLockFaults();
+  });
+
   test("P2-5: lock failure result includes stage and boundMs", async () => {
     const harness = createFakeRuntimeHarness();
     const home = "/tmp/explodex-stage-bound";

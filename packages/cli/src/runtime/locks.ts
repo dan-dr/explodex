@@ -33,7 +33,22 @@ export type LockAcquireFailureCode =
   | "lock_interrupted"
   | "lock_stale_unrecoverable"
   | "lock_invariant_violation"
-  | "invalid_stage_bound";
+  | "invalid_stage_bound"
+  | "lock_cleanup_failed";
+
+/**
+ * Reachable residual lease authority after acquisition abandon or stage-fence
+ * cleanup fails. Callers must dispose/retry rather than leave an invisible lease.
+ */
+export type ResidualLockAuthority = {
+  path: string;
+  leasePath: string;
+  descriptor: number;
+  state(): LockHandleState;
+  dispose(options?: { abortSignal?: AbortSignal; timeoutMs?: number }): Promise<void>;
+  /** Present when owner metadata was published before the abandon path. */
+  handle: LockHandle | null;
+};
 
 export type LockAcquireResult =
   | {
@@ -48,13 +63,27 @@ export type LockAcquireResult =
     }
   | {
       ok: false;
-      code: LockAcquireFailureCode;
+      code: Exclude<LockAcquireFailureCode, "lock_cleanup_failed">;
       message: string;
       holder: OperationLockRecord | null;
       path: string;
       leasePath: string;
       stage: typeof LOCK_STAGE;
       boundMs: number;
+    }
+  | {
+      ok: false;
+      code: "lock_cleanup_failed";
+      message: string;
+      primaryCode: Exclude<LockAcquireFailureCode, "lock_cleanup_failed">;
+      primaryMessage: string;
+      holder: OperationLockRecord | null;
+      path: string;
+      leasePath: string;
+      stage: typeof LOCK_STAGE;
+      boundMs: number;
+      cleanupError: unknown;
+      residual: ResidualLockAuthority;
     };
 
 export type LockHandleState = {
@@ -376,13 +405,13 @@ async function readOwnerRecord(
 }
 
 function failure(
-  code: LockAcquireFailureCode,
+  code: Exclude<LockAcquireFailureCode, "lock_cleanup_failed">,
   message: string,
   holder: OperationLockRecord | null,
   path: string,
   stableLeasePath: string,
   boundMs: number,
-): LockAcquireResult {
+): Extract<LockAcquireResult, { ok: false; code: Exclude<LockAcquireFailureCode, "lock_cleanup_failed"> }> {
   return {
     ok: false,
     code,
@@ -414,6 +443,49 @@ async function closeAfterFailure(lease: AdvisoryLease, error: unknown): Promise<
     throw new Error(`${original}; advisory lease descriptor close failed: ${closeMessage}`);
   }
   throw error;
+}
+
+function residualFromOpenLease(
+  lease: AdvisoryLease,
+  path: string,
+  leasePath: string,
+): ResidualLockAuthority {
+  let descriptorOpen = true;
+  let leaseHeld = true;
+  return {
+    path,
+    leasePath,
+    descriptor: lease.descriptor,
+    handle: null,
+    state() {
+      return {
+        descriptorOpen,
+        leaseHeld,
+        releasedMetadataWritten: false,
+      };
+    },
+    async dispose() {
+      if (!descriptorOpen) return;
+      await lease.close();
+      descriptorOpen = false;
+      leaseHeld = false;
+    },
+  };
+}
+
+function residualFromHandle(handle: LockHandle): ResidualLockAuthority {
+  return {
+    path: handle.path,
+    leasePath: handle.leasePath,
+    descriptor: handle.descriptor,
+    handle,
+    state() {
+      return handle.state();
+    },
+    dispose(options) {
+      return handle.release(options);
+    },
+  };
 }
 
 function createHandle(
@@ -696,17 +768,64 @@ export async function acquireOperationLock(options: AcquireLockOptions): Promise
         if (waitBoundMs > 0 && adapters.clock.nowMs() > deadline) return false;
         return true;
       };
+      const cleanupFailed = (
+        primaryCode: "lock_interrupted" | "lock_busy",
+        primaryMessage: string,
+        holder: OperationLockRecord | null,
+        cleanupError: unknown,
+        residual: ResidualLockAuthority,
+      ): LockAcquireResult => {
+        const cleanupMessage = cleanupError instanceof Error
+          ? cleanupError.message
+          : String(cleanupError);
+        return {
+          ok: false,
+          code: "lock_cleanup_failed",
+          message:
+            `${primaryMessage}; residual lease cleanup failed: ${cleanupMessage}`,
+          primaryCode,
+          primaryMessage,
+          holder,
+          path,
+          leasePath: state.leasePath,
+          stage: LOCK_STAGE,
+          boundMs: waitBoundMs,
+          cleanupError,
+          residual,
+        };
+      };
       const abandonAcquiredLease = async (
         code: "lock_interrupted" | "lock_busy",
         message: string,
         holder: OperationLockRecord | null,
+        publishedHandle?: LockHandle,
       ): Promise<LockAcquireResult> => {
+        if (publishedHandle !== undefined) {
+          try {
+            await publishedHandle.release();
+            return failure(code, message, holder, path, state.leasePath, waitBoundMs);
+          } catch (cleanupError: unknown) {
+            return cleanupFailed(
+              code,
+              message,
+              holder,
+              cleanupError,
+              residualFromHandle(publishedHandle),
+            );
+          }
+        }
         try {
           await lease.close();
-        } catch {
-          // Preserve the acquisition outcome; residual close is best-effort.
+          return failure(code, message, holder, path, state.leasePath, waitBoundMs);
+        } catch (cleanupError: unknown) {
+          return cleanupFailed(
+            code,
+            message,
+            holder,
+            cleanupError,
+            residualFromOpenLease(lease, path, state.leasePath),
+          );
         }
-        return failure(code, message, holder, path, state.leasePath, waitBoundMs);
       };
       try {
         if (!acquisitionActive()) {
@@ -829,26 +948,16 @@ export async function acquireOperationLock(options: AcquireLockOptions): Promise
 
         // A late write that completed after abort/deadline must not return a handle
         // that callers cannot observe. Reverse publication when possible and close.
+        // Cleanup faults surface structured residual authority for dispose/retry.
         if (!acquisitionActive()) {
           const lateHandle = createHandle(adapters, state, record, lease);
-          try {
-            await lateHandle.release();
-          } catch {
-            try {
-              await lease.close();
-            } catch {
-              // Best-effort residual cleanup after a timed-out late publication.
-            }
-          }
-          return failure(
+          return await abandonAcquiredLease(
             options.abortSignal?.aborted ? "lock_interrupted" : "lock_busy",
             options.abortSignal?.aborted
               ? `Lock ${resource} acquisition was interrupted after owner publication`
               : `Lock ${resource} acquisition ended after the declared bound after owner publication`,
             prior ?? lastHolder,
-            path,
-            state.leasePath,
-            waitBoundMs,
+            lateHandle,
           );
         }
 

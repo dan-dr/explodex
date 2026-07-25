@@ -7,16 +7,14 @@ import {
   MISSION_BASELINE_APP_BUILD,
   MISSION_BASELINE_APP_VERSION,
 } from "../../src/host/constants.ts";
-import {
-  HOST_TEST_INSPECTION_AUTHORITY,
-  inspectHost,
-  inspectHostForTests,
-} from "../../src/host/identity.ts";
+import { inspectHost } from "../../src/host/identity.ts";
 import { reportHost } from "../../src/host/report.ts";
 import {
   createFixtureAdapters,
   defaultCanonicalBundleOptions,
 } from "./fixture-fs.ts";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 describe("inspectHost canonical resolution (VAL-HOST-001)", () => {
   test("selects only /Applications/ChatGPT.app with full identity", async () => {
@@ -113,6 +111,11 @@ describe("inspectHost canonical resolution (VAL-HOST-001)", () => {
       adapters,
       bundlePath: alternate,
       requireCanonicalPath: false,
+      testOnly: {
+        authority: Symbol.for("explodex.host.test-inspection"),
+        bundlePath: alternate,
+        requireCanonicalPath: false,
+      },
       inspect: { bundlePath: alternate, requireCanonicalPath: false },
     };
     const direct = await inspectHost(forged as Parameters<typeof inspectHost>[0]);
@@ -129,33 +132,43 @@ describe("inspectHost canonical resolution (VAL-HOST-001)", () => {
     expect(reported.ok).toBe(true);
     if (!reported.ok || !reported.host) throw new Error("expected report success");
     expect(reported.host.bundlePath).toBe(CANONICAL_BUNDLE_PATH);
-
-    const forgedAuthority = await inspectHost({
-      adapters,
-      testOnly: {
-        authority: Symbol.for("not-the-real-authority") as typeof HOST_TEST_INSPECTION_AUTHORITY,
-        bundlePath: alternate,
-        requireCanonicalPath: false,
-      },
-    });
-    expect(forgedAuthority.ok).toBe(false);
-    if (forgedAuthority.ok) throw new Error("expected authority rejection");
-    expect(forgedAuthority.error.code).toBe("host_not_canonical_path");
   });
 
-  test("test-only authority can inspect fixtures without production override", async () => {
-    const fixturePath = "/tmp/explodex-fixture/ChatGPT.app";
+  test("shipped host identity has no alternate-bundle override surface", () => {
+    const identitySource = readFileSync(
+      join(import.meta.dir, "../../src/host/identity.ts"),
+      "utf8",
+    );
+    const hostIndexSource = readFileSync(
+      join(import.meta.dir, "../../src/host/index.ts"),
+      "utf8",
+    );
+    expect(identitySource).not.toContain("Symbol.for");
+    expect(identitySource).not.toContain("HOST_TEST_INSPECTION_AUTHORITY");
+    expect(identitySource).not.toContain("inspectHostForTests");
+    expect(identitySource).not.toContain("testOnly");
+    expect(identitySource).not.toContain("bundlePath?:");
+    expect(hostIndexSource).not.toContain("inspectHostForTests");
+    expect(hostIndexSource).not.toContain("HOST_TEST_INSPECTION_AUTHORITY");
+  });
+
+  test("fixture inspection maps the canonical path through adapters only", async () => {
+    // Controlled tests seed fixture content at the canonical path rather than
+    // using any production alternate-bundle override.
     const { adapters } = createFixtureAdapters({
-      bundles: [defaultCanonicalBundleOptions({ bundlePath: fixturePath })],
+      bundles: [
+        defaultCanonicalBundleOptions({
+          appVersion: "1.2.3-fixture",
+          appBuild: "999",
+        }),
+      ],
     });
-    const result = await inspectHostForTests({
-      adapters,
-      bundlePath: fixturePath,
-      requireCanonicalPath: false,
-    });
+    const result = await inspectHost({ adapters });
     expect(result.ok).toBe(true);
     if (!result.ok || !result.host) throw new Error("expected fixture success");
-    expect(result.host.bundlePath).toBe(fixturePath);
+    expect(result.host.bundlePath).toBe(CANONICAL_BUNDLE_PATH);
+    expect(result.host.appVersion).toBe("1.2.3-fixture");
+    expect(result.host.appBuild).toBe("999");
   });
 });
 

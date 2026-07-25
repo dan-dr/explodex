@@ -99,6 +99,7 @@ export type BoundedOperationErrorCode =
   | "invalid_stage_bound"
   | "external_wait_requires_bound"
   | "lock_busy"
+  | "lock_cleanup_failed"
   | "lock_release_timeout"
   | "lock_release_interrupted"
   | "lock_stale_unrecoverable"
