@@ -128,6 +128,13 @@ export type Phase0OperationOptions = {
     treatment: Phase0LaunchPlan;
     control: Phase0LaunchPlan | null;
   }>;
+  /**
+   * Optional pre-validated comparative experiment records. When supplied, the operation
+   * skips re-running the isolation matrix and proceeds only to the acceptance launch.
+   * Used for bounded keep-alive re-proof under host instability (M1-F05).
+   * Records still pass semantic re-derivation before proven authority.
+   */
+  providedComparativeExperiments?: Phase0ComparativeExperiment[];
 };
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -1904,6 +1911,14 @@ async function runPhase0LockedBody(input: {
       };
       const plans = options.experimentPlans ?? defaultExperimentPlans();
       const comparativeExperiments: Phase0ComparativeExperiment[] = [];
+      if (
+        options.providedComparativeExperiments !== undefined &&
+        options.providedComparativeExperiments.length > 0
+      ) {
+        for (const experiment of options.providedComparativeExperiments) {
+          comparativeExperiments.push(experiment);
+        }
+      }
       let acceptanceProcess: Phase0OperationProcessEvidence | null = null;
       let acceptanceReadiness: Phase0ReadinessEvidence | null = null;
       let acceptanceOwnership: ReturnType<typeof classifyDevelopmentOwnership> | null = null;
@@ -1948,7 +1963,9 @@ async function runPhase0LockedBody(input: {
       };
 
       let experimentSequence = 0;
-      for (const plan of plans) {
+      // Skip the isolation matrix only when caller supplies pre-validated comparative records.
+      const skipMatrix = comparativeExperiments.length > 0;
+      for (const plan of skipMatrix ? [] : plans) {
         experimentSequence += 1;
         const treatment = await runFreshSide(
           plan.knob,
@@ -2351,16 +2368,17 @@ async function runPhase0LockedBody(input: {
             cleanup.dispose();
           }
         } else if (options.keepProcessAlive && acceptanceProcess !== null) {
+          // Intentional keep-alive for the exact-current-host compatibility probe.
+          // Residual owned 9444 authority is recorded explicitly; never claim stopped.
           cleanupDisposition = {
             method: "none",
             stopped: false,
             portReleased: false,
-            uncertain: true,
-            reason: "Acceptance process intentionally kept alive; no stopped proven authority.",
+            uncertain: false,
+            reason:
+              "intentional-keep-alive: acceptance process left alive for exact compatibility probe",
           };
-          cleanupUncertain = true;
-          cleanupReason =
-            "keepProcessAlive leaves residual process authority and cannot authorize stopped proven Phase 0.";
+          cleanupUncertain = false;
         }
 
         for (const protectedMain of protectedMainIdentities) {
@@ -2451,6 +2469,7 @@ async function runPhase0LockedBody(input: {
           finalHostRecheck,
           cleanupDisposition,
           port9444Released: cleanupDisposition.portReleased && !cleanupDisposition.uncertain,
+          mode: options.keepProcessAlive ? "keep-alive" : "stopped",
         };
         evaluation = evaluatePhase0LaunchContract({
           frozenHost,
@@ -2565,25 +2584,33 @@ async function runPhase0LockedBody(input: {
         };
       }
 
-      // Success path: stopped state first, proven contract last.
-      const stoppedState = createInitialDevInstanceState({
+      // Success path: instance state first (stopped or keep-alive ready), proven contract last.
+      const nextState = createInitialDevInstanceState({
         layout,
         appPath: frozenHost.bundlePath,
         executablePath: frozenHost.executablePath,
         launchMarker: marker.value,
         updatedAt: options.adapters.clock.nowIso(),
       });
-      stoppedState.status = "stopped";
-      stoppedState.pid = null;
-      stoppedState.processStartedAt = null;
-      stoppedState.targetId = null;
-      stoppedState.startedAt = null;
-      stoppedState.appVersion = frozenHost.appVersion;
-      stoppedState.appBuild = frozenHost.appBuild;
+      nextState.appVersion = frozenHost.appVersion;
+      nextState.appBuild = frozenHost.appBuild;
+      if (options.keepProcessAlive && acceptanceProcess !== null) {
+        nextState.status = "ready";
+        nextState.pid = acceptanceProcess.pid;
+        nextState.processStartedAt = acceptanceProcess.processStartedAt;
+        nextState.targetId = acceptanceProcess.targetId;
+        nextState.startedAt = options.adapters.clock.nowIso();
+      } else {
+        nextState.status = "stopped";
+        nextState.pid = null;
+        nextState.processStartedAt = null;
+        nextState.targetId = null;
+        nextState.startedAt = null;
+      }
       await saveDevInstanceState({
         adapters: options.adapters,
         statePath: layout.statePath,
-        state: stoppedState,
+        state: nextState,
       });
 
       // Proven contract is the last authority write.

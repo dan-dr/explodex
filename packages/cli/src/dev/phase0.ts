@@ -507,24 +507,56 @@ export function validatePhase0AcceptanceAuthority(
       reason: "Acceptance cleanup disposition is uncertain; residual authority remains non-authorizing.",
     };
   }
-  if (authority.cleanupDisposition.method === "none") {
+  const mode = authority.mode ?? "stopped";
+  if (mode !== "stopped" && mode !== "keep-alive") {
     return {
       ok: false,
-      reason:
-        "Acceptance cleanup method 'none' cannot authorize stopped proven authority.",
+      reason: "Acceptance authority mode must be stopped or keep-alive.",
     };
   }
-  if (!authority.cleanupDisposition.stopped || !authority.cleanupDisposition.portReleased) {
-    return {
-      ok: false,
-      reason: "Acceptance cleanup must record exact stop and 9444 release before proven authority.",
-    };
-  }
-  if (!authority.port9444Released) {
-    return {
-      ok: false,
-      reason: "Acceptance authority must confirm 9444 release before lifecycle authorization.",
-    };
+  if (mode === "keep-alive") {
+    // Intentional residual ownership for the compatibility probe. Never claim stopped.
+    if (authority.cleanupDisposition.method !== "none") {
+      return {
+        ok: false,
+        reason:
+          "Keep-alive acceptance must record cleanup method 'none' with residual owned authority.",
+      };
+    }
+    if (authority.cleanupDisposition.stopped || authority.cleanupDisposition.portReleased) {
+      return {
+        ok: false,
+        reason:
+          "Keep-alive acceptance cannot claim stopped process or 9444 release while residual authority remains.",
+      };
+    }
+    if (authority.port9444Released) {
+      return {
+        ok: false,
+        reason:
+          "Keep-alive acceptance must leave port9444Released false while the owned process remains live.",
+      };
+    }
+  } else {
+    if (authority.cleanupDisposition.method === "none") {
+      return {
+        ok: false,
+        reason:
+          "Acceptance cleanup method 'none' cannot authorize stopped proven authority.",
+      };
+    }
+    if (!authority.cleanupDisposition.stopped || !authority.cleanupDisposition.portReleased) {
+      return {
+        ok: false,
+        reason: "Acceptance cleanup must record exact stop and 9444 release before proven authority.",
+      };
+    }
+    if (!authority.port9444Released) {
+      return {
+        ok: false,
+        reason: "Acceptance authority must confirm 9444 release before lifecycle authorization.",
+      };
+    }
   }
   if (authority.protectedMainBefore.length !== authority.protectedMainAfter.length) {
     return {
@@ -2078,6 +2110,9 @@ function parseAcceptanceAuthority(
         : {}),
     },
     port9444Released: value.port9444Released,
+    ...(value.mode === "keep-alive" || value.mode === "stopped"
+      ? { mode: value.mode }
+      : {}),
   };
 }
 

@@ -237,6 +237,10 @@ export type Phase0OwnershipEvidence = {
 /**
  * Acceptance-correlated authority facts that must be persisted and re-derived with a proven contract.
  * Comparative experiment records remain separate causal evidence.
+ *
+ * `mode` distinguishes stopped acceptance (port released) from intentional keep-alive
+ * acceptance used by the exact-current-host compatibility probe. Keep-alive never
+ * pretends the process stopped; it records residual owned 9444 authority explicitly.
  */
 export type Phase0AcceptanceAuthority = {
   /** One acceptance operation identity binding readiness, descriptor, ownership, and cleanup. */
@@ -269,8 +273,16 @@ export type Phase0AcceptanceAuthority = {
     uncertain: boolean;
     reason?: string;
   };
-  /** True only when 9444 is free after acceptance cleanup (zero remaining listeners). */
+  /**
+   * True only when 9444 is free after acceptance cleanup (zero remaining listeners).
+   * Keep-alive acceptance intentionally leaves this false.
+   */
   port9444Released: boolean;
+  /**
+   * Acceptance mode. Omitted or `"stopped"` requires exact stop + 9444 release.
+   * `"keep-alive"` authorizes residual owned process authority for the compatibility probe.
+   */
+  mode?: "stopped" | "keep-alive";
 };
 
 /**
