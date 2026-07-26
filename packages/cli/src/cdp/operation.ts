@@ -8,9 +8,15 @@ import type {
 import type { RuntimeAdapters } from "../runtime/adapters.ts";
 import { runBoundedOperation } from "../runtime/operation.ts";
 import type { BoundedOperationResult } from "../runtime/types.ts";
-import type { CdpAdapter, CdpEvaluationResult } from "./adapters.ts";
+import type {
+  CdpAdapter,
+  CdpEvaluationResult,
+  ResidualSessionAuthority,
+  SessionRegistrationCleanupError,
+} from "./adapters.ts";
 import { inspectCompatibleEndpoint } from "./endpoint.ts";
 import type { TargetIdentity, TargetingErrorCode } from "./types.ts";
+import type { OperationContext } from "../runtime/operation.ts";
 
 export class TargetingError extends Error {
   readonly code: TargetingErrorCode;
@@ -191,6 +197,71 @@ function assertPointOfUseIdentity(input: {
   }
 }
 
+function isSessionRegistrationCleanupError(
+  error: unknown,
+): error is SessionRegistrationCleanupError {
+  return typeof error === "object" &&
+    error !== null &&
+    (error as { code?: unknown }).code === "cdp_session_registration_cleanup_failed" &&
+    isResidualSessionAuthority((error as { residual?: unknown }).residual);
+}
+
+function isResidualSessionAuthority(value: unknown): value is ResidualSessionAuthority {
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return typeof record["targetId"] === "string" &&
+    typeof record["isOpen"] === "function" &&
+    typeof record["dispose"] === "function";
+}
+
+/**
+ * Register residual/session authority immediately on open so late settlement
+ * fences cannot publish false-clean inventory when close later times out.
+ * Returns null when the scope is already disposing.
+ */
+function tryRegisterSessionAuthority(
+  ctx: OperationContext,
+  residual: Pick<ResidualSessionAuthority, "targetId" | "isOpen" | "dispose">,
+  label: string,
+): string | null {
+  try {
+    return ctx.scope.register({
+      kind: "session",
+      label,
+      disposition: "command-owned",
+      dispose: () => residual.dispose(),
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Preserve adapter residual authority when registration cleanup fails, then
+ * rethrow the specific error so runBoundedOperation does not collapse it.
+ * Residual registration into ResourceScope is handled centrally by
+ * runBoundedOperation so inventory accounting stays single-entry.
+ */
+function preserveSessionRegistrationResidual(
+  _ctx: OperationContext,
+  error: unknown,
+): never {
+  if (isSessionRegistrationCleanupError(error)) {
+    // Keep stage annotation without losing residual fields or specific code.
+    throw Object.assign(error, {
+      stage: "cdp-discovery" as const,
+      details: {
+        residualSession: {
+          targetId: error.residual.targetId,
+          isOpen: error.residual.isOpen(),
+          boundMs: error.boundMs,
+        },
+      },
+    });
+  }
+  throw stageFailure("cdp-discovery", error);
+}
+
 export async function runExactTargetOperation(options: {
   runtime: RuntimeAdapters;
   operationId?: string;
@@ -220,12 +291,22 @@ export async function runExactTargetOperation(options: {
             signal: control.signal,
             retainSession: true,
             onSessionOpened(session) {
-              ctx.scope.register({
-                kind: "session",
-                label: `cdp:${ctx.identity.operationId}:${session.targetId}`,
-                disposition: "command-owned",
-                dispose: () => session.close(),
-              });
+              // Register residual authority at open, before any delayed work.
+              const registered = tryRegisterSessionAuthority(
+                ctx,
+                {
+                  targetId: session.targetId,
+                  isOpen: () => session.isOpen(),
+                  dispose: (disposeOptions) => session.close(disposeOptions),
+                },
+                `cdp:${ctx.identity.operationId}:${session.targetId}`,
+              );
+              if (registered === null) {
+                // Scope already disposing: force residual path at the adapter.
+                throw new Error(
+                  "CDP session registration failed because the operation scope is disposing",
+                );
+              }
             },
           });
           if (inspected.kind !== "available") {
@@ -241,7 +322,7 @@ export async function runExactTargetOperation(options: {
           }
           return { target: inspected.target, session: inspected.session };
         } catch (error: unknown) {
-          throw stageFailure("cdp-discovery", error);
+          preserveSessionRegistrationResidual(ctx, error);
         }
       });
       ctx.markStageComplete("cdp-discovery");

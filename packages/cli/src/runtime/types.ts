@@ -116,6 +116,7 @@ export type BoundedOperationErrorCode =
   | "target_identity_drift"
   | "context_identity_drift"
   | "cleanup_failed"
+  | "cdp_session_registration_cleanup_failed"
   | "resident_control_plane_forbidden"
   /** Explicit main-launch path refusals and partial-stage failures (M1-F06). */
   | "compatibility_unproven"

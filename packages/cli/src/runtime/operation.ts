@@ -511,15 +511,40 @@ export async function runBoundedOperation<T>(
     const errorCode = readRuntimeErrorCode(error);
     const errorStage = readRuntimeErrorStage(error) ?? currentStage ?? partial.stalledStage;
     const errorBoundMs = readRuntimeErrorBoundMs(error);
+    // Adapter-created residual CDP session authority must enter scope before
+    // terminal dispose so inventory cannot publish a false-clean control plane.
+    const residualSession = extractResidualSessionAuthority(error);
+    if (residualSession !== null) {
+      tryRegisterResidualSession(scope, residualSession);
+    }
+    const details = enrichFailureDetails(error, residualSession);
 
     const cleanup = await finalizeDispose(
       scope,
       terminalReason,
       bounds.bounds["owned-child-shutdown"],
     );
-    const inventory = scope.inventory();
+    let inventory = scope.inventory();
+    // Open residual that could not enter ResourceScope still counts as one
+    // session / resident control-plane authority until disposal succeeds.
+    inventory = mergeOpenResidualSessionInventory(inventory, residualSession);
     if (options.afterDispose) await options.afterDispose(inventory);
     if (cleanup.failures.length > 0 || (enforce && inventory.hasResidentControlPlane)) {
+      // Preserve the specific residual classification when cleanup cannot clear
+      // the open session; do not collapse it to a generic cleanup_failed alone.
+      if (errorCode === "cdp_session_registration_cleanup_failed") {
+        return failureResult(identity, stagesCompleted, warnings, partial, inventory, {
+          code: errorCode,
+          message: `${message}; terminal cleanup was incomplete`,
+          stage: errorStage ?? "cleanup",
+          boundMs: errorBoundMs,
+          details: {
+            ...asRecord(details),
+            cleanupFailures: cleanup.failures,
+            residualInventory: inventory,
+          },
+        });
+      }
       return cleanupFailureResult(
         identity,
         stagesCompleted,
@@ -532,7 +557,7 @@ export async function runBoundedOperation<T>(
           message,
           stage: errorStage,
           boundMs: errorBoundMs,
-          details: readRuntimeErrorDetails(error),
+          details,
         },
       );
     }
@@ -542,7 +567,7 @@ export async function runBoundedOperation<T>(
       message,
       stage: errorStage,
       boundMs: errorBoundMs,
-      details: readRuntimeErrorDetails(error),
+      details,
     });
   } finally {
     unsubInt();
@@ -636,6 +661,7 @@ function readRuntimeErrorCode(error: unknown): BoundedOperationFailure["error"][
   if (code === "browser_identity_drift") return code;
   if (code === "target_identity_drift") return code;
   if (code === "context_identity_drift") return code;
+  if (code === "cdp_session_registration_cleanup_failed") return code;
   return "operation_failed";
 }
 
@@ -658,6 +684,128 @@ function readRuntimeErrorDetails(error: unknown): unknown {
     if (details !== undefined) return details;
   }
   return { name: error.name };
+}
+
+/**
+ * In-process residual CDP session authority. Kept structural (duck-typed) so
+ * the runtime package does not hard-depend on the CDP module graph.
+ */
+type ResidualSessionAuthorityLike = {
+  targetId: string;
+  isOpen(): boolean;
+  dispose(options?: { timeoutMs?: number }): Promise<void>;
+};
+
+function isResidualSessionAuthorityLike(value: unknown): value is ResidualSessionAuthorityLike {
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return typeof record["targetId"] === "string" &&
+    typeof record["isOpen"] === "function" &&
+    typeof record["dispose"] === "function";
+}
+
+function extractResidualSessionAuthority(error: unknown): ResidualSessionAuthorityLike | null {
+  if (typeof error !== "object" || error === null) return null;
+  const record = error as Record<string, unknown>;
+  if (record["code"] !== "cdp_session_registration_cleanup_failed") return null;
+  return isResidualSessionAuthorityLike(record["residual"]) ? record["residual"] : null;
+}
+
+function tryRegisterResidualSession(
+  scope: ResourceScope,
+  residual: ResidualSessionAuthorityLike,
+): string | null {
+  try {
+    return scope.register({
+      kind: "session",
+      label: `cdp-residual:${residual.targetId}`,
+      disposition: "command-owned",
+      dispose: (control) => {
+        // Bound residual dispose by remaining cleanup control; never leave an
+        // untracked open session when dispose eventually succeeds.
+        void control;
+        return residual.dispose();
+      },
+    });
+  } catch {
+    // Terminal dispose may already have started. Residual remains on details
+    // for bounded dispose/retry and inventory merge below.
+    return null;
+  }
+}
+
+function mergeOpenResidualSessionInventory(
+  inventory: ResidualInventory,
+  residual: ResidualSessionAuthorityLike | null,
+): ResidualInventory {
+  if (residual === null || !residual.isOpen()) return inventory;
+  if (inventory.sessions > 0) return inventory;
+  return {
+    ...inventory,
+    sessions: inventory.sessions + 1,
+    hasResidentControlPlane: true,
+  };
+}
+
+function secretFreeErrorSummary(value: unknown): { name?: string; message: string; code?: string } {
+  if (value instanceof Error) {
+    const code = "code" in value && typeof (value as { code?: unknown }).code === "string"
+      ? (value as { code: string }).code
+      : undefined;
+    return {
+      name: value.name,
+      message: value.message,
+      ...(code === undefined ? {} : { code }),
+    };
+  }
+  return { message: String(value) };
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : value === undefined
+      ? {}
+      : { details: value };
+}
+
+/**
+ * Secret-free residual diagnostics plus a reachable in-process residual handle.
+ * Never puts raw session/socket internals into serializable diagnostic fields.
+ */
+function enrichFailureDetails(
+  error: unknown,
+  residual: ResidualSessionAuthorityLike | null,
+): unknown {
+  const base = readRuntimeErrorDetails(error);
+  if (residual === null) return base;
+  const record = typeof error === "object" && error !== null
+    ? error as Record<string, unknown>
+    : {};
+  const boundMs = typeof record["boundMs"] === "number" && Number.isFinite(record["boundMs"])
+    ? record["boundMs"]
+    : undefined;
+  const residualHandle = {
+    targetId: residual.targetId,
+    isOpen: () => residual.isOpen(),
+    dispose: (options?: { timeoutMs?: number }) => residual.dispose(options),
+  };
+  return {
+    ...asRecord(base),
+    residualSession: {
+      targetId: residual.targetId,
+      isOpen: residual.isOpen(),
+      ...(boundMs === undefined ? {} : { boundMs }),
+    },
+    // Reachable in-process for bounded dispose/retry; functions are not JSON fields.
+    residualAuthority: residualHandle,
+    ...(record["registrationError"] === undefined
+      ? {}
+      : { registrationError: secretFreeErrorSummary(record["registrationError"]) }),
+    ...(record["cleanupError"] === undefined
+      ? {}
+      : { cleanupError: secretFreeErrorSummary(record["cleanupError"]) }),
+  };
 }
 
 function failureResult(

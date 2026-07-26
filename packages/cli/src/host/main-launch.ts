@@ -503,12 +503,20 @@ export async function runExplicitMainLaunch(
               signal: ctl.signal,
               retainSession: true,
               onSessionOpened(session) {
-                ctx.scope.register({
-                  kind: "session",
-                  label: `cdp:main:${ctx.identity.operationId}:${session.targetId}`,
-                  disposition: "command-owned",
-                  dispose: () => session.close(),
-                });
+                // Register residual authority at open before delayed work so
+                // late cleanup cannot publish false-clean session inventory.
+                try {
+                  ctx.scope.register({
+                    kind: "session",
+                    label: `cdp:main:${ctx.identity.operationId}:${session.targetId}`,
+                    disposition: "command-owned",
+                    dispose: () => session.close(),
+                  });
+                } catch {
+                  throw new Error(
+                    "CDP session registration failed because the operation scope is disposing",
+                  );
+                }
               },
             });
             if (inspected.kind !== "available") {

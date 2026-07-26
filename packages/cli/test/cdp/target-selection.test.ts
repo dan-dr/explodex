@@ -111,6 +111,15 @@ class FixtureCdpAdapter implements CdpAdapter {
   beforeSessionReturn: (() => Promise<void>) | null = null;
   beforeListExecutionContexts: (() => Promise<void>) | null = null;
   evaluationError: Error | null = null;
+  /**
+   * When registration throws, control emergency close behavior:
+   * - success: close reaches CLOSED
+   * - reject: close rejects once; residual stays open for dispose/retry
+   * - hang/never-CLOSED: first close times out; residual stays open
+   */
+  registrationCloseMode: "success" | "reject" | "hang" = "success";
+  /** When true, open creates residual without a successful scope registration. */
+  forceRegistrationCleanupFailure = false;
   operationSentinels = new Map<string, string[]>();
 
   constructor(options: {
@@ -144,6 +153,9 @@ class FixtureCdpAdapter implements CdpAdapter {
     const targetId = input.target.id;
     this.sessionReads.push(targetId);
     let closed = false;
+    // Two close faults when residual is expected: (1) registration cleanup,
+    // (2) terminal dispose. A later residual.dispose() retry then succeeds.
+    let closeFaultsRemaining = this.registrationCloseMode === "success" ? 0 : 2;
     const session = {
       targetId,
       isOpen: () => !closed,
@@ -170,17 +182,71 @@ class FixtureCdpAdapter implements CdpAdapter {
         this.operationSentinels.set(owner, list);
         return { value: `${owner}@${targetId}` };
       },
-      close: async () => {
+      close: async (options?: { timeoutMs?: number }) => {
         if (closed) return;
+        if (closeFaultsRemaining > 0) {
+          closeFaultsRemaining -= 1;
+          const boundMs = options?.timeoutMs ?? 250;
+          if (this.registrationCloseMode === "hang") {
+            throw Object.assign(
+              new Error(`CDP websocket close timed out after ${boundMs}ms`),
+              { code: "cdp_session_close_timeout" as const, boundMs },
+            );
+          }
+          throw new Error("CDP websocket failed while closing");
+        }
         closed = true;
         this.closeLog.push(targetId);
       },
     };
+
+    const throwResidual = (registrationError: unknown, cleanupError: unknown): never => {
+      const residual = {
+        targetId: session.targetId,
+        session,
+        isOpen: () => session.isOpen(),
+        dispose: (options?: { timeoutMs?: number }) => session.close(options),
+      };
+      const registrationMessage = registrationError instanceof Error
+        ? registrationError.message
+        : String(registrationError);
+      const cleanupMessage = cleanupError instanceof Error
+        ? cleanupError.message
+        : String(cleanupError);
+      throw Object.assign(
+        new Error(
+          `${registrationMessage}; residual CDP session cleanup failed: ${cleanupMessage}`,
+        ),
+        {
+          code: "cdp_session_registration_cleanup_failed" as const,
+          registrationError,
+          cleanupError,
+          residual,
+          boundMs: 250,
+        },
+      );
+    };
+
+    if (this.forceRegistrationCleanupFailure) {
+      // Simulate open-before-register residual without a successful scope entry.
+      const registrationError = new Error("registration callback failed");
+      try {
+        await session.close({ timeoutMs: 250 });
+      } catch (cleanupError: unknown) {
+        throwResidual(registrationError, cleanupError);
+      }
+      throw registrationError;
+    }
+
     try {
       input.onSessionOpened?.(session);
-    } catch (error: unknown) {
-      await session.close();
-      throw error;
+    } catch (registrationError: unknown) {
+      try {
+        await session.close({ timeoutMs: 250 });
+      } catch (cleanupError: unknown) {
+        throwResidual(registrationError, cleanupError);
+      }
+      throw registrationError;
     }
     await this.beforeSessionReturn?.();
     return session;
@@ -488,6 +554,97 @@ describe("point-of-use identity revalidation", () => {
     expect(result.residualInventory.sessions).toBe(0);
     expect(result.residualInventory.hasResidentControlPlane).toBe(false);
   });
+
+  test.each([
+    {
+      mode: "hang" as const,
+      cleanupMessage: /timed out|cdp_session_close_timeout/i,
+      label: "never-CLOSED timeout",
+    },
+    {
+      mode: "reject" as const,
+      cleanupMessage: /failed while closing/i,
+      label: "close-rejection",
+    },
+  ])(
+    "M1-F03R2: composed $label preserves residual session authority without false-clean inventory",
+    async ({ mode, cleanupMessage }) => {
+      const scenario = fixture();
+      scenario.adapter.forceRegistrationCleanupFailure = true;
+      scenario.adapter.registrationCloseMode = mode;
+      const runtime = createFakeRuntimeHarness({
+        self: { pid: 8011, processStartedAt: "operation-start" },
+      });
+      runtime.setProcessAlive(
+        scenario.expectedProcess.pid,
+        scenario.expectedProcess.processStartedAt,
+        true,
+      );
+
+      const composed = await runExactTargetOperation({
+        runtime: runtime.adapters,
+        operationId: `op-residual-${mode}`,
+        operation: "fixture-evaluate",
+        role: scenario.role,
+        homeIdentity: `/tmp/home-residual-${mode}`,
+        host: HOST,
+        process: scenario.expectedProcess,
+        endpoint: endpoint(scenario.role),
+        cdp: scenario.adapter,
+        revalidate: scenario.revalidate,
+        evaluate: { expression: `op-residual-${mode}:sentinel` },
+      });
+
+      expect(composed.ok).toBe(false);
+      if (composed.ok) throw new Error("expected residual registration cleanup failure");
+      // Specific classification through runExactTargetOperation + runBoundedOperation.
+      expect(composed.error.code).toBe("cdp_session_registration_cleanup_failed");
+      expect(composed.error.code).not.toBe("operation_failed");
+      expect(composed.error.stage).toBe("cdp-discovery");
+      expect(composed.error.boundMs).toBe(250);
+
+      // Secret-free residual diagnostics; no raw session/socket internals.
+      const details = composed.error.details as {
+        residualSession?: { targetId: string; isOpen: boolean; boundMs?: number };
+        residualAuthority?: {
+          targetId: string;
+          isOpen(): boolean;
+          dispose(options?: { timeoutMs?: number }): Promise<void>;
+        };
+        registrationError?: { message: string };
+        cleanupError?: { message: string; code?: string };
+        session?: unknown;
+        socket?: unknown;
+      };
+      expect(details.residualSession).toEqual({
+        targetId: "PAGE-1",
+        isOpen: true,
+        boundMs: 250,
+      });
+      expect(details.registrationError?.message).toMatch(/registration callback failed/);
+      expect(details.cleanupError?.message).toMatch(cleanupMessage);
+      expect(details).not.toHaveProperty("session");
+      expect(details).not.toHaveProperty("socket");
+      // JSON diagnostics must not embed raw session objects.
+      expect(JSON.stringify(details.residualSession)).not.toMatch(/webSocket|WebSocket|socket/i);
+
+      // Open unregistered residual counts as one session and resident control plane.
+      expect(composed.residualInventory.sessions).toBe(1);
+      expect(composed.residualInventory.hasResidentControlPlane).toBe(true);
+      // Socket never reached CLOSED; no false-clean inventory.
+      expect(scenario.adapter.closeLog).toEqual([]);
+
+      // Reachable in-process residual authority for bounded dispose/retry.
+      const residual = details.residualAuthority;
+      expect(residual).toBeDefined();
+      if (residual === undefined) throw new Error("expected residualAuthority");
+      expect(residual.targetId).toBe("PAGE-1");
+      expect(residual.isOpen()).toBe(true);
+      await residual.dispose({ timeoutMs: 100 });
+      expect(residual.isOpen()).toBe(false);
+      expect(scenario.adapter.closeLog).toEqual(["PAGE-1"]);
+    },
+  );
 
   test.each([
     { phase: "discovery" as const, stage: "cdp-discovery" as const },
