@@ -116,7 +116,17 @@ export type BoundedOperationErrorCode =
   | "target_identity_drift"
   | "context_identity_drift"
   | "cleanup_failed"
-  | "resident_control_plane_forbidden";
+  | "resident_control_plane_forbidden"
+  /** Explicit main-launch path refusals and partial-stage failures (M1-F06). */
+  | "compatibility_unproven"
+  | "compatibility_stale"
+  | "main_hot_path_unavailable"
+  | "state_changed"
+  | "port_obstructed"
+  | "host_invalid"
+  | "launch_failed"
+  | "readiness_failed"
+  | "requested_work_failed";
 
 export type BoundedOperationError = {
   code: BoundedOperationErrorCode;
