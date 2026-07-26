@@ -310,6 +310,9 @@ async function waitForPortOwner(options: {
   return null;
 }
 
+const BENIGN_RENDERER_EXPRESSION =
+  "(() => ({ explodexPhase0Readiness: true, readyState: document.readyState, href: location.href }))()";
+
 async function collectReadiness(options: {
   cdp: CdpAdapter;
   commands: ReadOnlyCommandRunner;
@@ -322,6 +325,7 @@ async function collectReadiness(options: {
   /** When false, skip CDP/port waits (control launches that omit the port). */
   expectCdp?: boolean;
   portTimeoutMs?: number;
+  clockIso?: string;
   signal?: AbortSignal;
 }): Promise<{
   process: Phase0OperationProcessEvidence;
@@ -340,10 +344,13 @@ async function collectReadiness(options: {
     : null;
 
   let browserIdentity: string | null = null;
+  let endpointPublishedPid: number | null = null;
   let targetId: string | null = null;
   let executionContextId: number | null = null;
   let executionContextUniqueId: string | null = null;
   let frameId: string | null = null;
+  let rendererEvaluation: Phase0ReadinessEvidence["rendererEvaluation"] | null = null;
+  let listenerCoOwned = false;
 
   if (expectCdp) {
     // Port ownership can precede the exact app:// page and default context.
@@ -354,12 +361,59 @@ async function collectReadiness(options: {
         throw Object.assign(new Error("Phase 0 aborted"), { code: "ABORT_ERR" });
       }
       try {
+        const ports = createNodePortInventoryAdapter(options.commands);
+        const listeners = await ports.listenersFor(DEV_CDP_PORT, { signal: options.signal });
+        const loopback = listeners.filter(
+          (entry) =>
+            entry.port === DEV_CDP_PORT &&
+            (entry.host === DEV_CDP_HOST || entry.host === "localhost" || entry.host === "::1"),
+        );
+        const distinctOwners = new Set(loopback.map((entry) => entry.pid));
+        // ChatGPT may spawn private-root helpers that share the listen socket in lsof
+        // output. Ownership for readiness requires the expected PID among listeners;
+        // only a missing expected PID with other listeners is hard co-ownership failure.
+        const expectedOwns = distinctOwners.has(options.pid);
+        listenerCoOwned = !expectedOwns && distinctOwners.size > 0;
+        if (listenerCoOwned) {
+          browserIdentity = null;
+          targetId = null;
+          executionContextId = null;
+          executionContextUniqueId = null;
+          frameId = null;
+          rendererEvaluation = null;
+          break;
+        }
+        if (!expectedOwns) {
+          browserIdentity = null;
+          await sleep(250, options.signal);
+          continue;
+        }
+
         const version = await options.cdp.readEndpoint({
           host: DEV_CDP_HOST,
           port: DEV_CDP_PORT,
           signal: options.signal,
         });
+        if (typeof version.browser !== "string" || version.browser.length === 0) {
+          browserIdentity = null;
+          await sleep(250, options.signal);
+          continue;
+        }
         browserIdentity = version.browser;
+        endpointPublishedPid =
+          typeof version.pid === "number" && Number.isInteger(version.pid) && version.pid > 0
+            ? version.pid
+            : null;
+        if (endpointPublishedPid !== null && endpointPublishedPid !== options.pid) {
+          // Published endpoint PID disagreement is a hard incomplete result.
+          rendererEvaluation = null;
+          targetId = null;
+          executionContextId = null;
+          executionContextUniqueId = null;
+          frameId = null;
+          break;
+        }
+
         const targets = await options.cdp.listTargets({
           host: DEV_CDP_HOST,
           port: DEV_CDP_PORT,
@@ -368,38 +422,163 @@ async function collectReadiness(options: {
         const pages = targets.filter(
           (target) => target.type === "page" && target.url === "app://-/index.html",
         );
-        if (pages.length === 1) {
-          const target = pages[0]!;
-          targetId = target.id;
+        if (pages.length !== 1) {
+          targetId = null;
+          executionContextId = null;
+          executionContextUniqueId = null;
+          frameId = null;
+          rendererEvaluation = null;
+          await sleep(250, options.signal);
+          continue;
+        }
+        const target = pages[0]!;
+        targetId = target.id;
+        try {
+          const session = await options.cdp.openTargetSession({
+            host: DEV_CDP_HOST,
+            port: DEV_CDP_PORT,
+            target,
+            signal: options.signal,
+          });
           try {
-            const session = await options.cdp.openTargetSession({
-              host: DEV_CDP_HOST,
-              port: DEV_CDP_PORT,
-              target,
+            const contexts = await session.listExecutionContexts({
               signal: options.signal,
             });
-            try {
-              const contexts = await session.listExecutionContexts({
-                signal: options.signal,
-              });
-              const selection = selectExactPageAndContext({
-                targets,
-                contextsByTarget: { [target.id]: contexts },
-              });
-              if (selection.kind === "selected") {
-                executionContextId = selection.context.id;
-                executionContextUniqueId = selection.context.uniqueId;
-                frameId = selection.context.frameId;
+            const selection = selectExactPageAndContext({
+              targets,
+              contextsByTarget: { [target.id]: contexts },
+            });
+            if (selection.kind !== "selected") {
+              executionContextId = null;
+              executionContextUniqueId = null;
+              frameId = null;
+              rendererEvaluation = null;
+            } else {
+              executionContextId = selection.context.id;
+              executionContextUniqueId = selection.context.uniqueId;
+              frameId = selection.context.frameId;
+
+              // Point-of-use revalidation before evaluation. Transient target/context
+              // churn during page load must continue polling within the readiness bound;
+              // only hard identity disagreements exit early.
+              const alive = await options.runtimeProcess.isAlive(
+                options.pid,
+                options.processStartedAt,
+                { abortSignal: options.signal },
+              );
+              if (!alive) {
+                rendererEvaluation = null;
+                targetId = null;
+                executionContextId = null;
+                executionContextUniqueId = null;
+                frameId = null;
                 break;
               }
-            } finally {
-              await session.close({ timeoutMs: 2_000 });
+              const recheckVersion = await options.cdp.readEndpoint({
+                host: DEV_CDP_HOST,
+                port: DEV_CDP_PORT,
+                signal: options.signal,
+              });
+              const recheckPublished =
+                typeof recheckVersion.pid === "number" &&
+                Number.isInteger(recheckVersion.pid) &&
+                recheckVersion.pid > 0
+                  ? recheckVersion.pid
+                  : null;
+              if (recheckPublished !== null && recheckPublished !== options.pid) {
+                // Hard endpoint PID disagreement: incomplete without reconnect.
+                rendererEvaluation = null;
+                targetId = null;
+                executionContextId = null;
+                executionContextUniqueId = null;
+                frameId = null;
+                break;
+              }
+              if (
+                typeof recheckVersion.browser !== "string" ||
+                recheckVersion.browser.length === 0
+              ) {
+                rendererEvaluation = null;
+                await sleep(250, options.signal);
+                continue;
+              }
+              browserIdentity = recheckVersion.browser;
+              const recheckTargets = await options.cdp.listTargets({
+                host: DEV_CDP_HOST,
+                port: DEV_CDP_PORT,
+                signal: options.signal,
+              });
+              const recheckPages = recheckTargets.filter(
+                (entry) => entry.type === "page" && entry.url === "app://-/index.html",
+              );
+              if (recheckPages.length !== 1) {
+                // Transient zero/multiple targets during load: keep polling.
+                rendererEvaluation = null;
+                targetId = null;
+                executionContextId = null;
+                executionContextUniqueId = null;
+                frameId = null;
+                await sleep(250, options.signal);
+                continue;
+              }
+              if (recheckPages[0]!.id !== target.id) {
+                // Target replacement: restart selection on the next poll.
+                rendererEvaluation = null;
+                targetId = null;
+                executionContextId = null;
+                executionContextUniqueId = null;
+                frameId = null;
+                await sleep(250, options.signal);
+                continue;
+              }
+              const recheckContexts = await session.listExecutionContexts({
+                signal: options.signal,
+              });
+              const recheckSelection = selectExactPageAndContext({
+                targets: recheckTargets,
+                contextsByTarget: { [target.id]: recheckContexts },
+              });
+              if (recheckSelection.kind !== "selected") {
+                rendererEvaluation = null;
+                executionContextId = null;
+                executionContextUniqueId = null;
+                frameId = null;
+                await sleep(250, options.signal);
+                continue;
+              }
+              // Accept the rechecked context identity; context ids can be reissued
+              // during load as long as the selected default context remains unique.
+              executionContextId = recheckSelection.context.id;
+              executionContextUniqueId = recheckSelection.context.uniqueId;
+              frameId = recheckSelection.context.frameId;
+
+              const evaluation = await session.evaluate({
+                executionContextId: recheckSelection.context.id,
+                executionContextUniqueId: recheckSelection.context.uniqueId,
+                expression: BENIGN_RENDERER_EXPRESSION,
+                signal: options.signal,
+              });
+              if (
+                evaluation === null ||
+                evaluation === undefined ||
+                evaluation.value === undefined
+              ) {
+                rendererEvaluation = null;
+              } else {
+                rendererEvaluation = {
+                  expression: BENIGN_RENDERER_EXPRESSION,
+                  result: evaluation.value,
+                  evaluatedAt: options.clockIso ?? new Date().toISOString(),
+                };
+                break;
+              }
             }
-          } catch {
-            // Context collection failure: keep polling while bound remains.
+          } finally {
+            await session.close({ timeoutMs: 2_000 });
           }
-        } else {
-          targetId = null;
+        } catch {
+          // Context collection / evaluation failure: keep polling while bound remains.
+          rendererEvaluation = null;
         }
       } catch {
         // Endpoint not ready yet.
@@ -435,12 +614,15 @@ async function collectReadiness(options: {
 
   const complete =
     ownership.owned &&
+    !listenerCoOwned &&
     browserIdentity !== null &&
     targetId !== null &&
     executionContextId !== null &&
     executionContextUniqueId !== null &&
     frameId !== null &&
-    portOwner === options.pid;
+    rendererEvaluation !== null &&
+    portOwner === options.pid &&
+    (endpointPublishedPid === null || endpointPublishedPid === options.pid);
 
   const processEvidence: Phase0OperationProcessEvidence = {
     pid: options.pid,
@@ -466,11 +648,13 @@ async function collectReadiness(options: {
         cdpHost: DEV_CDP_HOST,
         cdpPort: DEV_CDP_PORT,
         browserIdentity: browserIdentity!,
+        endpointPublishedPid,
         targetId: targetId!,
         targetUrl: "app://-/index.html",
         executionContextId: executionContextId!,
         executionContextUniqueId: executionContextUniqueId!,
         frameId: frameId!,
+        rendererEvaluation: rendererEvaluation!,
         readiness: "benign",
       }
     : null;
@@ -561,7 +745,7 @@ async function browserCloseIfPossible(
   }
 }
 
-async function revalidateCleanupAuthority(options: {
+async function revalidateProcessCleanupAuthority(options: {
   commands: ReadOnlyCommandRunner;
   runtimeProcess: RuntimeProcess;
   pid: number;
@@ -593,17 +777,163 @@ async function revalidateCleanupAuthority(options: {
   if (!match.arguments.some((token) => token === options.marker)) {
     return { ok: false, reason: "Exact marker no longer present before cleanup." };
   }
+  return { ok: true };
+}
+
+/**
+ * Endpoint/port revalidation required before Browser.close.
+ * Listener co-ownership or foreign ownership refuses Browser.close, but exact-PID
+ * SIGTERM of a still-verified process remains separately allowed.
+ */
+async function revalidateEndpointCleanupAuthority(options: {
+  commands: ReadOnlyCommandRunner;
+  cdp: CdpAdapter;
+  pid: number;
+  expectedTargetId?: string | null;
+  signal?: AbortSignal;
+}): Promise<{ ok: true } | { ok: false; reason: string }> {
   const ports = createNodePortInventoryAdapter(options.commands);
   const listeners = await ports.listenersFor(DEV_CDP_PORT, { signal: options.signal });
-  const owner = listeners.find(
+  const loopback = listeners.filter(
     (entry) =>
       entry.port === DEV_CDP_PORT &&
       (entry.host === DEV_CDP_HOST || entry.host === "localhost" || entry.host === "::1"),
   );
-  if (owner !== undefined && owner.pid !== options.pid) {
+  const owners = new Set(loopback.map((entry) => entry.pid));
+  if (!owners.has(options.pid)) {
+    if (owners.size === 0) {
+      return { ok: false, reason: "Declared development port has no owner before Browser.close." };
+    }
     return { ok: false, reason: "Port owner drifted before cleanup; refuse foreign Browser.close." };
   }
+  // Additional lsof listeners (private-root helpers sharing the socket) do not by
+  // themselves refuse Browser.close when the exact ChatGPT PID still owns 9444.
+
+  try {
+    const version = await options.cdp.readEndpoint({
+      host: DEV_CDP_HOST,
+      port: DEV_CDP_PORT,
+      signal: options.signal,
+    });
+    if (typeof version.browser !== "string" || version.browser.length === 0) {
+      return {
+        ok: false,
+        reason: "Endpoint browser identity missing/malformed before Browser.close.",
+      };
+    }
+    if (
+      typeof version.pid === "number" &&
+      Number.isInteger(version.pid) &&
+      version.pid > 0 &&
+      version.pid !== options.pid
+    ) {
+      return {
+        ok: false,
+        reason: "Endpoint published PID disagrees before Browser.close; refuse Browser.close.",
+      };
+    }
+    if (options.expectedTargetId) {
+      const targets = await options.cdp.listTargets({
+        host: DEV_CDP_HOST,
+        port: DEV_CDP_PORT,
+        signal: options.signal,
+      });
+      const pages = targets.filter(
+        (target) => target.type === "page" && target.url === "app://-/index.html",
+      );
+      if (pages.length !== 1 || pages[0]!.id !== options.expectedTargetId) {
+        return {
+          ok: false,
+          reason: "Target identity drifted before Browser.close; refuse Browser.close.",
+        };
+      }
+    }
+  } catch {
+    return {
+      ok: false,
+      reason: "Endpoint unavailable before Browser.close; fall through to exact-PID signal.",
+    };
+  }
   return { ok: true };
+}
+
+/**
+ * Create a fresh finite cleanup AbortSignal independent of the operation signal.
+ * Aborted operations must not reuse their aborted signal for cleanup work.
+ */
+function createCleanupContext(timeoutMs: number): {
+  signal: AbortSignal;
+  dispose: () => void;
+} {
+  const controller = new AbortController();
+  const handle = globalThis.setTimeout(() => {
+    controller.abort(Object.assign(new Error("Cleanup bound elapsed"), { code: "ABORT_ERR" }));
+  }, timeoutMs);
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      globalThis.clearTimeout(handle);
+    },
+  };
+}
+
+/**
+ * Stop exact helper processes that ChatGPT may spawn under our private roots
+ * (for example CODEX_HOME computer-use services) and that can orphan onto 9444.
+ * Only exact PIDs whose executable path is under one of the supplied private roots
+ * are signaled; protected mains and unrelated processes are never targeted.
+ */
+async function stopPrivateRootHelpers(options: {
+  commands: ReadOnlyCommandRunner;
+  runtimeProcess: RuntimeProcess;
+  privateRoots: readonly string[];
+  timeoutMs: number;
+  pollMs: number;
+  signal?: AbortSignal;
+}): Promise<void> {
+  if (options.privateRoots.length === 0) return;
+  const inventory = createNodeProcessInventoryAdapter({
+    commands: options.commands,
+    exactProcess: options.runtimeProcess,
+  });
+  const processes = await inventory.list({ signal: options.signal });
+  const helpers = processes.filter((entry) =>
+    options.privateRoots.some(
+      (root) =>
+        entry.executablePath === root ||
+        entry.executablePath.startsWith(`${root}/`) ||
+        entry.arguments.some(
+          (token) => token === root || token.startsWith(`${root}/`),
+        ),
+    ),
+  );
+  for (const helper of helpers) {
+    // Never signal the canonical installed ChatGPT main executable here; that
+    // identity is handled exclusively by the exact development PID path.
+    if (helper.executablePath.endsWith("/ChatGPT.app/Contents/MacOS/ChatGPT")) {
+      continue;
+    }
+    const identity = await options.runtimeProcess.identify(helper.pid, {
+      abortSignal: options.signal,
+    });
+    if (identity === null) continue;
+    try {
+      await options.runtimeProcess.signalExact(
+        { pid: identity.pid, processStartedAt: identity.processStartedAt },
+        "SIGTERM",
+        { abortSignal: options.signal },
+      );
+    } catch {
+      // Best-effort helper cleanup; port-release check remains authoritative.
+    }
+  }
+  const deadline = Date.now() + Math.min(options.timeoutMs, 5_000);
+  while (Date.now() < deadline) {
+    const ports = createNodePortInventoryAdapter(options.commands);
+    const listeners = await ports.listenersFor(DEV_CDP_PORT, { signal: options.signal });
+    if (listeners.length === 0) return;
+    await sleep(options.pollMs, options.signal);
+  }
 }
 
 async function stopExactProcess(options: {
@@ -616,90 +946,204 @@ async function stopExactProcess(options: {
   marker: string;
   timeoutMs: number;
   pollMs: number;
+  expectedTargetId?: string | null;
+  expectedContextUniqueId?: string | null;
+  /** Private roots under which ChatGPT may spawn helper processes. */
+  privateRoots?: readonly string[];
+  /** Intentionally ignored for cleanup; cleanup always uses a fresh finite context. */
   signal?: AbortSignal;
 }): Promise<{ stopped: boolean; portReleased: boolean; uncertain: boolean; reason?: string }> {
-  const authority = await revalidateCleanupAuthority({
-    commands: options.commands,
-    runtimeProcess: options.runtimeProcess,
-    pid: options.pid,
-    processStartedAt: options.processStartedAt,
-    executablePath: options.executablePath,
-    marker: options.marker,
-    signal: options.signal,
-  });
-  if (!authority.ok) {
-    return { stopped: false, portReleased: false, uncertain: true, reason: authority.reason };
-  }
-
-  await browserCloseIfPossible(options.cdp, options.signal);
-  const deadline = Date.now() + options.timeoutMs;
-  while (Date.now() < deadline) {
-    const alive = await options.runtimeProcess.isAlive(
-      options.pid,
-      options.processStartedAt,
-      { abortSignal: options.signal },
-    );
-    if (!alive) break;
-    await sleep(options.pollMs, options.signal);
-  }
-
-  let stillAlive = await options.runtimeProcess.isAlive(
-    options.pid,
-    options.processStartedAt,
-    { abortSignal: options.signal },
-  );
-  if (stillAlive) {
-    const recheck = await revalidateCleanupAuthority({
+  const cleanup = createCleanupContext(options.timeoutMs + 2_000);
+  try {
+    const processAuthority = await revalidateProcessCleanupAuthority({
       commands: options.commands,
       runtimeProcess: options.runtimeProcess,
       pid: options.pid,
       processStartedAt: options.processStartedAt,
       executablePath: options.executablePath,
       marker: options.marker,
-      signal: options.signal,
+      signal: cleanup.signal,
     });
-    if (!recheck.ok) {
-      return { stopped: false, portReleased: false, uncertain: true, reason: recheck.reason };
+    if (!processAuthority.ok) {
+      return {
+        stopped: false,
+        portReleased: false,
+        uncertain: true,
+        reason: processAuthority.reason,
+      };
     }
-    await options.runtimeProcess.signalExact(
-      { pid: options.pid, processStartedAt: options.processStartedAt },
-      "SIGTERM",
-      { abortSignal: options.signal },
-    );
-    const signalDeadline = Date.now() + options.timeoutMs;
-    while (Date.now() < signalDeadline) {
-      stillAlive = await options.runtimeProcess.isAlive(
-        options.pid,
-        options.processStartedAt,
-        { abortSignal: options.signal },
-      );
-      if (!stillAlive) break;
-      await sleep(options.pollMs, options.signal);
-    }
-  }
 
-  stillAlive = await options.runtimeProcess.isAlive(
-    options.pid,
-    options.processStartedAt,
-    { abortSignal: options.signal },
-  );
-  if (stillAlive) {
+    // Browser.close requires exclusive endpoint/target revalidation. Co-ownership or
+    // foreign/mismatched endpoint refuses Browser.close but still permits exact-PID
+    // SIGTERM of the verified process identity below.
+    let browserCloseOk = false;
+    const closeAuthority = await revalidateEndpointCleanupAuthority({
+      commands: options.commands,
+      cdp: options.cdp,
+      pid: options.pid,
+      expectedTargetId: options.expectedTargetId,
+      signal: cleanup.signal,
+    });
+    if (closeAuthority.ok) {
+      try {
+        browserCloseOk = await browserCloseIfPossible(options.cdp, cleanup.signal);
+      } catch {
+        browserCloseOk = false;
+      }
+    }
+
+    // Only wait on a successful Browser.close. When close is refused/failed, signal
+    // immediately so the cleanup bound is not exhausted before SIGTERM.
+    if (browserCloseOk) {
+      const closeWaitDeadline = Date.now() + Math.min(options.timeoutMs, 5_000);
+      while (Date.now() < closeWaitDeadline) {
+        const aliveAfterClose = await options.runtimeProcess.isAlive(
+          options.pid,
+          options.processStartedAt,
+          { abortSignal: cleanup.signal },
+        );
+        if (!aliveAfterClose) break;
+        await sleep(options.pollMs, cleanup.signal);
+      }
+    }
+
+    let stillAlive = await options.runtimeProcess.isAlive(
+      options.pid,
+      options.processStartedAt,
+      { abortSignal: cleanup.signal },
+    );
+    if (stillAlive) {
+      const recheck = await revalidateProcessCleanupAuthority({
+        commands: options.commands,
+        runtimeProcess: options.runtimeProcess,
+        pid: options.pid,
+        processStartedAt: options.processStartedAt,
+        executablePath: options.executablePath,
+        marker: options.marker,
+        signal: cleanup.signal,
+      });
+      if (!recheck.ok) {
+        return { stopped: false, portReleased: false, uncertain: true, reason: recheck.reason };
+      }
+      const signaled = await options.runtimeProcess.signalExact(
+        { pid: options.pid, processStartedAt: options.processStartedAt },
+        "SIGTERM",
+        { abortSignal: cleanup.signal },
+      );
+      if (!signaled) {
+        return {
+          stopped: false,
+          portReleased: false,
+          uncertain: true,
+          reason: "Exact SIGTERM failed after Browser.close; residual authority preserved.",
+        };
+      }
+      const signalDeadline = Date.now() + options.timeoutMs;
+      while (Date.now() < signalDeadline) {
+        stillAlive = await options.runtimeProcess.isAlive(
+          options.pid,
+          options.processStartedAt,
+          { abortSignal: cleanup.signal },
+        );
+        if (!stillAlive) break;
+        await sleep(options.pollMs, cleanup.signal);
+      }
+    }
+
+    stillAlive = await options.runtimeProcess.isAlive(
+      options.pid,
+      options.processStartedAt,
+      { abortSignal: cleanup.signal },
+    );
+    if (stillAlive) {
+      return {
+        stopped: false,
+        portReleased: false,
+        uncertain: true,
+        reason: `Exact development PID ${options.pid} did not exit within the cleanup bound.`,
+      };
+    }
+
+    // After the exact ChatGPT PID exits, stop private-root helpers (computer-use
+    // services, crashpad-adjacent helpers under our profile/CODEX_HOME) that may
+    // otherwise orphan a 9444 listener.
+    if (options.privateRoots !== undefined && options.privateRoots.length > 0) {
+      await stopPrivateRootHelpers({
+        commands: options.commands,
+        runtimeProcess: options.runtimeProcess,
+        privateRoots: options.privateRoots,
+        timeoutMs: options.timeoutMs,
+        pollMs: options.pollMs,
+        signal: cleanup.signal,
+      });
+    }
+
+    const ports = createNodePortInventoryAdapter(options.commands);
+    const listeners = await ports.listenersFor(DEV_CDP_PORT, { signal: cleanup.signal });
+    const stillOwned = listeners.some((entry) => entry.pid === options.pid);
+    if (stillOwned) {
+      return {
+        stopped: true,
+        portReleased: false,
+        uncertain: true,
+        reason: "Process exited but 9444 was not released; residual authority preserved.",
+      };
+    }
+    if (listeners.length > 0) {
+      const inventory = createNodeProcessInventoryAdapter({
+        commands: options.commands,
+        exactProcess: options.runtimeProcess,
+      });
+      const live = await inventory.list({ signal: cleanup.signal });
+      const privateHolders = live.filter(
+        (entry) =>
+          listeners.some((listener) => listener.pid === entry.pid) &&
+          (options.privateRoots ?? []).some(
+            (root) =>
+              entry.executablePath === root ||
+              entry.executablePath.startsWith(`${root}/`) ||
+              entry.arguments.some(
+                (token) => token === root || token.startsWith(`${root}/`),
+              ),
+          ),
+      );
+      if (privateHolders.length > 0) {
+        return {
+          stopped: true,
+          portReleased: false,
+          uncertain: true,
+          reason:
+            "Private-root helper still holds 9444 after ChatGPT exit; residual authority preserved.",
+        };
+      }
+      // Non-private foreign listener is not our residual authority, but the port is
+      // still not free for subsequent development launches.
+      return {
+        stopped: true,
+        portReleased: false,
+        uncertain: true,
+        reason:
+          "9444 still has a non-development listener after exact ChatGPT exit; residual authority preserved.",
+      };
+    }
+    void browserCloseOk;
+    return {
+      stopped: true,
+      portReleased: true,
+      uncertain: false,
+    };
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Cleanup failed with an unknown error.";
     return {
       stopped: false,
       portReleased: false,
       uncertain: true,
-      reason: `Exact development PID ${options.pid} did not exit within the cleanup bound.`,
+      reason: message,
     };
+  } finally {
+    cleanup.dispose();
   }
-
-  const ports = createNodePortInventoryAdapter(options.commands);
-  const listeners = await ports.listenersFor(DEV_CDP_PORT, { signal: options.signal });
-  const stillOwned = listeners.some((entry) => entry.pid === options.pid);
-  return {
-    stopped: true,
-    portReleased: !stillOwned,
-    uncertain: false,
-  };
 }
 
 function pathSeparationFor(
@@ -798,6 +1242,14 @@ async function runOneExperimentLaunch(options: {
 
   let spawned: SpawnedProcess | null = null;
   let processStartedAt: string | null = null;
+  let matchedPid: number | null = null;
+  let collectedProcess: Phase0OperationProcessEvidence | null = null;
+  let residualAuthority = false;
+  let side: Phase0ExperimentSideObservation = sideFromFailure(
+    built.descriptor,
+    options.privateRoot,
+  );
+
   try {
     // Ensure port free for this experiment when using 9444.
     if (options.plan.useCdpPort) {
@@ -834,11 +1286,6 @@ async function runOneExperimentLaunch(options: {
       signal: options.signal,
     });
     if (matched === null) {
-      try {
-        spawned.kill("SIGTERM");
-      } catch {
-        // ignore
-      }
       return {
         side: sideFromFailure(built.descriptor, options.privateRoot),
         process: null,
@@ -846,6 +1293,7 @@ async function runOneExperimentLaunch(options: {
       };
     }
     processStartedAt = matched.processStartedAt;
+    matchedPid = matched.process.pid;
 
     const collected = await collectReadiness({
       cdp: options.cdp,
@@ -860,40 +1308,12 @@ async function runOneExperimentLaunch(options: {
       portTimeoutMs: options.readinessTimeoutMs,
       signal: options.signal,
     });
-
-    // Prefer exact SIGTERM for experiment cleanup; skip Browser.close when CDP was not claimed.
-    let stop: { stopped: boolean; portReleased: boolean; uncertain: boolean; reason?: string };
-    if (options.plan.useCdpPort && options.plan.useExactMarker && collected.ownership.owned) {
-      stop = await stopExactProcess({
-        runtimeProcess: options.runtimeProcess,
-        commands: options.commands,
-        cdp: options.cdp,
-        pid: matched.process.pid,
-        processStartedAt: matched.processStartedAt,
-        executablePath: options.frozenHost.executablePath,
-        marker: options.marker.value,
-        timeoutMs: options.stopTimeoutMs,
-        pollMs: options.pollMs,
-        signal: options.signal,
-      });
-    } else {
-      await options.runtimeProcess.signalExact(
-        { pid: matched.process.pid, processStartedAt: matched.processStartedAt },
-        "SIGTERM",
-        { abortSignal: options.signal },
-      );
-      const alive = await options.runtimeProcess.isAlive(
-        matched.process.pid,
-        matched.processStartedAt,
-        { abortSignal: options.signal },
-      );
-      stop = { stopped: !alive, portReleased: true, uncertain: alive };
-    }
+    collectedProcess = collected.process;
 
     const exactMarkerPresent = matched.process.arguments.some(
       (token) => token === options.marker.value,
     );
-    const side: Phase0ExperimentSideObservation = {
+    side = {
       launched: true,
       privateRoot: options.privateRoot,
       descriptor: built.descriptor,
@@ -910,59 +1330,107 @@ async function runOneExperimentLaunch(options: {
         options.plan,
       ),
       exactMarkerPresent,
-      // For comparative sides, ownershipAccepted reflects classifier + successful stop when claimed.
       ownershipAccepted:
         options.plan.useCdpPort && options.plan.useExactMarker
-          ? collected.ownership.owned && stop.stopped
+          ? collected.ownership.owned
           : false,
     };
-
-    // Best-effort reclaim of private experiment profile bytes after exact stop.
-    // Acceptance uses the primary layout and must not be cleared here.
-    if (stop.stopped && !stop.uncertain) {
-      try {
-        const { rm } = await import("node:fs/promises");
-        await rm(layout.electronUserDataPath, { recursive: true, force: true });
-        await rm(layout.codexHomePath, { recursive: true, force: true });
-      } catch {
-        // Disk reclamation is best-effort and never changes ownership conclusions.
-      }
-    }
-
-    return {
-      side,
-      process: collected.process,
-      residualAuthority: stop.uncertain || !stop.stopped,
-    };
   } catch {
-    if (spawned !== null) {
-      try {
-        if (processStartedAt !== null) {
-          await stopExactProcess({
-            runtimeProcess: options.runtimeProcess,
-            commands: options.commands,
-            cdp: options.cdp,
-            pid: spawned.pid,
-            processStartedAt,
-            executablePath: options.frozenHost.executablePath,
-            marker: options.marker.value,
-            timeoutMs: options.stopTimeoutMs,
-            pollMs: options.pollMs,
-            signal: options.signal,
-          });
-        } else {
-          spawned.kill("SIGTERM");
+    side = sideFromFailure(built.descriptor, options.privateRoot);
+    collectedProcess = null;
+  } finally {
+    // Every experiment spawn is enclosed by exact cleanup using a fresh finite cleanup context.
+    if (spawned !== null && processStartedAt !== null && matchedPid !== null) {
+      let stop: { stopped: boolean; portReleased: boolean; uncertain: boolean; reason?: string };
+      if (options.plan.useCdpPort && options.plan.useExactMarker) {
+        stop = await stopExactProcess({
+          runtimeProcess: options.runtimeProcess,
+          commands: options.commands,
+          cdp: options.cdp,
+          pid: matchedPid,
+          processStartedAt,
+          executablePath: options.frozenHost.executablePath,
+          marker: options.marker.value,
+          timeoutMs: options.stopTimeoutMs,
+          pollMs: options.pollMs,
+          expectedTargetId: collectedProcess?.targetId ?? null,
+          expectedContextUniqueId: collectedProcess?.executionContextUniqueId ?? null,
+          privateRoots: [
+            options.privateRoot,
+            layout.electronUserDataPath,
+            layout.codexHomePath,
+            layout.explodexStatePath,
+          ],
+        });
+      } else {
+        const cleanup = createCleanupContext(options.stopTimeoutMs + 2_000);
+        try {
+          await options.runtimeProcess.signalExact(
+            { pid: matchedPid, processStartedAt },
+            "SIGTERM",
+            { abortSignal: cleanup.signal },
+          );
+          const deadline = Date.now() + options.stopTimeoutMs;
+          let alive = true;
+          while (Date.now() < deadline) {
+            alive = await options.runtimeProcess.isAlive(matchedPid, processStartedAt, {
+              abortSignal: cleanup.signal,
+            });
+            if (!alive) break;
+            await sleep(options.pollMs, cleanup.signal);
+          }
+          stop = {
+            stopped: !alive,
+            portReleased: true,
+            uncertain: alive,
+            reason: alive
+              ? `Exact experiment PID ${matchedPid} did not exit within the cleanup bound.`
+              : undefined,
+          };
+        } catch (error) {
+          stop = {
+            stopped: false,
+            portReleased: false,
+            uncertain: true,
+            reason: error instanceof Error ? error.message : "experiment cleanup failed",
+          };
+        } finally {
+          cleanup.dispose();
         }
+      }
+      residualAuthority = stop.uncertain || !stop.stopped;
+      if (side.launched) {
+        side = {
+          ...side,
+          ownershipAccepted:
+            options.plan.useCdpPort && options.plan.useExactMarker
+              ? side.ownershipAccepted && stop.stopped && !stop.uncertain
+              : false,
+        };
+      }
+      if (stop.stopped && !stop.uncertain) {
+        try {
+          const { rm } = await import("node:fs/promises");
+          // Reclaim the entire private experiment root, not only profile subtrees.
+          await rm(options.privateRoot, { recursive: true, force: true });
+        } catch {
+          // Disk reclamation is best-effort and never changes ownership conclusions.
+        }
+      }
+    } else if (spawned !== null) {
+      try {
+        spawned.kill("SIGTERM");
       } catch {
         // ignore
       }
     }
-    return {
-      side: sideFromFailure(built.descriptor, options.privateRoot),
-      process: null,
-      residualAuthority: false,
-    };
   }
+
+  return {
+    side,
+    process: collectedProcess,
+    residualAuthority,
+  };
 }
 
 function defaultExperimentPlans(): Array<{
@@ -1065,15 +1533,27 @@ export async function runPhase0LaunchIsolation(
     exactProcess: runtimeProcess,
   });
   const beforeProcesses = await mainInventory.list({ signal: options.signal });
-  const protectedMain = beforeProcesses.find(
+  const protectedMainCandidates = beforeProcesses.filter(
     (entry) =>
       entry.executablePath.endsWith("/ChatGPT.app/Contents/MacOS/ChatGPT") &&
       !entry.arguments.some((token) => token.startsWith("--explodex-dev-instance=")),
   );
-  const protectedMainIdentity =
-    protectedMain === undefined
-      ? null
-      : await runtimeProcess.identify(protectedMain.pid, { abortSignal: options.signal });
+  const protectedMainIdentities: Array<{ pid: number; processStartedAt: string }> = [];
+  for (const candidate of protectedMainCandidates) {
+    const identity = await runtimeProcess.identify(candidate.pid, {
+      abortSignal: options.signal,
+    });
+    if (identity === null) {
+      return disabledResult(
+        `Unable to resolve protected-main kernel start identity for PID ${candidate.pid}; abort without authority transfer.`,
+        "protected_main_identity_unresolved",
+      );
+    }
+    protectedMainIdentities.push({
+      pid: identity.pid,
+      processStartedAt: identity.processStartedAt,
+    });
+  }
 
   const inspection = await inspectCanonicalHost(options.adapters);
   if (!inspection.ok || inspection.host === null) {
@@ -1204,49 +1684,26 @@ export async function runPhase0LaunchIsolation(
       let acceptanceOwnership: ReturnType<typeof classifyDevelopmentOwnership> | null = null;
       let residualAuthority = false;
 
-      // Cache identical launch plans so the comparative matrix does not re-spawn
-      // the same ChatGPT configuration for every knob that shares a treatment.
-      const launchCache = new Map<
-        string,
-        {
-          side: Phase0ExperimentSideObservation;
-          process: Phase0OperationProcessEvidence | null;
-          residualAuthority: boolean;
-        }
-      >();
-      const planKey = (plan: Phase0LaunchPlan): string =>
-        JSON.stringify({
-          useUserData: plan.useUserData,
-          useCodexHome: plan.useCodexHome,
-          useExplodexHome: plan.useExplodexHome,
-          useCdpPort: plan.useCdpPort,
-          useExactMarker: plan.useExactMarker,
-          useSubstringMarker: plan.useSubstringMarker === true,
-        });
-
-      const runCached = async (
+      // Each treatment/control must use a distinct experiment identity and fresh private roots.
+      // Boolean-plan caching that replays one launch across knob identities is forbidden.
+      const runFreshSide = async (
         knob: Phase0CandidateKnob,
         sideName: "treatment" | "control",
         plan: Phase0LaunchPlan,
+        sequence: number,
       ): Promise<{
         side: Phase0ExperimentSideObservation;
         process: Phase0OperationProcessEvidence | null;
         residualAuthority: boolean;
       }> => {
-        const key = planKey(plan);
-        const cached = launchCache.get(key);
-        if (cached !== undefined) {
-          return {
-            side: {
-              ...cached.side,
-              // Preserve factual descriptor/private-root identity of the cached launch.
-            },
-            process: cached.process,
-            residualAuthority: cached.residualAuthority,
-          };
-        }
-        const privateRoot = join(layout.rootPath, "experiments", knob, sideName);
-        const launched = await runOneExperimentLaunch({
+        const privateRoot = join(
+          layout.rootPath,
+          "experiments",
+          knob,
+          sideName,
+          `run-${sequence}`,
+        );
+        return runOneExperimentLaunch({
           adapters: options.adapters,
           spawn: spawnAdapter,
           commands,
@@ -1263,24 +1720,35 @@ export async function runPhase0LaunchIsolation(
           pollMs,
           signal: options.signal,
         });
-        launchCache.set(key, launched);
-        return launched;
       };
 
+      let experimentSequence = 0;
       for (const plan of plans) {
-        const treatment = await runCached(plan.knob, "treatment", plan.treatment);
+        experimentSequence += 1;
+        const treatment = await runFreshSide(
+          plan.knob,
+          "treatment",
+          plan.treatment,
+          experimentSequence,
+        );
         if (treatment.residualAuthority) residualAuthority = true;
 
         let controlSide: Phase0ExperimentSideObservation | null = null;
         if (plan.control !== null) {
-          const control = await runCached(plan.knob, "control", plan.control);
+          experimentSequence += 1;
+          const control = await runFreshSide(
+            plan.knob,
+            "control",
+            plan.control,
+            experimentSequence,
+          );
           if (control.residualAuthority) residualAuthority = true;
           controlSide = control.side;
         }
 
         const experimentRecord: Phase0ComparativeExperiment = {
           knob: plan.knob,
-          experimentId: `phase0-${plan.knob}-${Date.now().toString(16)}`,
+          experimentId: `phase0-${plan.knob}-${experimentSequence.toString(16)}-${Date.now().toString(16)}`,
           treatmentLabel: `treatment:${plan.knob}`,
           controlLabel: plan.control === null ? "control:none" : `control:${plan.knob}`,
           treatment: treatment.side,
@@ -1296,72 +1764,104 @@ export async function runPhase0LaunchIsolation(
       }
 
       if (residualAuthority) {
-        const incomplete = evaluatePhase0LaunchContract({
-          frozenHost,
-          recheckedHost: frozenHost,
-          comparativeExperiments,
-          proposedMarker: marker,
-          layout,
-          clockIso: options.adapters.clock.nowIso(),
-          requireCompleteProof: true,
+        // Re-verify residual authority against live inventory/port before aborting.
+        // A bounded race during experiment teardown must not block acceptance when no
+        // experiment PID remains and 9444 is free.
+        const inventory = createNodeProcessInventoryAdapter({
+          commands,
+          exactProcess: runtimeProcess,
         });
-        // Do not claim stopped/proven when cleanup is uncertain.
-        await savePhase0LaunchContract({
-          adapters: options.adapters,
-          path: layout.phase0ContractPath,
-          contract: {
-            ...incomplete.contract,
-            status: "incomplete",
-            provenAt: null,
-            reason:
-              incomplete.contract.reason ??
-              "Cleanup uncertain; residual authority preserved and proof remains non-authorizing.",
-          },
+        const live = await inventory.list({ signal: options.signal });
+        const residualLive = live.filter(
+          (entry) =>
+            entry.executablePath === frozenHost.executablePath &&
+            entry.arguments.some((token) => token === marker.value),
+        );
+        const residualPorts = createNodePortInventoryAdapter(commands);
+        const residualListeners = await residualPorts.listenersFor(DEV_CDP_PORT, {
+          signal: options.signal,
         });
-        const failedState = createInitialDevInstanceState({
-          layout,
-          appPath: frozenHost.bundlePath,
-          executablePath: frozenHost.executablePath,
-          launchMarker: marker.value,
-          updatedAt: options.adapters.clock.nowIso(),
-        });
-        failedState.status = "failed";
-        failedState.appVersion = frozenHost.appVersion;
-        failedState.appBuild = frozenHost.appBuild;
-        failedState.lastError = {
-          code: "phase0_cleanup_uncertain",
-          message: "Cleanup uncertain; residual authority preserved.",
-          phase: "phase0",
-        };
-        await saveDevInstanceState({
-          adapters: options.adapters,
-          statePath: layout.statePath,
-          state: failedState,
-        });
-        return {
-          ok: false as const,
-          result: {
-            ok: false as const,
+        const portStillHeld = residualListeners.some((entry) =>
+          residualLive.some((process) => process.pid === entry.pid),
+        );
+        if (residualLive.length > 0 || portStillHeld) {
+          const incomplete = evaluatePhase0LaunchContract({
+            frozenHost,
+            recheckedHost: frozenHost,
+            comparativeExperiments,
+            proposedMarker: marker,
+            layout,
+            clockIso: options.adapters.clock.nowIso(),
+            requireCompleteProof: true,
+          });
+          await savePhase0LaunchContract({
+            adapters: options.adapters,
+            path: layout.phase0ContractPath,
             contract: {
               ...incomplete.contract,
-              status: "incomplete" as const,
+              status: "incomplete",
               provenAt: null,
               reason:
+                incomplete.contract.reason ??
                 "Cleanup uncertain; residual authority preserved and proof remains non-authorizing.",
             },
-            allowsLifecycleMutation: false as const,
-            allowsCompatibilityProbe: false as const,
+          });
+          const failedState = createInitialDevInstanceState({
             layout,
-            frozenHost,
-            process: acceptanceProcess,
-            protectedMainSurvived: true,
-            grantsOwnershipFromPathsOnly: false as const,
-            error: {
-              code: "phase0_cleanup_uncertain",
-              message: "Cleanup uncertain; residual authority preserved.",
+            appPath: frozenHost.bundlePath,
+            executablePath: frozenHost.executablePath,
+            launchMarker: marker.value,
+            updatedAt: options.adapters.clock.nowIso(),
+          });
+          failedState.status = "failed";
+          failedState.appVersion = frozenHost.appVersion;
+          failedState.appBuild = frozenHost.appBuild;
+          if (residualLive[0] !== undefined) {
+            const identity = await runtimeProcess.identify(residualLive[0]!.pid, {
+              abortSignal: options.signal,
+            });
+            failedState.pid = residualLive[0]!.pid;
+            failedState.processStartedAt = identity?.processStartedAt ?? null;
+            failedState.targetId = null;
+            failedState.startedAt = null;
+          }
+          failedState.lastError = {
+            code: "phase0_cleanup_uncertain",
+            message: "Cleanup uncertain; residual authority preserved.",
+            phase: "phase0",
+          };
+          await saveDevInstanceState({
+            adapters: options.adapters,
+            statePath: layout.statePath,
+            state: failedState,
+          });
+          return {
+            ok: false as const,
+            result: {
+              ok: false as const,
+              contract: {
+                ...incomplete.contract,
+                status: "incomplete" as const,
+                provenAt: null,
+                reason:
+                  "Cleanup uncertain; residual authority preserved and proof remains non-authorizing.",
+              },
+              allowsLifecycleMutation: false as const,
+              allowsCompatibilityProbe: false as const,
+              layout,
+              frozenHost,
+              process: acceptanceProcess,
+              protectedMainSurvived: true,
+              grantsOwnershipFromPathsOnly: false as const,
+              error: {
+                code: "phase0_cleanup_uncertain",
+                message: "Cleanup uncertain; residual authority preserved.",
+              },
             },
-          },
-        };
+          };
+        }
+        // No live residual process/port remains; clear the transient residual flag.
+        residualAuthority = false;
       }
 
       // Dedicated acceptance launch on the primary layout with the retained set.
@@ -1372,6 +1872,22 @@ export async function runPhase0LaunchIsolation(
         useCdpPort: true,
         useExactMarker: true,
       };
+      // Best-effort reclaim of comparative experiment roots and primary profile
+      // residues before the correlated acceptance launch so app:// readiness is
+      // not starved by disk pressure from earlier private roots.
+      try {
+        const { rm } = await import("node:fs/promises");
+        await rm(join(layout.rootPath, "experiments"), { recursive: true, force: true });
+        await rm(layout.electronUserDataPath, { recursive: true, force: true });
+        await rm(layout.codexHomePath, { recursive: true, force: true });
+        await ensureDefaultDevLayout({
+          fs: options.adapters.fs,
+          rootPath: layout.rootPath,
+          protectedPaths,
+        });
+      } catch {
+        // Reclamation is best-effort; acceptance still uses the canonical layout paths.
+      }
       const acceptanceBuilt = buildPlanForRoot({
         frozenHost,
         layout,
@@ -1380,141 +1896,177 @@ export async function runPhase0LaunchIsolation(
       });
       const logsStdout = join(layout.logsPath, "phase0.stdout.log");
       const logsStderr = join(layout.logsPath, "phase0.stderr.log");
-      const spawned = await spawnAdapter.spawn({
-        executablePath: acceptanceBuilt.executablePath,
-        argv: acceptanceBuilt.argv,
-        env: acceptanceBuilt.env,
-        stdoutPath: logsStdout,
-        stderrPath: logsStderr,
-      });
-
-      const matched = await waitForExactDevProcess({
-        commands,
-        runtimeProcess,
-        executablePath: frozenHost.executablePath,
-        marker: marker.value,
-        expectedPid: spawned.pid,
-        timeoutMs: readinessTimeoutMs,
-        pollMs,
-        signal: options.signal,
-      });
-      if (matched === null) {
-        try {
-          spawned.kill("SIGTERM");
-        } catch {
-          // ignore
-        }
-        throw new Error(
-          `Timed out waiting for isolated development ChatGPT process with exact marker on PID ${spawned.pid}`,
-        );
-      }
-
-      const collected = await collectReadiness({
-        cdp,
-        commands,
-        runtimeProcess,
-        frozenHost,
-        pid: matched.process.pid,
-        processStartedAt: matched.processStartedAt,
-        argumentsList: matched.process.arguments,
-        marker: marker.value,
-        expectCdp: true,
-        portTimeoutMs: readinessTimeoutMs,
-        signal: options.signal,
-      });
-      acceptanceProcess = {
-        ...collected.process,
-        env: {
-          CODEX_ELECTRON_USER_DATA_PATH: acceptanceBuilt.env.CODEX_ELECTRON_USER_DATA_PATH,
-          CODEX_HOME: acceptanceBuilt.env.CODEX_HOME,
-        },
-      };
-      acceptanceReadiness = collected.readiness;
-      acceptanceOwnership = collected.ownership;
-
-      // Active-operation host recheck before any proven authority.
-      const recheck = await inspectCanonicalHost(options.adapters);
-      if (!recheck.ok || recheck.host === null) {
-        throw new Error("Host became unavailable during Phase 0");
-      }
-      const recheckedHost = freezeHostIdentity(recheck.host);
-      if (!frozenHostEquals(frozenHost, recheckedHost)) {
-        throw new Error(
-          "Active-operation host identity drifted from the frozen Phase 0 identity; abort without reconnect or authority transfer.",
-        );
-      }
-
-      const ownershipEvidence = buildOwnershipEvidence({
-        positive: acceptanceOwnership,
-        expected: {
-          marker: marker.value,
-          executablePath: frozenHost.executablePath,
-          cdpHost: DEV_CDP_HOST,
-          cdpPort: DEV_CDP_PORT,
-          expectedPid: acceptanceProcess.pid,
-          expectedProcessStartedAt: acceptanceProcess.processStartedAt,
-        },
-        developmentPid: acceptanceProcess.pid,
-        developmentStartedAt: acceptanceProcess.processStartedAt,
-      });
-
-      const evaluation = evaluatePhase0LaunchContract({
-        frozenHost,
-        recheckedHost,
-        comparativeExperiments,
-        proposedMarker: marker,
-        layout,
-        clockIso: options.adapters.clock.nowIso(),
-        readiness: acceptanceReadiness,
-        ownership: ownershipEvidence,
-        requireCompleteProof: true,
-      });
-
-      // Cleanup before any stopped/proven write.
+      let acceptanceSpawned: SpawnedProcess | null = null;
+      let acceptanceStartedAt: string | null = null;
+      let evaluation: ReturnType<typeof evaluatePhase0LaunchContract> | null = null;
       let protectedMainSurvived = true;
       let cleanupUncertain = false;
       let cleanupReason: string | undefined;
-      if (!options.keepProcessAlive) {
-        const stop = await stopExactProcess({
-          runtimeProcess,
+
+      try {
+        acceptanceSpawned = await spawnAdapter.spawn({
+          executablePath: acceptanceBuilt.executablePath,
+          argv: acceptanceBuilt.argv,
+          env: acceptanceBuilt.env,
+          stdoutPath: logsStdout,
+          stderrPath: logsStderr,
+          inheritHostEnvironment: true,
+        });
+
+        const matched = await waitForExactDevProcess({
           commands,
-          cdp,
-          pid: acceptanceProcess.pid,
-          processStartedAt: acceptanceProcess.processStartedAt,
+          runtimeProcess,
           executablePath: frozenHost.executablePath,
           marker: marker.value,
-          timeoutMs: stopTimeoutMs,
+          expectedPid: acceptanceSpawned.pid,
+          timeoutMs: readinessTimeoutMs,
           pollMs,
           signal: options.signal,
         });
-        if (!stop.stopped || !stop.portReleased || stop.uncertain) {
+        if (matched === null) {
+          throw new Error(
+            `Timed out waiting for isolated development ChatGPT process with exact marker on PID ${acceptanceSpawned.pid}`,
+          );
+        }
+        acceptanceStartedAt = matched.processStartedAt;
+
+        const collected = await collectReadiness({
+          cdp,
+          commands,
+          runtimeProcess,
+          frozenHost,
+          pid: matched.process.pid,
+          processStartedAt: matched.processStartedAt,
+          argumentsList: matched.process.arguments,
+          marker: marker.value,
+          expectCdp: true,
+          portTimeoutMs: readinessTimeoutMs,
+          clockIso: options.adapters.clock.nowIso(),
+          signal: options.signal,
+        });
+        acceptanceProcess = {
+          ...collected.process,
+          env: {
+            CODEX_ELECTRON_USER_DATA_PATH: acceptanceBuilt.env.CODEX_ELECTRON_USER_DATA_PATH,
+            CODEX_HOME: acceptanceBuilt.env.CODEX_HOME,
+          },
+        };
+        acceptanceReadiness = collected.readiness;
+        acceptanceOwnership = collected.ownership;
+
+        // Active-operation host recheck before any proven authority.
+        const recheck = await inspectCanonicalHost(options.adapters);
+        if (!recheck.ok || recheck.host === null) {
+          throw new Error("Host became unavailable during Phase 0");
+        }
+        const recheckedHost = freezeHostIdentity(recheck.host);
+        if (!frozenHostEquals(frozenHost, recheckedHost)) {
+          throw new Error(
+            "Active-operation host identity drifted from the frozen Phase 0 identity; abort without reconnect or authority transfer.",
+          );
+        }
+
+        const ownershipEvidence = buildOwnershipEvidence({
+          positive: acceptanceOwnership,
+          expected: {
+            marker: marker.value,
+            executablePath: frozenHost.executablePath,
+            cdpHost: DEV_CDP_HOST,
+            cdpPort: DEV_CDP_PORT,
+            expectedPid: acceptanceProcess.pid,
+            expectedProcessStartedAt: acceptanceProcess.processStartedAt,
+          },
+          developmentPid: acceptanceProcess.pid,
+          developmentStartedAt: acceptanceProcess.processStartedAt,
+        });
+
+        evaluation = evaluatePhase0LaunchContract({
+          frozenHost,
+          recheckedHost,
+          comparativeExperiments,
+          proposedMarker: marker,
+          layout,
+          clockIso: options.adapters.clock.nowIso(),
+          readiness: acceptanceReadiness,
+          ownership: ownershipEvidence,
+          acceptanceLaunchDescriptor: acceptanceBuilt.descriptor,
+          requireCompleteProof: true,
+        });
+      } finally {
+        // Acceptance spawn cleanup always uses a fresh finite cleanup context, never the
+        // possibly-aborted operation signal.
+        if (
+          !options.keepProcessAlive &&
+          acceptanceProcess !== null &&
+          acceptanceStartedAt !== null
+        ) {
+          const stop = await stopExactProcess({
+            runtimeProcess,
+            commands,
+            cdp,
+            pid: acceptanceProcess.pid,
+            processStartedAt: acceptanceProcess.processStartedAt,
+            executablePath: frozenHost.executablePath,
+            marker: marker.value,
+            timeoutMs: stopTimeoutMs,
+            pollMs,
+            expectedTargetId: acceptanceProcess.targetId,
+            expectedContextUniqueId: acceptanceProcess.executionContextUniqueId,
+            privateRoots: [
+              layout.rootPath,
+              layout.electronUserDataPath,
+              layout.codexHomePath,
+              layout.explodexStatePath,
+            ],
+          });
+          if (!stop.stopped || !stop.portReleased || stop.uncertain) {
+            cleanupUncertain = true;
+            cleanupReason =
+              stop.reason ??
+              "Exact exit and 9444 release did not both complete; residual authority preserved.";
+          }
+        } else if (
+          !options.keepProcessAlive &&
+          acceptanceSpawned !== null &&
+          acceptanceStartedAt === null
+        ) {
+          try {
+            acceptanceSpawned.kill("SIGTERM");
+          } catch {
+            // ignore
+          }
+        }
+
+        for (const protectedMain of protectedMainIdentities) {
+          const alive = await runtimeProcess.isAlive(
+            protectedMain.pid,
+            protectedMain.processStartedAt,
+            { abortSignal: undefined },
+          );
+          if (!alive) {
+            protectedMainSurvived = false;
+            cleanupReason =
+              cleanupReason ??
+              `Protected authoring main PID ${protectedMain.pid} did not survive Phase 0; fail closed.`;
+          }
+        }
+
+        // Final host recheck before any proven write.
+        const finalHost = await inspectCanonicalHost(options.adapters);
+        if (!finalHost.ok || finalHost.host === null) {
           cleanupUncertain = true;
           cleanupReason =
-            stop.reason ??
-            "Exact exit and 9444 release did not both complete; residual authority preserved.";
+            cleanupReason ?? "Final host recheck failed; proof remains non-authorizing.";
+        } else if (!frozenHostEquals(frozenHost, freezeHostIdentity(finalHost.host))) {
+          cleanupUncertain = true;
+          cleanupReason =
+            cleanupReason ??
+            "Final frozen-host recheck drifted; abort without proven authority transfer.";
         }
       }
 
-      if (protectedMainIdentity !== null) {
-        protectedMainSurvived = await runtimeProcess.isAlive(
-          protectedMainIdentity.pid,
-          protectedMainIdentity.processStartedAt,
-          { abortSignal: options.signal },
-        );
-      }
-
-      // Final host recheck before any proven write.
-      const finalHost = await inspectCanonicalHost(options.adapters);
-      if (!finalHost.ok || finalHost.host === null) {
-        cleanupUncertain = true;
-        cleanupReason = "Final host recheck failed; proof remains non-authorizing.";
-      } else if (!frozenHostEquals(frozenHost, freezeHostIdentity(finalHost.host))) {
-        cleanupUncertain = true;
-        cleanupReason =
-          "Final frozen-host recheck drifted; abort without proven authority transfer.";
-      }
-
       if (
+        evaluation === null ||
         cleanupUncertain ||
         !protectedMainSurvived ||
         evaluation.contract.status !== "proven"
@@ -1523,14 +2075,19 @@ export async function runPhase0LaunchIsolation(
           cleanupReason ??
           (!protectedMainSurvived
             ? "Protected authoring main did not survive Phase 0; fail closed."
-            : evaluation.contract.reason ?? "Phase 0 launch-isolation proof incomplete");
+            : evaluation?.contract.reason ?? "Phase 0 launch-isolation proof incomplete");
         const incompleteContract = {
-          ...evaluation.contract,
+          ...(evaluation?.contract ??
+            createPreSpawnIncompleteContract({
+              frozenHost,
+              reason,
+            })),
           status: "incomplete" as const,
           provenAt: null,
           reason,
+          comparativeExperiments,
+          readiness: acceptanceReadiness,
         };
-        // State write first (failed/non-stopped if uncertain), never proven last on failure.
         const failedState = createInitialDevInstanceState({
           layout,
           appPath: frozenHost.bundlePath,
@@ -1538,7 +2095,7 @@ export async function runPhase0LaunchIsolation(
           launchMarker: marker.value,
           updatedAt: options.adapters.clock.nowIso(),
         });
-        failedState.status = cleanupUncertain ? "failed" : "failed";
+        failedState.status = "failed";
         failedState.appVersion = frozenHost.appVersion;
         failedState.appBuild = frozenHost.appBuild;
         if (cleanupUncertain && acceptanceProcess !== null) {
@@ -1546,6 +2103,7 @@ export async function runPhase0LaunchIsolation(
           failedState.pid = acceptanceProcess.pid;
           failedState.processStartedAt = acceptanceProcess.processStartedAt;
           failedState.targetId = null;
+          failedState.startedAt = null;
         }
         failedState.lastError = {
           code: cleanupUncertain
@@ -1609,6 +2167,7 @@ export async function runPhase0LaunchIsolation(
         stoppedState.pid = null;
         stoppedState.processStartedAt = null;
         stoppedState.targetId = null;
+        stoppedState.startedAt = null;
       }
       stoppedState.appVersion = frozenHost.appVersion;
       stoppedState.appBuild = frozenHost.appBuild;

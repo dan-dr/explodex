@@ -72,11 +72,18 @@ function sampleReadiness(frozenHost: Phase0FrozenHost): Phase0ReadinessEvidence 
     cdpHost: "127.0.0.1",
     cdpPort: 9444,
     browserIdentity: "Chrome/ChatGPT",
+    endpointPublishedPid: 4242,
     targetId: "target-1",
     targetUrl: "app://-/index.html",
     executionContextId: 1,
     executionContextUniqueId: "ctx-unique-1",
     frameId: "frame-1",
+    rendererEvaluation: {
+      expression:
+        "(() => ({ explodexPhase0Readiness: true, readyState: document.readyState, href: location.href }))()",
+      result: { explodexPhase0Readiness: true, readyState: "complete", href: "app://-/index.html" },
+      evaluatedAt: CLOCK,
+    },
     readiness: "benign",
   };
 }
@@ -111,9 +118,9 @@ function sampleOwnership(): Phase0OwnershipEvidence {
 
 function sampleComparativeExperiments(layoutRoot: string): Phase0ComparativeExperiment[] {
   const layout = describeDevLayout(layoutRoot);
-  const treatmentBase = {
+  const makeTreatment = (knob: string, sequence: number) => ({
     launched: true as const,
-    privateRoot: layout.rootPath,
+    privateRoot: `${layout.rootPath}/experiments/${knob}/treatment/run-${sequence}`,
     descriptor: {
       argv: [
         "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
@@ -123,11 +130,11 @@ function sampleComparativeExperiments(layoutRoot: string): Phase0ComparativeExpe
       ],
       envKeys: ["CODEX_HOME"],
     },
-    pid: 4242,
-    processStartedAt: "dev-start-identity",
-    portOwnerPid: 4242,
+    pid: 4200 + sequence,
+    processStartedAt: `dev-start-${sequence}`,
+    portOwnerPid: 4200 + sequence,
     browserIdentity: "Chrome/ChatGPT",
-    targetId: "target-1",
+    targetId: `target-${sequence}`,
     executionContextId: 1,
     pathSeparation: {
       userDataDistinctFromMain: true,
@@ -137,9 +144,12 @@ function sampleComparativeExperiments(layoutRoot: string): Phase0ComparativeExpe
     },
     exactMarkerPresent: true,
     ownershipAccepted: true,
-  };
-  const controlRejected = {
-    ...treatmentBase,
+  });
+  const makeControl = (knob: string, sequence: number, treatment: ReturnType<typeof makeTreatment>) => ({
+    ...treatment,
+    privateRoot: `${layout.rootPath}/experiments/${knob}/control/run-${sequence}`,
+    pid: 4300 + sequence,
+    processStartedAt: `control-start-${sequence}`,
     launched: true as const,
     ownershipAccepted: false,
     exactMarkerPresent: false,
@@ -147,16 +157,21 @@ function sampleComparativeExperiments(layoutRoot: string): Phase0ComparativeExpe
     browserIdentity: null,
     targetId: null,
     executionContextId: null,
-  };
+  });
+  const userDataTreatment = makeTreatment("electron-user-data", 1);
+  const codexTreatment = makeTreatment("codex-home", 3);
+  const explodexTreatment = makeTreatment("explodex-home", 5);
+  const cdpTreatment = makeTreatment("cdp-port", 7);
+  const markerTreatment = makeTreatment("launch-marker", 9);
   return [
     {
       knob: "electron-user-data",
       experimentId: "exp-user-data",
       treatmentLabel: "treatment:electron-user-data",
       controlLabel: "control:electron-user-data",
-      treatment: treatmentBase,
+      treatment: userDataTreatment,
       control: {
-        ...controlRejected,
+        ...makeControl("electron-user-data", 2, userDataTreatment),
         pathSeparation: {
           userDataDistinctFromMain: false,
           codexHomeDistinctFromUserCodex: true,
@@ -172,9 +187,9 @@ function sampleComparativeExperiments(layoutRoot: string): Phase0ComparativeExpe
       experimentId: "exp-codex-home",
       treatmentLabel: "treatment:codex-home",
       controlLabel: "control:codex-home",
-      treatment: treatmentBase,
+      treatment: codexTreatment,
       control: {
-        ...controlRejected,
+        ...makeControl("codex-home", 4, codexTreatment),
         pathSeparation: {
           userDataDistinctFromMain: true,
           codexHomeDistinctFromUserCodex: false,
@@ -190,8 +205,11 @@ function sampleComparativeExperiments(layoutRoot: string): Phase0ComparativeExpe
       experimentId: "exp-explodex-home",
       treatmentLabel: "treatment:explodex-home",
       controlLabel: "control:explodex-home",
-      treatment: treatmentBase,
-      control: { ...treatmentBase, ownershipAccepted: true },
+      treatment: explodexTreatment,
+      control: {
+        ...makeTreatment("explodex-home-control", 6),
+        ownershipAccepted: true,
+      },
       conclusion: "not-necessary",
       evidence: "EXPLODEX_HOME not necessary with private explodex-state",
     },
@@ -200,8 +218,8 @@ function sampleComparativeExperiments(layoutRoot: string): Phase0ComparativeExpe
       experimentId: "exp-cdp-port",
       treatmentLabel: "treatment:cdp-port",
       controlLabel: "control:cdp-port",
-      treatment: treatmentBase,
-      control: controlRejected,
+      treatment: cdpTreatment,
+      control: makeControl("cdp-port", 8, cdpTreatment),
       conclusion: "demonstrated",
       evidence: "9444 ownership demonstrated",
     },
@@ -210,8 +228,8 @@ function sampleComparativeExperiments(layoutRoot: string): Phase0ComparativeExpe
       experimentId: "exp-marker",
       treatmentLabel: "treatment:launch-marker",
       controlLabel: "control:launch-marker",
-      treatment: treatmentBase,
-      control: controlRejected,
+      treatment: markerTreatment,
+      control: makeControl("launch-marker", 10, markerTreatment),
       conclusion: "demonstrated",
       evidence: "exact marker ownership demonstrated",
     },

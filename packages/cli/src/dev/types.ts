@@ -164,6 +164,13 @@ export type Phase0ComparativeExperiment = {
   evidence: string;
 };
 
+/** Bounded non-mutating renderer evaluation recorded with benign readiness. */
+export type Phase0RendererEvaluationEvidence = {
+  expression: string;
+  result: unknown;
+  evaluatedAt: string;
+};
+
 /** Complete readiness identity required before a proven Phase 0 contract. */
 export type Phase0ReadinessEvidence = {
   pid: number;
@@ -173,11 +180,15 @@ export type Phase0ReadinessEvidence = {
   cdpHost: typeof DEV_CDP_HOST;
   cdpPort: typeof DEV_CDP_PORT;
   browserIdentity: string;
+  /** Published PID from /json/version when present; must match the launched PID. */
+  endpointPublishedPid: number | null;
   targetId: string;
   targetUrl: "app://-/index.html";
   executionContextId: number;
   executionContextUniqueId: string;
   frameId: string;
+  /** Real bounded non-mutating renderer evaluation on the selected default context. */
+  rendererEvaluation: Phase0RendererEvaluationEvidence;
   readiness: "benign";
 };
 
@@ -295,6 +306,11 @@ export type Phase0EvaluationInput = {
   readiness?: Phase0ReadinessEvidence | null;
   /** Required for proven contracts; positive must be owned with all negatives rejected. */
   ownership?: Phase0OwnershipEvidence | null;
+  /**
+   * Acceptance-launch sanitized descriptor correlated to the exact readiness PID.
+   * Comparative experiment descriptors remain separate causal evidence.
+   */
+  acceptanceLaunchDescriptor?: SanitizedLaunchDescriptor;
   /**
    * When true, require comparative experiments + readiness + ownership for proof.
    * Operation-level evaluation always sets this. Pure unit knob tests may omit it.

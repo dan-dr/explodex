@@ -152,6 +152,16 @@ export function validatePhase0Readiness(
   if (!isNonEmptyString(readiness.browserIdentity)) {
     return { ok: false, reason: "Phase 0 readiness requires /json/version browser identity." };
   }
+  if (
+    readiness.endpointPublishedPid !== null &&
+    readiness.endpointPublishedPid !== readiness.pid
+  ) {
+    return {
+      ok: false,
+      reason:
+        "Phase 0 readiness rejects /json/version published PID disagreement with the launched process.",
+    };
+  }
   if (!isNonEmptyString(readiness.targetId) || readiness.targetUrl !== "app://-/index.html") {
     return {
       ok: false,
@@ -169,6 +179,19 @@ export function validatePhase0Readiness(
   }
   if (!isNonEmptyString(readiness.frameId)) {
     return { ok: false, reason: "Phase 0 readiness requires a frame id for the default context." };
+  }
+  if (
+    readiness.rendererEvaluation === undefined ||
+    readiness.rendererEvaluation === null ||
+    !isNonEmptyString(readiness.rendererEvaluation.expression) ||
+    !isNonEmptyString(readiness.rendererEvaluation.evaluatedAt) ||
+    readiness.rendererEvaluation.result === undefined
+  ) {
+    return {
+      ok: false,
+      reason:
+        "Phase 0 readiness requires a real bounded non-mutating renderer evaluation on the selected default context.",
+    };
   }
   if (readiness.readiness !== "benign") {
     return { ok: false, reason: "Phase 0 readiness evidence must report benign readiness." };
@@ -443,6 +466,127 @@ function controlRejectsSubstring(experiment: Phase0ComparativeExperiment): boole
     !experiment.control.exactMarkerPresent &&
     !experiment.control.ownershipAccepted
   );
+}
+
+/**
+ * Semantically re-derive comparative matrix conclusions and require a unique complete set.
+ * Structurally valid but forged or round-trip-inconsistent evidence fails closed.
+ */
+export function validateCompleteComparativeMatrix(
+  experiments: readonly Phase0ComparativeExperiment[],
+  knobMatrix: readonly Phase0KnobVerdict[],
+): { ok: true } | { ok: false; reason: string } {
+  if (experiments.length !== PHASE0_CANDIDATE_KNOBS.length) {
+    return {
+      ok: false,
+      reason:
+        "Phase 0 complete proof requires exactly one factual comparative experiment for every candidate knob.",
+    };
+  }
+  const seenKnobs = new Set<Phase0CandidateKnob>();
+  const experimentIds = new Set<string>();
+  const privateRoots = new Set<string>();
+  for (const experiment of experiments) {
+    if (seenKnobs.has(experiment.knob)) {
+      return {
+        ok: false,
+        reason: `Phase 0 comparative matrix has a duplicate experiment for knob '${experiment.knob}'.`,
+      };
+    }
+    seenKnobs.add(experiment.knob);
+    if (experimentIds.has(experiment.experimentId)) {
+      return {
+        ok: false,
+        reason: `Phase 0 comparative matrix has a duplicate experimentId '${experiment.experimentId}'.`,
+      };
+    }
+    experimentIds.add(experiment.experimentId);
+
+    const rederived = deriveKnobVerdictFromExperiment(experiment);
+    if (rederived.effect !== experiment.conclusion) {
+      return {
+        ok: false,
+        reason: `Phase 0 experiment for '${experiment.knob}' conclusion '${experiment.conclusion}' does not survive round-trip re-derivation (got '${rederived.effect}').`,
+      };
+    }
+
+    for (const side of [experiment.treatment, experiment.control] as const) {
+      if (side === null || side.privateRoot === null || side.privateRoot.length === 0) continue;
+      if (privateRoots.has(side.privateRoot)) {
+        return {
+          ok: false,
+          reason:
+            "Phase 0 comparative sides must use distinct private roots; cached/replayed launch identities are rejected.",
+        };
+      }
+      privateRoots.add(side.privateRoot);
+    }
+  }
+  for (const knob of PHASE0_CANDIDATE_KNOBS) {
+    if (!seenKnobs.has(knob)) {
+      return {
+        ok: false,
+        reason: `Phase 0 comparative matrix is missing candidate knob '${knob}'.`,
+      };
+    }
+  }
+
+  const matrixNames = new Set(knobMatrix.map((entry) => entry.name));
+  if (matrixNames.size !== PHASE0_CANDIDATE_KNOBS.length) {
+    return {
+      ok: false,
+      reason: "Phase 0 knob matrix must contain each candidate knob exactly once.",
+    };
+  }
+  for (const knob of PHASE0_CANDIDATE_KNOBS) {
+    if (!matrixNames.has(knob)) {
+      return {
+        ok: false,
+        reason: `Phase 0 knob matrix is missing candidate knob '${knob}'.`,
+      };
+    }
+  }
+
+  const retainedFromMatrix = new Set(
+    knobMatrix.filter((entry) => entry.status === "retained").map((entry) => entry.name),
+  );
+  const retainedFromConclusions = new Set(
+    experiments
+      .filter((entry) => entry.conclusion === "demonstrated")
+      .map((entry) => entry.knob),
+  );
+  if (retainedFromMatrix.size !== retainedFromConclusions.size) {
+    return {
+      ok: false,
+      reason:
+        "Phase 0 retained knobs and comparative demonstrated conclusions disagree in size.",
+    };
+  }
+  for (const knob of retainedFromMatrix) {
+    if (!retainedFromConclusions.has(knob)) {
+      return {
+        ok: false,
+        reason: `Phase 0 retained set and comparative conclusions disagree on knob '${knob}'.`,
+      };
+    }
+  }
+  for (const entry of knobMatrix) {
+    const experiment = experiments.find((item) => item.knob === entry.name);
+    if (experiment === undefined) {
+      return {
+        ok: false,
+        reason: `Phase 0 knob matrix entry '${entry.name}' has no comparative experiment.`,
+      };
+    }
+    const rederived = deriveKnobVerdictFromExperiment(experiment);
+    if (entry.status !== rederived.status || entry.effect !== rederived.effect) {
+      return {
+        ok: false,
+        reason: `Phase 0 knob matrix entry for '${entry.name}' does not match re-derived comparative verdict.`,
+      };
+    }
+  }
+  return { ok: true };
 }
 
 function observationFor(
@@ -775,6 +919,9 @@ export function evaluatePhase0LaunchContract(
     };
   }
 
+  // Proven isolation paths and the sanitized launch descriptor must correlate to the
+  // acceptance layout / launch identity. Comparative experiment private roots remain
+  // separate causal evidence and must never become persisted acceptance authority.
   const isolation = {
     electronUserDataPath: retainedKnobs.includes("electron-user-data")
       ? input.layout.electronUserDataPath
@@ -787,24 +934,28 @@ export function evaluatePhase0LaunchContract(
     cdpPort: DEV_CDP_PORT as typeof DEV_CDP_PORT,
   };
 
-  // Prefer explicit isolation paths from observations when present.
-  for (const observation of observations) {
-    if (observation.isolationPaths === undefined) continue;
-    if (
-      retainedKnobs.includes("electron-user-data") &&
-      observation.isolationPaths.electronUserDataPath
-    ) {
-      isolation.electronUserDataPath = observation.isolationPaths.electronUserDataPath;
-    }
-    if (retainedKnobs.includes("codex-home") && observation.isolationPaths.codexHomePath) {
-      isolation.codexHomePath = observation.isolationPaths.codexHomePath;
-    }
-    if (retainedKnobs.includes("explodex-home") && observation.isolationPaths.explodexHomePath) {
-      isolation.explodexHomePath = observation.isolationPaths.explodexHomePath;
+  // Only non-complete unit paths may fall back to observation paths, and never when
+  // those paths are experiment private roots under an acceptance layout.
+  if (input.requireCompleteProof !== true) {
+    for (const observation of observations) {
+      if (observation.isolationPaths === undefined) continue;
+      if (
+        retainedKnobs.includes("electron-user-data") &&
+        observation.isolationPaths.electronUserDataPath
+      ) {
+        isolation.electronUserDataPath = observation.isolationPaths.electronUserDataPath;
+      }
+      if (retainedKnobs.includes("codex-home") && observation.isolationPaths.codexHomePath) {
+        isolation.codexHomePath = observation.isolationPaths.codexHomePath;
+      }
+      if (retainedKnobs.includes("explodex-home") && observation.isolationPaths.explodexHomePath) {
+        isolation.explodexHomePath = observation.isolationPaths.explodexHomePath;
+      }
     }
   }
 
   const descriptor =
+    input.acceptanceLaunchDescriptor ??
     markerObservation?.sanitizedLaunchDescriptor ??
     observations.find((entry) => entry.sanitizedLaunchDescriptor)?.sanitizedLaunchDescriptor ?? {
       argv: [],
@@ -813,13 +964,13 @@ export function evaluatePhase0LaunchContract(
 
   // Operation-level proof requires comparative experiments, readiness, and ownership.
   if (input.requireCompleteProof === true) {
-    if (comparativeExperiments.length < PHASE0_CANDIDATE_KNOBS.length) {
+    const matrixValidation = validateCompleteComparativeMatrix(comparativeExperiments, knobMatrix);
+    if (!matrixValidation.ok) {
       const contract = incompleteContract({
         frozenHost,
         appBuild: frozenHost.appBuild,
         appVersion: frozenHost.appVersion,
-        reason:
-          "Phase 0 complete proof requires a factual comparative experiment for every candidate knob.",
+        reason: matrixValidation.reason,
         knobMatrix,
         retainedKnobs,
         launchMarker: markerResult.marker,
@@ -834,6 +985,40 @@ export function evaluatePhase0LaunchContract(
         allowsLifecycleMutation: false,
         allowsCompatibilityProbe: false,
       };
+    }
+
+    // Acceptance isolation must never name deleted experiment private roots.
+    for (const experiment of comparativeExperiments) {
+      for (const side of [experiment.treatment, experiment.control]) {
+        if (side === null || side.privateRoot === null) continue;
+        const root = side.privateRoot;
+        if (
+          isolation.electronUserDataPath?.startsWith(`${root}/`) ||
+          isolation.codexHomePath?.startsWith(`${root}/`) ||
+          isolation.explodexHomePath?.startsWith(`${root}/`)
+        ) {
+          const contract = incompleteContract({
+            frozenHost,
+            appBuild: frozenHost.appBuild,
+            appVersion: frozenHost.appVersion,
+            reason:
+              "Proven isolation paths must correlate to the acceptance layout, not experiment private roots.",
+            knobMatrix,
+            retainedKnobs,
+            launchMarker: markerResult.marker,
+            isolation,
+            sanitizedLaunchDescriptor: descriptor,
+            comparativeExperiments,
+            readiness: input.readiness ?? null,
+            ownership: input.ownership ?? null,
+          });
+          return {
+            contract,
+            allowsLifecycleMutation: false,
+            allowsCompatibilityProbe: false,
+          };
+        }
+      }
     }
 
     const readinessResult = validatePhase0Readiness(input.readiness, frozenHost);
@@ -857,6 +1042,35 @@ export function evaluatePhase0LaunchContract(
         allowsLifecycleMutation: false,
         allowsCompatibilityProbe: false,
       };
+    }
+
+    // Acceptance descriptor and readiness must describe the same operation identity.
+    if (input.acceptanceLaunchDescriptor !== undefined) {
+      if (
+        input.acceptanceLaunchDescriptor.argv.length === 0 ||
+        !input.acceptanceLaunchDescriptor.argv.includes(markerResult.marker.value)
+      ) {
+        const contract = incompleteContract({
+          frozenHost,
+          appBuild: frozenHost.appBuild,
+          appVersion: frozenHost.appVersion,
+          reason:
+            "Acceptance sanitized launch descriptor must include the exact retained marker for the acceptance launch.",
+          knobMatrix,
+          retainedKnobs,
+          launchMarker: markerResult.marker,
+          isolation,
+          sanitizedLaunchDescriptor: descriptor,
+          comparativeExperiments,
+          readiness: readinessResult.readiness,
+          ownership: input.ownership ?? null,
+        });
+        return {
+          contract,
+          allowsLifecycleMutation: false,
+          allowsCompatibilityProbe: false,
+        };
+      }
     }
 
     const ownershipResult = validatePhase0Ownership(input.ownership);
@@ -1171,6 +1385,22 @@ function parseComparativeExperiment(value: unknown): Phase0ComparativeExperiment
       exactMarkerPresent: Boolean(value.control.exactMarkerPresent),
       ownershipAccepted: Boolean(value.control.ownershipAccepted),
     };
+    if (isRecord(value.control.pathSeparation)) {
+      const sep = value.control.pathSeparation;
+      if (
+        typeof sep.userDataDistinctFromMain === "boolean" &&
+        typeof sep.codexHomeDistinctFromUserCodex === "boolean" &&
+        typeof sep.explodexStateDistinctFromMainHome === "boolean" &&
+        sep.credentialsInspected === false
+      ) {
+        control.pathSeparation = {
+          userDataDistinctFromMain: sep.userDataDistinctFromMain,
+          codexHomeDistinctFromUserCodex: sep.codexHomeDistinctFromUserCodex,
+          explodexStateDistinctFromMainHome: sep.explodexStateDistinctFromMainHome,
+          credentialsInspected: false,
+        };
+      }
+    }
   }
 
   return {
@@ -1212,6 +1442,22 @@ function parseReadiness(
   }
   if (value.cdpHost !== DEV_CDP_HOST || value.cdpPort !== DEV_CDP_PORT) return undefined;
   if (!isNonEmptyString(value.browserIdentity)) return undefined;
+  if (
+    !(
+      value.endpointPublishedPid === null ||
+      (typeof value.endpointPublishedPid === "number" &&
+        Number.isInteger(value.endpointPublishedPid) &&
+        value.endpointPublishedPid > 0)
+    )
+  ) {
+    return undefined;
+  }
+  if (
+    value.endpointPublishedPid !== null &&
+    value.endpointPublishedPid !== value.pid
+  ) {
+    return undefined;
+  }
   if (!isNonEmptyString(value.targetId)) return undefined;
   if (value.targetUrl !== "app://-/index.html") return undefined;
   if (typeof value.executionContextId !== "number" || !Number.isInteger(value.executionContextId)) {
@@ -1219,6 +1465,10 @@ function parseReadiness(
   }
   if (!isNonEmptyString(value.executionContextUniqueId)) return undefined;
   if (!isNonEmptyString(value.frameId)) return undefined;
+  if (!isRecord(value.rendererEvaluation)) return undefined;
+  if (!isNonEmptyString(value.rendererEvaluation.expression)) return undefined;
+  if (!isNonEmptyString(value.rendererEvaluation.evaluatedAt)) return undefined;
+  if (value.rendererEvaluation.result === undefined) return undefined;
   if (value.readiness !== "benign") return undefined;
   if (value.portOwnerPid !== value.pid) return undefined;
   if (frozenHost !== null && value.executablePath !== frozenHost.executablePath) return undefined;
@@ -1230,11 +1480,17 @@ function parseReadiness(
     cdpHost: DEV_CDP_HOST,
     cdpPort: DEV_CDP_PORT,
     browserIdentity: value.browserIdentity,
+    endpointPublishedPid: value.endpointPublishedPid as number | null,
     targetId: value.targetId,
     targetUrl: "app://-/index.html",
     executionContextId: value.executionContextId,
     executionContextUniqueId: value.executionContextUniqueId,
     frameId: value.frameId,
+    rendererEvaluation: {
+      expression: value.rendererEvaluation.expression,
+      result: value.rendererEvaluation.result,
+      evaluatedAt: value.rendererEvaluation.evaluatedAt,
+    },
     readiness: "benign",
   };
 }
@@ -1401,10 +1657,56 @@ export function parsePhase0LaunchContract(value: unknown): Phase0LaunchContract 
   const ownership = parseOwnership(value.ownership, value.status);
   if (ownership === undefined) return null;
 
-  // Proven contracts require complete readiness + ownership.
+  // Proven contracts require complete readiness + ownership + semantic re-derivation.
   if (value.status === "proven") {
     if (readiness === null || ownership === null) return null;
     if (comparativeExperiments.length === 0) return null;
+    if (typeof value.provenAt !== "string" || value.provenAt.length === 0) return null;
+    if (launchMarker === null) return null;
+    if (frozenHost === null) return null;
+
+    const readinessCheck = validatePhase0Readiness(readiness, frozenHost);
+    if (!readinessCheck.ok) return null;
+    const ownershipCheck = validatePhase0Ownership(ownership);
+    if (!ownershipCheck.ok) return null;
+    const matrixCheck = validateCompleteComparativeMatrix(comparativeExperiments, knobMatrix);
+    if (!matrixCheck.ok) return null;
+
+    // Retained set must agree with matrix/conclusions uniquely.
+    const retainedFromMatrix = knobMatrix
+      .filter((entry) => entry.status === "retained")
+      .map((entry) => entry.name)
+      .sort();
+    const retainedDeclared = [...retainedKnobs].sort();
+    if (
+      retainedFromMatrix.length !== retainedDeclared.length ||
+      retainedFromMatrix.some((name, index) => name !== retainedDeclared[index])
+    ) {
+      return null;
+    }
+
+    // Proven isolation must not name experiment private roots.
+    for (const experiment of comparativeExperiments) {
+      for (const side of [experiment.treatment, experiment.control]) {
+        if (side === null || side.privateRoot === null) continue;
+        const root = side.privateRoot;
+        const electron = value.isolation.electronUserDataPath;
+        const codex = value.isolation.codexHomePath;
+        const explodex = value.isolation.explodexHomePath;
+        if (
+          (typeof electron === "string" && electron.startsWith(`${root}/`)) ||
+          (typeof codex === "string" && codex.startsWith(`${root}/`)) ||
+          (typeof explodex === "string" && explodex.startsWith(`${root}/`))
+        ) {
+          return null;
+        }
+      }
+    }
+
+    const acceptanceArgv = value.sanitizedLaunchDescriptor.argv.filter(
+      (entry): entry is string => typeof entry === "string",
+    );
+    if (!acceptanceArgv.includes(launchMarker.value)) return null;
   }
 
   // Impossible: provenAt set on non-proven, or proven without provenAt.

@@ -157,4 +157,20 @@ describe("development state (VAL-DEV-003)", () => {
     });
     expect(loaded).toBeNull();
   });
+
+  test("stopped state parsing requires pid, start identity, target, and startedAt all null", () => {
+    const layout = describeDevLayout("/tmp/homes/state-e/.explodex/dev/plugin-dev");
+    const base = createInitialDevInstanceState({
+      layout,
+      appPath: "/Applications/ChatGPT.app",
+      executablePath: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
+      updatedAt: "2026-07-25T12:00:00.000Z",
+    });
+    expect(base.status).toBe("stopped");
+    expect(parseDevInstanceState(base)).not.toBeNull();
+    expect(parseDevInstanceState({ ...base, pid: 123 })).toBeNull();
+    expect(parseDevInstanceState({ ...base, processStartedAt: "start" })).toBeNull();
+    expect(parseDevInstanceState({ ...base, targetId: "t" })).toBeNull();
+    expect(parseDevInstanceState({ ...base, startedAt: "2026-07-25T12:00:00.000Z" })).toBeNull();
+  });
 });

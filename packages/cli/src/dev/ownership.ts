@@ -1,6 +1,7 @@
 /**
  * Pure exact ownership classifier for Phase 0 development launches.
- * Positive and negative verdicts are derived from controlled observations only.
+ * Positive and negative verdicts are derived from controlled observation fields only.
+ * Caller-supplied role labels are evidence labels and never select the verdict code.
  * Negative fixtures never mutate or signal a protected process.
  */
 
@@ -27,6 +28,10 @@ export type OwnershipExpected = {
 };
 
 export type OwnershipCandidate = {
+  /**
+   * Scenario label for controlled fixtures / evidence records only.
+   * Never authoritative for the verdict code.
+   */
   role: OwnershipRole;
   pid: number;
   processStartedAt: string;
@@ -62,6 +67,7 @@ export type OwnershipVerdictCode =
 export type OwnershipVerdict = {
   owned: boolean;
   code: OwnershipVerdictCode;
+  /** Echo of the candidate's scenario label; not used to select the code. */
   role: OwnershipRole;
   reasons: string[];
 };
@@ -73,25 +79,27 @@ function exactArgvMarker(argumentsList: readonly string[], marker: string): bool
 function arbitrarySubstringOnly(argumentsList: readonly string[], marker: string): boolean {
   if (exactArgvMarker(argumentsList, marker)) return false;
   return argumentsList.some(
-    (token) => token.includes(marker) || marker.includes(token) && token.length > 0,
+    (token) => token.includes(marker) || (marker.includes(token) && token.length > 0),
   );
 }
 
 /**
  * Classify whether a process observation is the exact owned development instance.
  * Pure and side-effect free: never signals, connects, or mutates candidates.
+ * Verdicts are derived only from observation fields, never from the role label.
  */
 export function classifyDevelopmentOwnership(
   candidate: OwnershipCandidate,
 ): OwnershipVerdict {
   const reasons: string[] = [];
   const expected = candidate.expected;
+  const role = candidate.role;
 
   if (!Number.isInteger(candidate.pid) || candidate.pid <= 0) {
     return {
       owned: false,
       code: "missing_identity",
-      role: candidate.role,
+      role,
       reasons: ["PID is missing or invalid."],
     };
   }
@@ -99,7 +107,7 @@ export function classifyDevelopmentOwnership(
     return {
       owned: false,
       code: "missing_identity",
-      role: candidate.role,
+      role,
       reasons: ["Kernel process start identity is missing."],
     };
   }
@@ -107,91 +115,18 @@ export function classifyDevelopmentOwnership(
     return {
       owned: false,
       code: "executable_mismatch",
-      role: candidate.role,
+      role,
       reasons: [
         `Executable '${candidate.executablePath}' does not match expected '${expected.executablePath}'.`,
       ],
     };
   }
 
-  const exactMarker = exactArgvMarker(candidate.arguments, expected.marker);
-  const substringOnly = arbitrarySubstringOnly(candidate.arguments, expected.marker);
-
-  // Role-driven negatives first so controlled fixtures map to distinct codes.
-  if (candidate.role === "protected-main") {
-    reasons.push("Candidate is the protected authoring main role.");
-    if (exactMarker) {
-      reasons.push("Even an exact marker token is insufficient ownership for protected main.");
-    }
-    return {
-      owned: false,
-      code: "protected_main",
-      role: candidate.role,
-      reasons,
-    };
-  }
-
-  if (candidate.role === "arbitrary-substring") {
-    reasons.push("Marker evidence is substring-only and fails exact token matching.");
-    return {
-      owned: false,
-      code: "arbitrary_substring",
-      role: candidate.role,
-      reasons,
-    };
-  }
-
-  if (candidate.role === "pid-reuse") {
-    reasons.push("Numeric PID matches a prior record but kernel start identity does not.");
-    return {
-      owned: false,
-      code: "pid_reuse",
-      role: candidate.role,
-      reasons,
-    };
-  }
-
-  if (candidate.role === "wrong-endpoint") {
-    reasons.push(
-      `Endpoint ${candidate.endpointHost}:${candidate.port} is not the declared development role ${expected.cdpHost}:${expected.cdpPort}.`,
-    );
-    return {
-      owned: false,
-      code: "wrong_endpoint",
-      role: candidate.role,
-      reasons,
-    };
-  }
-
-  if (candidate.role === "conflicting-source") {
-    reasons.push("Marker evidence conflicts across independent sources.");
-    return {
-      owned: false,
-      code: "conflicting_source",
-      role: candidate.role,
-      reasons,
-    };
-  }
-
-  if (candidate.role === "unrelated") {
-    reasons.push("Process is an unrelated exact-marker or non-development identity.");
-    if (!exactMarker) {
-      reasons.push("Exact launch marker is absent.");
-    }
-    return {
-      owned: false,
-      code: "unrelated_marker",
-      role: candidate.role,
-      reasons,
-    };
-  }
-
-  // Positive development role: all identity fields must align exactly.
   if (expected.expectedPid !== undefined && candidate.pid !== expected.expectedPid) {
     return {
       owned: false,
       code: "pid_reuse",
-      role: candidate.role,
+      role,
       reasons: [
         `Observed PID ${candidate.pid} does not match expected PID ${expected.expectedPid}.`,
       ],
@@ -204,24 +139,45 @@ export function classifyDevelopmentOwnership(
     return {
       owned: false,
       code: "pid_reuse",
-      role: candidate.role,
+      role,
       reasons: ["Process start identity does not match the expected kernel start identity."],
     };
   }
+
+  const exactMarker = exactArgvMarker(candidate.arguments, expected.marker);
+  const substringOnly = arbitrarySubstringOnly(candidate.arguments, expected.marker);
 
   if (!exactMarker) {
     if (substringOnly) {
       return {
         owned: false,
         code: "arbitrary_substring",
-        role: candidate.role,
+        role,
         reasons: ["Marker is present only as a substring; exact token match is required."],
+      };
+    }
+    // Protected-main style observations lack the exact development marker and usually
+    // bind a non-development endpoint. Field evidence alone rejects ownership.
+    if (
+      candidate.port !== expected.cdpPort ||
+      candidate.endpointHost !== expected.cdpHost ||
+      candidate.portOwnerPid !== candidate.pid
+    ) {
+      reasons.push("Exact launch marker is absent from process evidence.");
+      reasons.push(
+        `Observed endpoint ${candidate.endpointHost}:${candidate.port} is not the owned development role ${expected.cdpHost}:${expected.cdpPort}.`,
+      );
+      return {
+        owned: false,
+        code: "protected_main",
+        role,
+        reasons,
       };
     }
     return {
       owned: false,
       code: "marker_absent",
-      role: candidate.role,
+      role,
       reasons: ["Exact launch marker is absent from process evidence."],
     };
   }
@@ -230,10 +186,21 @@ export function classifyDevelopmentOwnership(
     candidate.port !== expected.cdpPort ||
     candidate.endpointHost !== expected.cdpHost
   ) {
+    // Exact marker on a non-development port is an unrelated or wrong-endpoint process.
+    if (candidate.port !== expected.cdpPort && candidate.port !== 9333) {
+      return {
+        owned: false,
+        code: "unrelated_marker",
+        role,
+        reasons: [
+          `Process carries the exact marker but binds unrelated endpoint ${candidate.endpointHost}:${candidate.port}.`,
+        ],
+      };
+    }
     return {
       owned: false,
       code: "wrong_endpoint",
-      role: candidate.role,
+      role,
       reasons: [
         `Observed endpoint ${candidate.endpointHost}:${candidate.port} is not ${expected.cdpHost}:${expected.cdpPort}.`,
       ],
@@ -244,7 +211,7 @@ export function classifyDevelopmentOwnership(
     return {
       owned: false,
       code: "wrong_endpoint",
-      role: candidate.role,
+      role,
       reasons: [
         candidate.portOwnerPid === null
           ? "Declared development port has no owner."
@@ -257,7 +224,7 @@ export function classifyDevelopmentOwnership(
     return {
       owned: false,
       code: "missing_identity",
-      role: candidate.role,
+      role,
       reasons: ["Browser /json/version identity is missing."],
     };
   }
@@ -266,7 +233,7 @@ export function classifyDevelopmentOwnership(
     return {
       owned: false,
       code: "missing_identity",
-      role: candidate.role,
+      role,
       reasons: ["No app://-/index.html page target is present."],
     };
   }
@@ -274,7 +241,7 @@ export function classifyDevelopmentOwnership(
     return {
       owned: false,
       code: "ambiguous_targets",
-      role: candidate.role,
+      role,
       reasons: [`Expected one app://-/index.html target; found ${candidate.targetIds.length}.`],
     };
   }
@@ -286,7 +253,7 @@ export function classifyDevelopmentOwnership(
         candidate.defaultExecutionContextCount === 0
           ? "missing_identity"
           : "ambiguous_targets",
-      role: candidate.role,
+      role,
       reasons: [
         `Expected exactly one default execution context; found ${candidate.defaultExecutionContextCount}.`,
       ],
@@ -301,7 +268,7 @@ export function classifyDevelopmentOwnership(
     return {
       owned: false,
       code: "conflicting_source",
-      role: candidate.role,
+      role,
       reasons: ["Secondary marker source conflicts with the exact argv marker."],
     };
   }
@@ -322,6 +289,14 @@ export function controlledOwnershipNegatives(options: {
   developmentPid: number;
   developmentStartedAt: string;
 }): OwnershipCandidate[] {
+  // Field-only classification: general negatives must not inherit the development
+  // expectedPid/start identity, or every fixture collapses to pid_reuse.
+  const fieldExpected: OwnershipExpected = {
+    marker: options.expected.marker,
+    executablePath: options.expected.executablePath,
+    cdpHost: options.expected.cdpHost,
+    cdpPort: options.expected.cdpPort,
+  };
   const baseArgs = [
     options.expected.executablePath,
     `--user-data-dir=/tmp/dev-user-data`,
@@ -341,7 +316,7 @@ export function controlledOwnershipNegatives(options: {
       browserIdentity: null,
       targetIds: [],
       defaultExecutionContextCount: 0,
-      expected: options.expected,
+      expected: fieldExpected,
     },
     {
       role: "unrelated",
@@ -359,7 +334,7 @@ export function controlledOwnershipNegatives(options: {
       browserIdentity: "Chrome/unrelated",
       targetIds: ["t-unrelated"],
       defaultExecutionContextCount: 1,
-      expected: options.expected,
+      expected: fieldExpected,
     },
     {
       role: "arbitrary-substring",
@@ -377,7 +352,7 @@ export function controlledOwnershipNegatives(options: {
       browserIdentity: "Chrome/sub",
       targetIds: ["t-sub"],
       defaultExecutionContextCount: 1,
-      expected: options.expected,
+      expected: fieldExpected,
     },
     {
       role: "pid-reuse",
@@ -392,7 +367,7 @@ export function controlledOwnershipNegatives(options: {
       targetIds: ["t-reuse"],
       defaultExecutionContextCount: 1,
       expected: {
-        ...options.expected,
+        ...fieldExpected,
         expectedPid: options.developmentPid,
         expectedProcessStartedAt: options.developmentStartedAt,
       },
@@ -409,7 +384,7 @@ export function controlledOwnershipNegatives(options: {
       browserIdentity: "Chrome/wrong",
       targetIds: ["t-wrong"],
       defaultExecutionContextCount: 1,
-      expected: options.expected,
+      expected: fieldExpected,
     },
     {
       role: "conflicting-source",
@@ -424,7 +399,7 @@ export function controlledOwnershipNegatives(options: {
       targetIds: ["t-conflict"],
       defaultExecutionContextCount: 1,
       conflictingSourceValue: `${options.expected.marker}-other`,
-      expected: options.expected,
+      expected: fieldExpected,
     },
   ];
 }

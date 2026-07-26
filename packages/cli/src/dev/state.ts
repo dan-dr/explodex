@@ -98,9 +98,16 @@ export function parseDevInstanceState(value: unknown): DevInstanceState | null {
       return null;
     }
   }
-  if (value.status === "stopped" && value.targetId !== null) {
-    // Stopped authority cannot claim a live target.
-    return null;
+  // Stopped authority cannot retain any live process/target identity.
+  if (value.status === "stopped") {
+    if (
+      value.pid !== null ||
+      value.processStartedAt !== null ||
+      value.targetId !== null ||
+      value.startedAt !== null
+    ) {
+      return null;
+    }
   }
   if (
     (value.status === "failed" || value.status === "starting" || value.status === "stopping") &&

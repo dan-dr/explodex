@@ -137,6 +137,8 @@ class NodeCdpTargetSession implements CdpTargetSession {
   private nextId = 1;
   private closed = false;
   private contextError: Error | null = null;
+  /** Runtime domain stays enabled for the session lifetime after first enable. */
+  private runtimeEnabled = false;
 
   private constructor(targetId: string, socket: WebSocket) {
     this.targetId = targetId;
@@ -199,10 +201,30 @@ class NodeCdpTargetSession implements CdpTargetSession {
   }
 
   private onMessage(raw: unknown): void {
-    if (typeof raw !== "string") return;
+    // Node/Bun websocket runtimes may deliver text frames as string or Buffer/Uint8Array.
+    let text: string;
+    if (typeof raw === "string") {
+      text = raw;
+    } else if (raw instanceof ArrayBuffer) {
+      text = new TextDecoder().decode(raw);
+    } else if (ArrayBuffer.isView(raw)) {
+      const view = raw as ArrayBufferView;
+      text = new TextDecoder().decode(
+        new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
+      );
+    } else if (
+      typeof raw === "object" &&
+      raw !== null &&
+      "toString" in raw &&
+      typeof (raw as { toString: () => string }).toString === "function"
+    ) {
+      text = (raw as { toString: () => string }).toString();
+    } else {
+      return;
+    }
     let parsed: unknown;
     try {
-      parsed = JSON.parse(raw) as unknown;
+      parsed = JSON.parse(text) as unknown;
     } catch {
       return;
     }
@@ -273,10 +295,32 @@ class NodeCdpTargetSession implements CdpTargetSession {
   }
 
   async listExecutionContexts(options: { signal?: AbortSignal }): Promise<CdpExecutionContext[]> {
-    this.contexts.clear();
-    this.contextError = null;
-    await this.request("Runtime.enable", {}, options.signal);
-    await Promise.resolve();
+    // Runtime.enable is sticky: a second enable does not re-emit existing context
+    // events. Keep the session inventory across rechecks and only enable once.
+    if (!this.runtimeEnabled) {
+      this.contexts.clear();
+      this.contextError = null;
+      await this.request("Runtime.enable", {}, options.signal);
+      this.runtimeEnabled = true;
+      // Runtime.enable emits executionContextCreated for existing contexts
+      // asynchronously. Poll briefly for at least one default context.
+      const deadline = Date.now() + 1_500;
+      while (Date.now() < deadline) {
+        if (this.contextError !== null) throw this.contextError;
+        const snapshot = [...this.contexts.values()];
+        if (snapshot.some((context) => context.isDefault)) {
+          return snapshot.map((context) => ({ ...context }));
+        }
+        await new Promise<void>((resolve) => {
+          globalThis.setTimeout(resolve, 25);
+        });
+        if (options.signal?.aborted) {
+          throw Object.assign(new Error("CDP listExecutionContexts aborted"), {
+            code: "ABORT_ERR",
+          });
+        }
+      }
+    }
     if (this.contextError !== null) throw this.contextError;
     return [...this.contexts.values()].map((context) => ({ ...context }));
   }

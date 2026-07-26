@@ -117,6 +117,19 @@ function createInjectedCommands(options: {
 
 function createInjectedCdp(options: {
   processes: Map<number, { start: string; argv: string[]; alive: boolean }>;
+  evaluateImpl?: () => Promise<{ value: unknown }>;
+  endpointPidOverride?: number | null;
+  browserIdentity?: string;
+  targetId?: string;
+  contexts?: Array<{
+    id: number;
+    uniqueId: string;
+    targetId: string;
+    frameId: string;
+    isDefault: boolean;
+    origin: string;
+    name: string;
+  }>;
 }): CdpAdapter {
   return {
     async readEndpoint() {
@@ -127,21 +140,23 @@ function createInjectedCdp(options: {
       if (owner === undefined) {
         throw new Error("no endpoint");
       }
+      const published =
+        options.endpointPidOverride === undefined ? owner[0] : options.endpointPidOverride;
       return {
-        browser: "Chrome/ChatGPT-Test",
+        browser: options.browserIdentity ?? "Chrome/ChatGPT-Test",
         protocolVersion: "1.3",
         webSocketDebuggerUrl: "ws://127.0.0.1:9444/devtools/browser/test",
-        pid: owner[0],
+        ...(published === null ? {} : { pid: published }),
       };
     },
     async listTargets() {
       return [
         {
-          id: "page-1",
+          id: options.targetId ?? "page-1",
           type: "page",
           url: "app://-/index.html",
           title: "ChatGPT",
-          webSocketDebuggerUrl: "ws://127.0.0.1:9444/devtools/page/page-1",
+          webSocketDebuggerUrl: `ws://127.0.0.1:9444/devtools/page/${options.targetId ?? "page-1"}`,
         },
       ];
     },
@@ -152,20 +167,29 @@ function createInjectedCdp(options: {
           return true;
         },
         async listExecutionContexts() {
-          return [
-            {
-              id: 1,
-              uniqueId: "unique-ctx-1",
-              targetId: input.target.id,
-              frameId: "frame-1",
-              isDefault: true,
-              origin: "app://-",
-              name: "",
-            },
-          ];
+          return (
+            options.contexts ?? [
+              {
+                id: 1,
+                uniqueId: "unique-ctx-1",
+                targetId: input.target.id,
+                frameId: "frame-1",
+                isDefault: true,
+                origin: "app://-",
+                name: "",
+              },
+            ]
+          );
         },
         async evaluate() {
-          return { value: null };
+          if (options.evaluateImpl) return options.evaluateImpl();
+          return {
+            value: {
+              explodexPhase0Readiness: true,
+              readyState: "complete",
+              href: "app://-/index.html",
+            },
+          };
         },
         async close() {
           // no-op
@@ -247,6 +271,32 @@ describe("runPhase0LaunchIsolation operation-level comparative matrix", () => {
       }
       expect(result.contract.readiness?.targetId).toBe("page-1");
       expect(result.contract.readiness?.browserIdentity).toBe("Chrome/ChatGPT-Test");
+      expect(result.contract.readiness?.rendererEvaluation?.result).toEqual({
+        explodexPhase0Readiness: true,
+        readyState: "complete",
+        href: "app://-/index.html",
+      });
+      expect(result.contract.isolation.electronUserDataPath).toBe(
+        `${root}/electron-user-data`,
+      );
+      expect(result.contract.isolation.codexHomePath).toBe(`${root}/codex-home`);
+      // Comparative experiment private roots must remain separate from acceptance isolation.
+      for (const experiment of result.contract.comparativeExperiments) {
+        expect(experiment.treatment.privateRoot).not.toBeNull();
+        expect(experiment.treatment.privateRoot?.startsWith(`${root}/experiments/`)).toBe(true);
+        expect(
+          result.contract.isolation.electronUserDataPath?.startsWith(
+            `${experiment.treatment.privateRoot}/`,
+          ),
+        ).toBe(false);
+      }
+      // Distinct private roots for every comparative side.
+      const roots = result.contract.comparativeExperiments.flatMap((experiment) => {
+        const sides = [experiment.treatment.privateRoot];
+        if (experiment.control?.privateRoot) sides.push(experiment.control.privateRoot);
+        return sides;
+      });
+      expect(new Set(roots).size).toBe(roots.length);
       expect(result.contract.ownership?.positive.owned).toBe(true);
       expect(result.contract.ownership?.negatives).toHaveLength(6);
       expect(result.allowsLifecycleMutation).toBe(true);
@@ -431,5 +481,573 @@ describe("runPhase0LaunchIsolation operation-level comparative matrix", () => {
     });
     expect(result.contract.status).toBe("incomplete");
     expect(result.allowsLifecycleMutation).toBe(false);
+  });
+
+  test(
+    "rejects endpoint published PID disagreement and missing renderer evaluation as incomplete",
+    async () => {
+      const { adapters } = createFixtureAdapters({
+        bundles: [
+          defaultCanonicalBundleOptions({
+            appVersion: "26.721.41059",
+            appBuild: "5848",
+          }),
+        ],
+        clockIso: CLOCK,
+      });
+      const processes = new Map<number, { start: string; argv: string[]; alive: boolean }>();
+      const nextPid = { value: 7000 };
+      const portOwnerByPid = new Map<number, number>();
+      const runtimeProcess = createInjectedRuntimeProcess({ processes });
+      const harness = createFakeRuntimeHarness({ self: runtimeProcess.self() });
+      const runtimeAdapters: RuntimeAdapters = {
+        ...harness.adapters,
+        process: runtimeProcess,
+        clock: {
+          nowMs: () => Date.now(),
+          nowIso: () => CLOCK,
+        },
+      };
+      const home = `/tmp/homes/phase0-pid-drift-${process.pid}/.explodex`;
+      const root = `${home}/dev/plugin-dev`;
+
+      const result = await runPhase0LaunchIsolation({
+        adapters,
+        runtimeProcess,
+        runtimeAdapters,
+        commands: createInjectedCommands({ processes, portOwnerByPid }),
+        cdp: createInjectedCdp({
+          processes,
+          endpointPidOverride: 999999,
+        }),
+        spawn: createInjectedSpawn({ processes, nextPid }),
+        osHome: `/tmp/homes/phase0-pid-drift-${process.pid}`,
+        rootPath: root,
+        protectedPaths: {
+          mainProfilePath: `${home}/../Library/Application Support/Codex`,
+          userCodexHome: `${home}/../.codex`,
+          explodexHome: home,
+        },
+        readinessTimeoutMs: 500,
+        stopTimeoutMs: 500,
+        pollMs: 5,
+        lockWaitMs: 1_000,
+      });
+
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("expected incomplete readiness");
+      expect(result.allowsLifecycleMutation).toBe(false);
+      expect(result.contract.status).not.toBe("proven");
+      for (const entry of processes.values()) {
+        expect(entry.alive).toBe(false);
+      }
+    },
+    { timeout: 30_000 },
+  );
+
+  test(
+    "missing renderer evaluation leaves readiness incomplete and non-authorizing",
+    async () => {
+      const { adapters } = createFixtureAdapters({
+        bundles: [
+          defaultCanonicalBundleOptions({
+            appVersion: "26.721.41059",
+            appBuild: "5848",
+          }),
+        ],
+        clockIso: CLOCK,
+      });
+      const processes = new Map<number, { start: string; argv: string[]; alive: boolean }>();
+      const nextPid = { value: 7100 };
+      const portOwnerByPid = new Map<number, number>();
+      const runtimeProcess = createInjectedRuntimeProcess({ processes });
+      const harness = createFakeRuntimeHarness({ self: runtimeProcess.self() });
+      const runtimeAdapters: RuntimeAdapters = {
+        ...harness.adapters,
+        process: runtimeProcess,
+        clock: {
+          nowMs: () => Date.now(),
+          nowIso: () => CLOCK,
+        },
+      };
+      const home = `/tmp/homes/phase0-no-eval-${process.pid}/.explodex`;
+      const root = `${home}/dev/plugin-dev`;
+
+      const result = await runPhase0LaunchIsolation({
+        adapters,
+        runtimeProcess,
+        runtimeAdapters,
+        commands: createInjectedCommands({ processes, portOwnerByPid }),
+        cdp: createInjectedCdp({
+          processes,
+          evaluateImpl: async () => {
+            return { value: undefined };
+          },
+        }),
+        spawn: createInjectedSpawn({ processes, nextPid }),
+        osHome: `/tmp/homes/phase0-no-eval-${process.pid}`,
+        rootPath: root,
+        protectedPaths: {
+          mainProfilePath: `${home}/../Library/Application Support/Codex`,
+          userCodexHome: `${home}/../.codex`,
+          explodexHome: home,
+        },
+        readinessTimeoutMs: 400,
+        stopTimeoutMs: 400,
+        pollMs: 5,
+        lockWaitMs: 1_000,
+      });
+
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("expected missing evaluation failure");
+      expect(result.contract.status).not.toBe("proven");
+      expect(result.contract.readiness).toBeNull();
+      for (const entry of processes.values()) {
+        expect(entry.alive).toBe(false);
+      }
+    },
+    { timeout: 30_000 },
+  );
+
+  test(
+    "target replacement during readiness keeps proof incomplete",
+    async () => {
+      const { adapters } = createFixtureAdapters({
+        bundles: [
+          defaultCanonicalBundleOptions({
+            appVersion: "26.721.41059",
+            appBuild: "5848",
+          }),
+        ],
+        clockIso: CLOCK,
+      });
+      const processes = new Map<number, { start: string; argv: string[]; alive: boolean }>();
+      const nextPid = { value: 7200 };
+      const portOwnerByPid = new Map<number, number>();
+      const runtimeProcess = createInjectedRuntimeProcess({ processes });
+      const harness = createFakeRuntimeHarness({ self: runtimeProcess.self() });
+      const runtimeAdapters: RuntimeAdapters = {
+        ...harness.adapters,
+        process: runtimeProcess,
+        clock: {
+          nowMs: () => Date.now(),
+          nowIso: () => CLOCK,
+        },
+      };
+      const home = `/tmp/homes/phase0-target-drift-${process.pid}/.explodex`;
+      const root = `${home}/dev/plugin-dev`;
+      let listCount = 0;
+      const cdp = createInjectedCdp({ processes });
+      const driftingCdp: CdpAdapter = {
+        ...cdp,
+        async listTargets() {
+          listCount += 1;
+          // Every inventory returns a distinct target so point-of-use recheck
+          // never observes a stable target identity across the readiness window.
+          const id = `page-${listCount}`;
+          return [
+            {
+              id,
+              type: "page",
+              url: "app://-/index.html",
+              title: "ChatGPT",
+              webSocketDebuggerUrl: `ws://127.0.0.1:9444/devtools/page/${id}`,
+            },
+          ];
+        },
+        async openTargetSession(input) {
+          const session = await cdp.openTargetSession(input);
+          return {
+            ...session,
+            targetId: input.target.id,
+            async listExecutionContexts() {
+              return [
+                {
+                  id: 1,
+                  uniqueId: `unique-${input.target.id}`,
+                  targetId: input.target.id,
+                  frameId: `frame-${input.target.id}`,
+                  isDefault: true,
+                  origin: "app://-",
+                  name: "",
+                },
+              ];
+            },
+          };
+        },
+      };
+
+      const result = await runPhase0LaunchIsolation({
+        adapters,
+        runtimeProcess,
+        runtimeAdapters,
+        commands: createInjectedCommands({ processes, portOwnerByPid }),
+        cdp: driftingCdp,
+        spawn: createInjectedSpawn({ processes, nextPid }),
+        osHome: `/tmp/homes/phase0-target-drift-${process.pid}`,
+        rootPath: root,
+        protectedPaths: {
+          mainProfilePath: `${home}/../Library/Application Support/Codex`,
+          userCodexHome: `${home}/../.codex`,
+          explodexHome: home,
+        },
+        readinessTimeoutMs: 400,
+        stopTimeoutMs: 400,
+        pollMs: 5,
+        lockWaitMs: 1_000,
+      });
+
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("expected target replacement failure");
+      expect(result.contract.status).not.toBe("proven");
+      for (const entry of processes.values()) {
+        expect(entry.alive).toBe(false);
+      }
+    },
+    { timeout: 30_000 },
+  );
+
+  test(
+    "cleanup signal failure preserves residual authority and never proves",
+    async () => {
+      const { adapters } = createFixtureAdapters({
+        bundles: [
+          defaultCanonicalBundleOptions({
+            appVersion: "26.721.41059",
+            appBuild: "5848",
+          }),
+        ],
+        clockIso: CLOCK,
+      });
+      const processes = new Map<number, { start: string; argv: string[]; alive: boolean }>();
+      const nextPid = { value: 7300 };
+      const portOwnerByPid = new Map<number, number>();
+      const runtimeProcess = createInjectedRuntimeProcess({ processes });
+      const originalSignal = runtimeProcess.signalExact.bind(runtimeProcess);
+      runtimeProcess.signalExact = async (identity, signal, opts) => {
+        // Refuse to signal after acceptance so cleanup remains uncertain.
+        if (identity.pid >= 7300) {
+          return false;
+        }
+        return originalSignal(identity, signal, opts);
+      };
+      const harness = createFakeRuntimeHarness({ self: runtimeProcess.self() });
+      const runtimeAdapters: RuntimeAdapters = {
+        ...harness.adapters,
+        process: runtimeProcess,
+        clock: {
+          nowMs: () => Date.now(),
+          nowIso: () => CLOCK,
+        },
+      };
+      const home = `/tmp/homes/phase0-residual-${process.pid}/.explodex`;
+      const root = `${home}/dev/plugin-dev`;
+
+      const result = await runPhase0LaunchIsolation({
+        adapters,
+        runtimeProcess,
+        runtimeAdapters,
+        commands: createInjectedCommands({ processes, portOwnerByPid }),
+        cdp: createInjectedCdp({ processes }),
+        spawn: createInjectedSpawn({ processes, nextPid }),
+        osHome: `/tmp/homes/phase0-residual-${process.pid}`,
+        rootPath: root,
+        protectedPaths: {
+          mainProfilePath: `${home}/../Library/Application Support/Codex`,
+          userCodexHome: `${home}/../.codex`,
+          explodexHome: home,
+        },
+        readinessTimeoutMs: 1_000,
+        stopTimeoutMs: 200,
+        pollMs: 5,
+        lockWaitMs: 1_000,
+      });
+
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("expected residual authority failure");
+      expect(result.contract.status).not.toBe("proven");
+      expect(result.error.code).toMatch(/cleanup_uncertain|phase0_incomplete|protected_main/);
+      // Residual process identity may remain live; never claim stopped proven authority.
+      const state = await loadDevInstanceState({
+        adapters,
+        statePath: `${root}/state.json`,
+      });
+      expect(state?.status).not.toBe("stopped");
+    },
+    { timeout: 45_000 },
+  );
+
+  test("aborted operation still cleans up with an independent cleanup context", async () => {
+    const { adapters } = createFixtureAdapters({
+      bundles: [
+        defaultCanonicalBundleOptions({
+          appVersion: "26.721.41059",
+          appBuild: "5848",
+        }),
+      ],
+      clockIso: CLOCK,
+    });
+    const processes = new Map<number, { start: string; argv: string[]; alive: boolean }>();
+    const nextPid = { value: 8000 };
+    const portOwnerByPid = new Map<number, number>();
+    const runtimeProcess = createInjectedRuntimeProcess({ processes });
+    const harness = createFakeRuntimeHarness({ self: runtimeProcess.self() });
+    const runtimeAdapters: RuntimeAdapters = {
+      ...harness.adapters,
+      process: runtimeProcess,
+      clock: {
+        nowMs: () => Date.now(),
+        nowIso: () => CLOCK,
+      },
+    };
+    const home = `/tmp/homes/phase0-abort-${process.pid}/.explodex`;
+    const root = `${home}/dev/plugin-dev`;
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await runPhase0LaunchIsolation({
+      adapters,
+      runtimeProcess,
+      runtimeAdapters,
+      commands: createInjectedCommands({ processes, portOwnerByPid }),
+      cdp: createInjectedCdp({ processes }),
+      spawn: createInjectedSpawn({ processes, nextPid }),
+      osHome: `/tmp/homes/phase0-abort-${process.pid}`,
+      rootPath: root,
+      protectedPaths: {
+        mainProfilePath: `${home}/../Library/Application Support/Codex`,
+        userCodexHome: `${home}/../.codex`,
+        explodexHome: home,
+      },
+      readinessTimeoutMs: 500,
+      stopTimeoutMs: 500,
+      pollMs: 10,
+      lockWaitMs: 500,
+      signal: controller.signal,
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected abort failure");
+    expect(result.contract.status).not.toBe("proven");
+    for (const entry of processes.values()) {
+      expect(entry.alive).toBe(false);
+    }
+  });
+
+  test("structurally valid but semantically forged schema-2 proof is rejected on load", async () => {
+    const { parsePhase0LaunchContract } = await import("../../src/dev/phase0.ts");
+    const forged = {
+      schemaVersion: 2,
+      status: "proven",
+      frozenHost: {
+        bundlePath: "/Applications/ChatGPT.app",
+        executablePath: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
+        bundleId: "com.openai.codex",
+        executableName: "ChatGPT",
+        signingTeam: "2DC432GLL2",
+        appVersion: "26.721.41059",
+        appBuild: "5848",
+        hostHashes: {
+          "Contents/Info.plist": "a".repeat(64),
+          "Contents/MacOS/ChatGPT": "b".repeat(64),
+          "Contents/Resources/app.asar": "c".repeat(64),
+        },
+      },
+      appBuild: "5848",
+      appVersion: "26.721.41059",
+      retainedKnobs: ["electron-user-data", "codex-home", "cdp-port", "launch-marker"],
+      knobMatrix: [
+        {
+          name: "electron-user-data",
+          status: "retained",
+          effect: "demonstrated",
+          evidence: "forged",
+        },
+        { name: "codex-home", status: "retained", effect: "demonstrated", evidence: "forged" },
+        {
+          name: "explodex-home",
+          status: "omitted",
+          effect: "not-necessary",
+          evidence: "forged",
+        },
+        { name: "cdp-port", status: "retained", effect: "demonstrated", evidence: "forged" },
+        {
+          name: "launch-marker",
+          status: "retained",
+          effect: "demonstrated",
+          evidence: "forged",
+        },
+      ],
+      comparativeExperiments: [
+        {
+          knob: "electron-user-data",
+          experimentId: "e1",
+          treatmentLabel: "t",
+          controlLabel: "c",
+          treatment: {
+            launched: false,
+            privateRoot: "/tmp/exp/a",
+            descriptor: { argv: [], envKeys: [] },
+            pid: null,
+            processStartedAt: null,
+            portOwnerPid: null,
+            browserIdentity: null,
+            targetId: null,
+            executionContextId: null,
+            exactMarkerPresent: false,
+            ownershipAccepted: false,
+          },
+          control: null,
+          conclusion: "demonstrated",
+          evidence: "forged-mismatch",
+        },
+        {
+          knob: "codex-home",
+          experimentId: "e2",
+          treatmentLabel: "t",
+          controlLabel: "c",
+          treatment: {
+            launched: false,
+            privateRoot: "/tmp/exp/b",
+            descriptor: { argv: [], envKeys: [] },
+            pid: null,
+            processStartedAt: null,
+            portOwnerPid: null,
+            browserIdentity: null,
+            targetId: null,
+            executionContextId: null,
+            exactMarkerPresent: false,
+            ownershipAccepted: false,
+          },
+          control: null,
+          conclusion: "demonstrated",
+          evidence: "forged-mismatch",
+        },
+        {
+          knob: "explodex-home",
+          experimentId: "e3",
+          treatmentLabel: "t",
+          controlLabel: "c",
+          treatment: {
+            launched: false,
+            privateRoot: "/tmp/exp/c",
+            descriptor: { argv: [], envKeys: [] },
+            pid: null,
+            processStartedAt: null,
+            portOwnerPid: null,
+            browserIdentity: null,
+            targetId: null,
+            executionContextId: null,
+            exactMarkerPresent: false,
+            ownershipAccepted: false,
+          },
+          control: null,
+          conclusion: "not-necessary",
+          evidence: "forged-mismatch",
+        },
+        {
+          knob: "cdp-port",
+          experimentId: "e4",
+          treatmentLabel: "t",
+          controlLabel: "c",
+          treatment: {
+            launched: false,
+            privateRoot: "/tmp/exp/d",
+            descriptor: { argv: [], envKeys: [] },
+            pid: null,
+            processStartedAt: null,
+            portOwnerPid: null,
+            browserIdentity: null,
+            targetId: null,
+            executionContextId: null,
+            exactMarkerPresent: false,
+            ownershipAccepted: false,
+          },
+          control: null,
+          conclusion: "demonstrated",
+          evidence: "forged-mismatch",
+        },
+        {
+          knob: "launch-marker",
+          experimentId: "e5",
+          treatmentLabel: "t",
+          controlLabel: "c",
+          treatment: {
+            launched: false,
+            privateRoot: "/tmp/exp/e",
+            descriptor: { argv: [], envKeys: [] },
+            pid: null,
+            processStartedAt: null,
+            portOwnerPid: null,
+            browserIdentity: null,
+            targetId: null,
+            executionContextId: null,
+            exactMarkerPresent: false,
+            ownershipAccepted: false,
+          },
+          control: null,
+          conclusion: "demonstrated",
+          evidence: "forged-mismatch",
+        },
+      ],
+      launchMarker: { kind: "exact-argv-token", value: MARKER },
+      isolation: {
+        electronUserDataPath: "/tmp/accept/electron-user-data",
+        codexHomePath: "/tmp/accept/codex-home",
+        explodexHomePath: null,
+        cdpHost: "127.0.0.1",
+        cdpPort: 9444,
+      },
+      readiness: {
+        pid: 1,
+        processStartedAt: "x",
+        executablePath: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
+        portOwnerPid: 1,
+        cdpHost: "127.0.0.1",
+        cdpPort: 9444,
+        browserIdentity: "Chrome",
+        endpointPublishedPid: 1,
+        targetId: "t",
+        targetUrl: "app://-/index.html",
+        executionContextId: 1,
+        executionContextUniqueId: "u",
+        frameId: "f",
+        rendererEvaluation: {
+          expression: "1+1",
+          result: 2,
+          evaluatedAt: CLOCK,
+        },
+        readiness: "benign",
+      },
+      ownership: {
+        positive: { owned: true, code: "owned", reasons: ["x"] },
+        negatives: [
+          { role: "protected-main", owned: false, code: "protected_main", reasons: ["x"] },
+          { role: "unrelated", owned: false, code: "unrelated_marker", reasons: ["x"] },
+          {
+            role: "arbitrary-substring",
+            owned: false,
+            code: "arbitrary_substring",
+            reasons: ["x"],
+          },
+          { role: "pid-reuse", owned: false, code: "pid_reuse", reasons: ["x"] },
+          { role: "wrong-endpoint", owned: false, code: "wrong_endpoint", reasons: ["x"] },
+          {
+            role: "conflicting-source",
+            owned: false,
+            code: "conflicting_source",
+            reasons: ["x"],
+          },
+        ],
+      },
+      sanitizedLaunchDescriptor: {
+        argv: ["/Applications/ChatGPT.app/Contents/MacOS/ChatGPT", MARKER],
+        envKeys: [],
+      },
+      provenAt: CLOCK,
+      reason: null,
+    };
+
+    expect(parsePhase0LaunchContract(forged)).toBeNull();
   });
 });
