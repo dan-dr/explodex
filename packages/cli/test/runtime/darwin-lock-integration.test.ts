@@ -501,16 +501,18 @@ describe("packed Darwin advisory-lease protocol under required Node runtimes", (
         if (holder.pid !== undefined) recordedPids.add(holder.pid);
         try {
           await waitForFile(readyFile);
+          const interruptedReadyFile = join(home, "interrupted-ready.json");
           const interruptedChild = spawnWorker({
             node,
             fixtureRoot,
             home,
             command: "bounded-wait",
             operationId: `node${node.major}-interrupted`,
+            readyFile: interruptedReadyFile,
             waitMs: 5_000,
           });
           if (interruptedChild.pid !== undefined) recordedPids.add(interruptedChild.pid);
-          await new Promise((resolve) => setTimeout(resolve, 150));
+          await waitForFile(interruptedReadyFile);
           signalExactTestProcess(interruptedChild, "SIGINT");
           const interrupted = await collectWorker(interruptedChild);
           expect(interrupted.exitCode).toBe(130);
@@ -573,6 +575,7 @@ describe("packed Darwin advisory-lease protocol under required Node runtimes", (
           await waitForFile(join(barrier, `publisher-${first.pid ?? 0}`));
           await waitForFile(join(barrier, `publisher-${second.pid ?? 0}`));
           const canonicalLease = join(home, "locks", "plugins-state.lock", "lease");
+          await waitForFile(canonicalLease);
           const canonicalInode = (await stat(canonicalLease, { bigint: true })).ino.toString();
           await writeFile(releaseOne, "release\n", { mode: 0o600 });
           const firstResult = await collectWorker(first);
