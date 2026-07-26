@@ -16,5 +16,7 @@ export * from "./probe-operation.ts";
 export * from "./sdk-runtime-identity.ts";
 export * from "./main-hot-path.ts";
 export * from "./main-launch-types.ts";
+export * from "./main-launch-authority.ts";
+export * from "./main-launch-revalidate.ts";
 export * from "./main-launch.ts";
 export { resolveExplodexHome, compatibilityStatePath, stateDirectory } from "../home/paths.ts";

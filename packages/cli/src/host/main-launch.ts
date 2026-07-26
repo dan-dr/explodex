@@ -1,6 +1,7 @@
 /**
  * Explicit no-main one-shot main launch/attach path with bounded launch
- * coordination, race handling, partial-stage reporting, and process preservation.
+ * coordination, same-operation race-winner attach, full pre-effect
+ * revalidation, partial-stage reporting, and process preservation.
  *
  * VAL-HOST-012 / VAL-HOST-013 / VAL-HOST-014 / VAL-HOST-015
  */
@@ -17,22 +18,32 @@ import {
 import type { BoundedOperationResult } from "../runtime/types.ts";
 import { gateCompatibilityDependentOperation } from "./compatibility-gate.ts";
 import {
+  authorizeSameOperationAttach,
+  captureNoMainLaunchBaseline,
+  type SameOperationAuthority,
+} from "./main-launch-authority.ts";
+import {
   errorMessage,
   freezeHostOrThrow,
   hostIdentityEqual,
   isLaunchFailure,
   launchFailure,
   loadCurrentCompatibility,
+  mapRevalidationReason,
   mapTargetCode,
   markLaunchStage,
   normalizeLaunchResult,
   readLaunchStages,
   registerProtectedChatGpt,
   setSurviving,
-  sleep,
   summarizeHost,
   summarizeProcess,
+  waitForMainPortOwnership,
 } from "./main-launch-helpers.ts";
+import {
+  buildMainLaunchCompatibilityKey,
+  requireMainLaunchRevalidation,
+} from "./main-launch-revalidate.ts";
 import {
   buildMainLaunchArgv,
   DEFAULT_BENIGN_MAIN_EXPRESSION,
@@ -55,6 +66,8 @@ import {
   roleEndpoint,
   type VerifiedProcess,
 } from "./status.ts";
+import type { ProbeIdentity } from "./types.ts";
+import { DEFAULT_PROBE_TOOL_VERSION, PROBE_SCHEMA_VERSION } from "./constants.ts";
 
 export {
   buildMainLaunchArgv,
@@ -73,11 +86,28 @@ export type {
   MainLaunchSuccess,
   MainLaunchWorkContext,
 } from "./main-launch-types.ts";
+export {
+  authorizeSameOperationAttach,
+  captureNoMainLaunchBaseline,
+  isSameOperationRaceWinner,
+  processKey,
+} from "./main-launch-authority.ts";
+export type {
+  MainLaunchBaseline,
+  SameOperationAuthority,
+} from "./main-launch-authority.ts";
+
+function resolveProbe(probe: ProbeIdentity | undefined): ProbeIdentity {
+  return probe ?? {
+    schemaVersion: PROBE_SCHEMA_VERSION,
+    toolVersion: DEFAULT_PROBE_TOOL_VERSION,
+  };
+}
 
 /**
- * Explicit normal launch from no-main with free 9333, or freshly verified attach
- * when a racing winner becomes exact cdp-main before spawn. Never shadows or
- * mutates a plain/user-owned main.
+ * Explicit normal launch from no-main with free 9333, or freshly verified
+ * same-operation race-winner attach. Initially present cdp-main is refused.
+ * Never shadows or mutates a plain/user-owned main.
  */
 export async function runExplicitMainLaunch(
   options: MainLaunchOptions,
@@ -88,6 +118,7 @@ export async function runExplicitMainLaunch(
   });
   const endpoint = roleEndpoint("main");
   const signalsSent: Array<{ pid: number; signal: string }> = [];
+  const probe = resolveProbe(options.probe);
 
   return runBoundedOperation({
     adapters: options.runtime,
@@ -175,6 +206,25 @@ export async function runExplicitMainLaunch(
         });
       }
 
+      // Initially observed cdp-main is availability only — no attach/evaluation.
+      if (initialStatus.mainState === "cdp-main") {
+        throw launchFailure({
+          code: "preexisting_cdp_main",
+          message:
+            "Initially observed cdp-main is availability only and grants no attach or evaluation authority. Explicit no-main launch/attach requires beginning from exact no-main with free 9333.",
+          path: "refused",
+          mainState: "cdp-main",
+          endpointObstruction: initialStatus.endpointObstruction,
+          recoveryGuidance: MAIN_HOT_PATH_RECOVERY_GUIDANCE,
+          lastCompletedStage: "preflight",
+          stalledStage: "preflight",
+          details: {
+            processes: initialStatus.processes.map(summarizeProcess),
+            selectedTarget: initialStatus.selectedTarget,
+          },
+        });
+      }
+
       if (
         initialStatus.mainState === "no-main" &&
         initialStatus.endpointObstruction === "foreign-or-mismatched-endpoint"
@@ -191,11 +241,44 @@ export async function runExplicitMainLaunch(
         });
       }
 
+      if (
+        initialStatus.mainState !== "no-main" ||
+        initialStatus.endpointObstruction !== "port-free"
+      ) {
+        throw launchFailure({
+          code: "state_changed",
+          message:
+            `Explicit launch requires exact no-main with free 9333 at operation start; observed mainState=${initialStatus.mainState} obstruction=${initialStatus.endpointObstruction}`,
+          path: "refused",
+          mainState: initialStatus.mainState,
+          endpointObstruction: initialStatus.endpointObstruction,
+          lastCompletedStage: "preflight",
+          stalledStage: "preflight",
+        });
+      }
+
+      const baseline = captureNoMainLaunchBaseline({
+        operationId: ctx.identity.operationId,
+        status: initialStatus,
+      });
+      if (baseline === null) {
+        throw launchFailure({
+          code: "state_changed",
+          message: "Failed to capture exact no-main/free-9333 launch baseline.",
+          path: "refused",
+          mainState: initialStatus.mainState,
+          endpointObstruction: initialStatus.endpointObstruction,
+          lastCompletedStage: "preflight",
+          stalledStage: "preflight",
+        });
+      }
+
       let path: "spawn" | "attach" = "spawn";
       let boundProcess: VerifiedProcess | null = null;
       let spawned: SpawnedProcess | null = null;
       let spawnedByThisOperation = false;
       let surviving: LaunchedMainIdentity | null = null;
+      let authority: SameOperationAuthority | null = null;
 
       // ── Launch coordination lock ───────────────────────────────────────
       const lock = await acquireStageLock(ctx, {
@@ -205,6 +288,7 @@ export async function runExplicitMainLaunch(
       });
       ctx.markStageComplete("lock-acquisition");
       markLaunchStage(ctx, "lock-acquisition");
+      const holdsLaunchCoordination = true;
 
       try {
         // ── Pre-spawn recheck ────────────────────────────────────────────
@@ -279,7 +363,7 @@ export async function runExplicitMainLaunch(
         }
 
         if (recheck.mainState === "cdp-main") {
-          // Freshly verified attach path for a racing winner (or already present cdp-main).
+          // Same-operation race-winner attach only (not initially present cdp-main).
           path = "attach";
           const process = recheck.processes[0];
           if (process === undefined || recheck.selectedTarget === null) {
@@ -292,6 +376,32 @@ export async function runExplicitMainLaunch(
               stalledStage: "cdp-discovery",
             });
           }
+          const attachAuth = authorizeSameOperationAttach({
+            baseline,
+            holdsLaunchCoordination,
+            candidate: process,
+            selectedTargetPresent: recheck.selectedTarget !== null,
+          });
+          if (!attachAuth.ok) {
+            throw launchFailure({
+              code: attachAuth.reason === "not_same_operation_winner"
+                ? "preexisting_cdp_main"
+                : "same_operation_authority_mismatch",
+              message:
+                "Attach refused: winner is not a same-operation race process that appeared after exact no-main/free-9333 under launch coordination.",
+              path: "refused",
+              mainState: "cdp-main",
+              endpointObstruction: recheck.endpointObstruction,
+              lastCompletedStage: "pre-spawn-recheck",
+              stalledStage: "spawn",
+              details: {
+                reason: attachAuth.reason,
+                baseline,
+                candidate: summarizeProcess(process),
+              },
+            });
+          }
+          authority = attachAuth.authority;
           boundProcess = process;
           surviving = {
             pid: process.pid,
@@ -376,14 +486,19 @@ export async function runExplicitMainLaunch(
             arguments: [frozenHost.executablePath, ...buildMainLaunchArgv()],
             processStartedAt: identity.processStartedAt,
           };
+          authority = {
+            kind: "spawned-by-this-operation",
+            process: boundProcess,
+            operationId: ctx.identity.operationId,
+          };
           setSurviving(ctx, surviving);
           registerProtectedChatGpt(ctx, surviving, signalsSent);
         }
 
-        if (boundProcess === null || surviving === null) {
+        if (boundProcess === null || surviving === null || authority === null) {
           throw launchFailure({
             code: "operation_failed",
-            message: "Internal error: process binding missing after spawn/attach decision",
+            message: "Internal error: process binding or same-operation authority missing after spawn/attach decision",
             path: "failed",
             lastCompletedStage: "pre-spawn-recheck",
             stalledStage: "launch-readiness",
@@ -392,76 +507,35 @@ export async function runExplicitMainLaunch(
 
         // ── Launch readiness ─────────────────────────────────────────────
         const readyProcess = await ctx.runExternalWait("launch-readiness", async (ctl) => {
-          const deadline = options.runtime.clock.nowMs() + ctl.remainingMs();
-          const pollMs = options.readinessPollMs ?? 50;
-          while (options.runtime.clock.nowMs() < deadline) {
-            ctl.throwIfInterrupted();
-            if (surviving === null) {
-              throw launchFailure({
-                code: "readiness_failed",
-                message: "Missing surviving process during readiness",
-                path: "failed",
-                lastCompletedStage: "spawn",
-                stalledStage: "launch-readiness",
-              });
-            }
-            const alive = surviving.processStartedAt === "unresolved"
-              ? true
-              : await options.runtime.process.isAlive(
-                  surviving.pid,
-                  surviving.processStartedAt,
-                  { abortSignal: ctl.signal },
-                );
-            if (!alive) {
-              throw launchFailure({
-                code: "readiness_failed",
-                message: "Launched ChatGPT process exited before readiness",
-                path: "failed",
-                survivingChatGpt: surviving,
-                lastCompletedStage: path === "spawn" ? "spawn" : "pre-spawn-recheck",
-                stalledStage: "launch-readiness",
-              });
-            }
-
-            const status = options.collectStatus !== undefined
-              ? await options.collectStatus(ctl.signal)
-              : await collectHostStatus({
-                  role: "main",
-                  adapters: options.statusAdapters,
-                  signal: ctl.signal,
-                });
-
-            const match = status.processes.find(
-              (candidate) =>
-                candidate.pid === surviving!.pid &&
-                (surviving!.processStartedAt === "unresolved" ||
-                  candidate.processStartedAt === surviving!.processStartedAt),
-            );
-            const ownsPort = status.listeners.some(
-              (listener) =>
-                listener.pid === surviving!.pid &&
-                listener.host === MAIN_CDP_HOST &&
-                listener.port === MAIN_CDP_PORT &&
-                (surviving!.processStartedAt === "unresolved" ||
-                  listener.processStartedAt === surviving!.processStartedAt ||
-                  listener.processStartedAt === null),
-            );
-
-            if (match !== undefined && ownsPort) {
-              if (!ctl.tryCommitEffect()) {
-                throw new InterruptError("launch-readiness");
-              }
-              return match;
-            }
-            await sleep(options.runtime, pollMs, ctl.signal);
+          if (surviving === null) {
+            throw launchFailure({
+              code: "readiness_failed",
+              message: "Missing surviving process during readiness",
+              path: "failed",
+              lastCompletedStage: "spawn",
+              stalledStage: "launch-readiness",
+            });
           }
-          throw launchFailure({
-            code: "readiness_failed",
-            message: "Timed out waiting for launched main to own 127.0.0.1:9333",
-            path: "failed",
-            survivingChatGpt: surviving ?? undefined,
-            lastCompletedStage: path === "spawn" ? "spawn" : "pre-spawn-recheck",
-            stalledStage: "launch-readiness",
+          return waitForMainPortOwnership({
+            runtime: options.runtime,
+            surviving,
+            path,
+            pollMs: options.readinessPollMs ?? 50,
+            deadlineMs: options.runtime.clock.nowMs() + ctl.remainingMs(),
+            signal: ctl.signal,
+            throwIfInterrupted: () => ctl.throwIfInterrupted(),
+            tryCommitEffect: () => ctl.tryCommitEffect(),
+            collectStatus: async (signal) =>
+              options.collectStatus !== undefined
+                ? options.collectStatus(signal)
+                : collectHostStatus({
+                    role: "main",
+                    adapters: options.statusAdapters,
+                    signal,
+                  }),
+            onInterrupt: () => {
+              throw new InterruptError("launch-readiness");
+            },
           });
         });
         ctx.markStageComplete("launch-readiness");
@@ -473,6 +547,11 @@ export async function runExplicitMainLaunch(
           executablePath: readyProcess.executablePath,
           port: MAIN_CDP_PORT,
           host: MAIN_CDP_HOST,
+        };
+        // Keep authority bound to the exact ready identity.
+        authority = {
+          ...authority,
+          process: readyProcess,
         };
         setSurviving(ctx, surviving);
 
@@ -503,8 +582,6 @@ export async function runExplicitMainLaunch(
               signal: ctl.signal,
               retainSession: true,
               onSessionOpened(session) {
-                // Register residual authority at open before delayed work so
-                // late cleanup cannot publish false-clean session inventory.
                 try {
                   ctx.scope.register({
                     kind: "session",
@@ -565,21 +642,62 @@ export async function runExplicitMainLaunch(
         ctx.markStageComplete("cdp-discovery");
         markLaunchStage(ctx, "cdp-discovery");
 
-        // Point-of-use process recheck before requested work
-        const aliveBeforeWork = await options.runtime.process.isAlive(
-          surviving.pid,
-          surviving.processStartedAt,
-        );
-        if (!aliveBeforeWork) {
+        const compatibilityKey = buildMainLaunchCompatibilityKey({
+          host: frozenHost,
+          sdkRuntime: options.sdkRuntime,
+          probe,
+        });
+
+        const collectStatus = async (signal?: AbortSignal) =>
+          options.collectStatus !== undefined
+            ? options.collectStatus(signal)
+            : collectHostStatus({
+                role: "main",
+                adapters: options.statusAdapters,
+                signal,
+              });
+
+        const freezeHost = async () =>
+          options.freezeHost !== undefined
+            ? options.freezeHost()
+            : freezeHostOrThrow(options.hostAdapters);
+
+        const failRevalidation = (
+          reason: string,
+          observation: unknown,
+          survivingProcess: LaunchedMainIdentity | undefined,
+        ): never => {
           throw launchFailure({
-            code: "process_identity_drift",
-            message: "Launched process identity changed before requested work",
+            code: mapRevalidationReason(reason),
+            message:
+              `Pre-effect revalidation failed (${reason}); stopping without reconnect and preserving any operation-launched process.`,
             path: "failed",
-            survivingChatGpt: surviving,
+            survivingChatGpt: survivingProcess,
             lastCompletedStage: "cdp-discovery",
             stalledStage: "requested-work",
+            details: { reason, observation },
           });
-        }
+        };
+
+        // Full revalidation before requested work (and every subsequent evaluation).
+        await requireMainLaunchRevalidation({
+          freezeHost,
+          collectStatus,
+          runtimeProcess: options.runtime.process,
+          cdp: options.cdp,
+          session: discovery.session,
+          expected: {
+            host: frozenHost,
+            process: boundProcess,
+            target: discovery.target,
+            compatibilityKey,
+            sdkRuntime: options.sdkRuntime,
+            probe,
+            authority,
+          },
+          onFailure: (reason, observation) =>
+            failRevalidation(reason, observation, surviving ?? undefined),
+        });
 
         // ── Requested work once ──────────────────────────────────────────
         const workResult = await ctx.runExternalWait("cdp-evaluation", async (ctl) => {
@@ -593,34 +711,25 @@ export async function runExplicitMainLaunch(
             throwIfInterrupted: () => ctl.throwIfInterrupted(),
             evaluate: async (expression) => {
               ctl.throwIfInterrupted();
-              const hostNow = options.freezeHost !== undefined
-                ? await options.freezeHost()
-                : await freezeHostOrThrow(options.hostAdapters);
-              if (!hostIdentityEqual(frozenHost, hostNow)) {
-                throw launchFailure({
-                  code: "host_identity_drift",
-                  message: "Canonical host identity drifted before evaluation; preserving process without reconnect.",
-                  path: "failed",
-                  survivingChatGpt: surviving ?? undefined,
-                  lastCompletedStage: "cdp-discovery",
-                  stalledStage: "requested-work",
-                });
-              }
-              const stillAlive = await options.runtime.process.isAlive(
-                surviving!.pid,
-                surviving!.processStartedAt,
-                { abortSignal: ctl.signal },
-              );
-              if (!stillAlive) {
-                throw launchFailure({
-                  code: "process_identity_drift",
-                  message: "Process identity changed before evaluation",
-                  path: "failed",
-                  survivingChatGpt: surviving ?? undefined,
-                  lastCompletedStage: "cdp-discovery",
-                  stalledStage: "requested-work",
-                });
-              }
+              await requireMainLaunchRevalidation({
+                freezeHost,
+                collectStatus,
+                runtimeProcess: options.runtime.process,
+                cdp: options.cdp,
+                session: discovery.session,
+                expected: {
+                  host: frozenHost,
+                  process: boundProcess!,
+                  target: discovery.target,
+                  compatibilityKey,
+                  sdkRuntime: options.sdkRuntime,
+                  probe,
+                  authority: authority!,
+                },
+                signal: ctl.signal,
+                onFailure: (reason, observation) =>
+                  failRevalidation(reason, observation, surviving ?? undefined),
+              });
               if (!ctl.tryCommitEffect()) {
                 throw new InterruptError("cdp-evaluation");
               }
@@ -673,6 +782,7 @@ export async function runExplicitMainLaunch(
         // Lock is released via scope dispose. Never signal protected ChatGPT.
         void lock;
         void signalsSent;
+        void baseline;
         markLaunchStage(ctx, "cleanup");
       }
     },

@@ -118,7 +118,7 @@ export type BoundedOperationErrorCode =
   | "cleanup_failed"
   | "cdp_session_registration_cleanup_failed"
   | "resident_control_plane_forbidden"
-  /** Explicit main-launch path refusals and partial-stage failures (M1-F06). */
+  /** Explicit main-launch path refusals and partial-stage failures (M1-F06/M1-F06R). */
   | "compatibility_unproven"
   | "compatibility_stale"
   | "main_hot_path_unavailable"
@@ -127,7 +127,10 @@ export type BoundedOperationErrorCode =
   | "host_invalid"
   | "launch_failed"
   | "readiness_failed"
-  | "requested_work_failed";
+  | "requested_work_failed"
+  | "preexisting_cdp_main"
+  | "same_operation_authority_mismatch"
+  | "compatibility_identity_drift";
 
 export type BoundedOperationError = {
   code: BoundedOperationErrorCode;

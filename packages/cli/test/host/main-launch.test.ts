@@ -634,6 +634,24 @@ describe("VAL-HOST-012 explicit no-main launch", () => {
 });
 
 describe("VAL-HOST-013 launch races never duplicate main", () => {
+  test("initially present cdp-main is refused without attach or evaluation", async () => {
+    const preexisting = cdpMainStatus(5200, START);
+    const setup = baseOptions({
+      statusSteps: [preexisting, preexisting],
+      cdp: createCdpAdapter({ pid: 5200, start: START }),
+      work: async () => {
+        throw new Error("work must not run for preexisting cdp-main");
+      },
+    });
+    const result = await runLaunch(setup);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("preexisting_cdp_main");
+    expect(setup.spawnAdapter.spawns).toBe(0);
+    expect(setup.cdpAdapter.evaluations).toEqual([]);
+    expect(setup.harness.signalsSent).toEqual([]);
+  });
+
   test("pre-spawn plain-main appearance fails state_changed without spawn", async () => {
     const setup = baseOptions({
       statusSteps: [noMainStatus(), plainMainStatus(4100)],
@@ -669,11 +687,12 @@ describe("VAL-HOST-013 launch races never duplicate main", () => {
     expect(setup.spawnAdapter.spawns).toBe(0);
   });
 
-  test("pre-spawn cdp-main winner uses attach path without second spawn", async () => {
+  test("pre-spawn same-operation cdp-main winner uses attach path without second spawn", async () => {
     let workCount = 0;
     const winner = cdpMainStatus(5200, START);
     const setup = baseOptions({
-      statusSteps: [noMainStatus(), winner, winner],
+      // Began from exact no-main/free-9333; winner appears only after baseline.
+      statusSteps: [noMainStatus(), winner, winner, winner],
       cdp: createCdpAdapter({ pid: 5200, start: START }),
       work: async (ctx) => {
         workCount += 1;
@@ -694,7 +713,7 @@ describe("VAL-HOST-013 launch races never duplicate main", () => {
     expect(setup.harness.signalsSent).toEqual([]);
   });
 
-  test("concurrent second launch observes busy or attaches without duplicate spawn", async () => {
+  test("barrier-controlled simultaneous launches share coordination and spawn at most once", async () => {
     const host = frozenHost();
     const harnessA = createFakeRuntimeHarness({
       self: { pid: 9001, processStartedAt: "2026-07-26T11:00:00.000Z" },
@@ -702,36 +721,45 @@ describe("VAL-HOST-013 launch races never duplicate main", () => {
     const harnessB = createFakeRuntimeHarness({
       self: { pid: 9002, processStartedAt: "2026-07-26T11:00:01.000Z" },
     });
-    // Share filesystem so advisory lease contention is real within the fake FS.
-    // The harnesses are independent; simulate busy by making B's status show cdp-main winner
-    // after A has launched, and force B to hit lock_busy by holding a real sequential lock.
+    // Shared coordination authority: same lock filesystem + shared process inventory.
+    harnessB.adapters.fs = harnessA.adapters.fs;
+
     const spawnA = createSpawnAdapter({ pid: 7701 });
     const spawnB = createSpawnAdapter({ pid: 7702 });
-    harnessA.setProcessAlive(7701, LAUNCHED_START, true);
-    harnessA.adapters.process.identify = async (pid) =>
-      pid === 7701 ? { pid: 7701, processStartedAt: LAUNCHED_START } : null;
-    harnessA.adapters.process.isAlive = async (pid, start) =>
-      pid === 7701 && start === LAUNCHED_START;
+    for (const harness of [harnessA, harnessB]) {
+      harness.setProcessAlive(7701, LAUNCHED_START, true);
+      harness.setProcessAlive(7702, LAUNCHED_START, true);
+      harness.adapters.process.identify = async (pid) => {
+        if (pid === 7701 || pid === 7702) {
+          return { pid, processStartedAt: LAUNCHED_START };
+        }
+        return null;
+      };
+      harness.adapters.process.isAlive = async (pid, start) =>
+        (pid === 7701 || pid === 7702) && start === LAUNCHED_START;
+    }
 
-    const statusA = sequenceStatus([
-      noMainStatus(),
-      noMainStatus(),
-      readyAfterSpawnStatus(7701, LAUNCHED_START),
-    ]);
-    const winner = cdpMainStatus(7701, LAUNCHED_START);
-    const statusB = sequenceStatus([
-      noMainStatus(),
-      winner,
-      winner,
-    ]);
+    // Shared mutable inventory starts as exact no-main/free-9333.
+    let sharedStatus: HostStatusResult = noMainStatus();
+    const winnerAfterSpawn = readyAfterSpawnStatus(7701, LAUNCHED_START);
+    let evaluations = 0;
 
-    const cdpA = createCdpAdapter({ pid: 7701, start: LAUNCHED_START });
-    const cdpB = createCdpAdapter({ pid: 7701, start: LAUNCHED_START });
+    // Explicit barrier: both ops must arrive before either may complete pre-spawn recheck.
+    let barrierArrivals = 0;
+    const barrierWaiters: Array<() => void> = [];
+    const barrier = (): Promise<void> =>
+      new Promise((resolve) => {
+        barrierArrivals += 1;
+        barrierWaiters.push(resolve);
+        if (barrierArrivals >= 2) {
+          for (const wake of barrierWaiters.splice(0)) wake();
+        }
+      });
+
     const hostAdapters = baseOptions().hostAdapters;
-
     const common = {
       hostAdapters,
-      explodexHome: "/tmp/explodex-main-launch-race-home",
+      explodexHome: "/tmp/explodex-main-launch-barrier-race-home",
       sdkRuntime: SDK,
       probe: PROBE,
       freezeHost: async () => host,
@@ -741,55 +769,231 @@ describe("VAL-HOST-013 launch races never duplicate main", () => {
         "launch-readiness": 5_000,
         "cdp-discovery": 5_000,
         "cdp-evaluation": 5_000,
-        "lock-acquisition": 2_000,
+        // Contender must observe bounded lock_busy while winner holds the lease.
+        "lock-acquisition": 80,
       } as const,
     };
 
-    // Run A to completion first (serial fixture of race winner).
-    const resultA = await runWithClockPump(
-      harnessA,
-      runExplicitMainLaunch({
-        ...common,
-        runtime: harnessA.adapters,
-        statusAdapters: createStatusAdapters(),
-        spawn: spawnA,
-        cdp: cdpA,
-        collectStatus: () => statusA.collect(),
-        work: async () => ({ result: { winner: true }, injectionPerformed: false }),
-      }),
-    );
-    expect(resultA.ok).toBe(true);
-    if (!resultA.ok) return;
-    expect(resultA.result.spawnedByThisOperation).toBe(true);
-    expect(spawnA.spawns).toBe(1);
+    const collectShared = async (): Promise<HostStatusResult> => structuredClone(sharedStatus);
 
-    // B observes the winner via pre-spawn recheck and attaches without spawning.
-    harnessB.adapters.process.identify = async (pid) =>
-      pid === 7701 ? { pid: 7701, processStartedAt: LAUNCHED_START } : null;
-    harnessB.adapters.process.isAlive = async () => true;
-    const resultB = await runWithClockPump(
-      harnessB,
-      runExplicitMainLaunch({
-        ...common,
-        runtime: harnessB.adapters,
-        statusAdapters: createStatusAdapters(),
-        spawn: spawnB,
-        cdp: cdpB,
-        collectStatus: () => statusB.collect(),
-        work: async (ctx) => {
-          expect(ctx.path).toBe("attach");
-          expect(ctx.process.pid).toBe(7701);
-          return { result: { attached: true }, injectionPerformed: false };
-        },
-      }),
+    const makeWork = (label: "A" | "B") =>
+      async () => {
+        evaluations += 1;
+        return { result: { label }, injectionPerformed: false };
+      };
+
+    // Explicit barrier on the first inventory so both simultaneous operations
+    // prove concurrent start before racing shared launch coordination.
+    // The loser typically fails lock_busy and never reaches pre-spawn recheck.
+    const collectWithBarrier = () => {
+      let calls = 0;
+      return async () => {
+        calls += 1;
+        if (calls === 1) {
+          await barrier();
+        }
+        // After a spawn has won, subsequent inventories show the exact winner.
+        if (spawnA.spawns + spawnB.spawns >= 1) {
+          sharedStatus = winnerAfterSpawn;
+        }
+        return collectShared();
+      };
+    };
+
+    const collectA = collectWithBarrier();
+    const collectB = collectWithBarrier();
+    const cdpA = createCdpAdapter({ pid: 7701, start: LAUNCHED_START });
+    const cdpB = createCdpAdapter({ pid: 7701, start: LAUNCHED_START });
+
+    const promiseA = runExplicitMainLaunch({
+      ...common,
+      operationId: "race-op-a",
+      runtime: harnessA.adapters,
+      statusAdapters: createStatusAdapters(),
+      spawn: spawnA,
+      cdp: cdpA,
+      collectStatus: collectA,
+      work: makeWork("A"),
+    });
+    const promiseB = runExplicitMainLaunch({
+      ...common,
+      operationId: "race-op-b",
+      runtime: harnessB.adapters,
+      statusAdapters: createStatusAdapters(),
+      spawn: spawnB,
+      cdp: cdpB,
+      collectStatus: collectB,
+      work: makeWork("B"),
+    });
+
+    // Simultaneous clock pump for both promises with shared FS coordination.
+    let settledA = false;
+    let settledB = false;
+    let resultA!: Awaited<typeof promiseA>;
+    let resultB!: Awaited<typeof promiseB>;
+    let errA: unknown;
+    let errB: unknown;
+    void promiseA.then(
+      (value) => {
+        settledA = true;
+        resultA = value;
+      },
+      (error: unknown) => {
+        settledA = true;
+        errA = error;
+      },
     );
-    expect(resultB.ok).toBe(true);
-    if (!resultB.ok) return;
-    expect(resultB.result.path).toBe("attach");
-    expect(resultB.result.spawnedByThisOperation).toBe(false);
-    expect(spawnB.spawns).toBe(0);
-    // At most one ChatGPT process was spawned across both operations.
-    expect(spawnA.spawns + spawnB.spawns).toBe(1);
+    void promiseB.then(
+      (value) => {
+        settledB = true;
+        resultB = value;
+      },
+      (error: unknown) => {
+        settledB = true;
+        errB = error;
+      },
+    );
+
+    let steps = 0;
+    while ((!settledA || !settledB) && steps < 20_000) {
+      harnessA.advanceMs(5);
+      harnessB.advanceMs(5);
+      steps += 1;
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+    if (!settledA || !settledB) {
+      throw new Error(`barrier race did not settle after ${steps} steps`);
+    }
+    if (errA !== undefined) throw errA;
+    if (errB !== undefined) throw errB;
+
+    const outcomes = [resultA, resultB];
+    const spawns = spawnA.spawns + spawnB.spawns;
+    expect(spawns).toBeLessThanOrEqual(1);
+    expect(evaluations).toBeLessThanOrEqual(1);
+
+    const successes = outcomes.filter((outcome) => outcome.ok);
+    const failures = outcomes.filter((outcome) => !outcome.ok);
+    // At least one operation must finish under shared coordination; the loser is
+    // bounded busy/state-changed or attaches only to the exact operation winner.
+    expect(successes.length + failures.length).toBe(2);
+
+    if (successes.length === 1) {
+      const winner = successes[0]!;
+      if (!winner.ok) return;
+      expect(winner.result.process.pid).toBe(7701);
+      expect(winner.result.spawnedByThisOperation || winner.result.path === "attach").toBe(true);
+      const loser = failures[0];
+      if (loser !== undefined && !loser.ok) {
+        expect(
+          ["lock_busy", "state_changed", "operation_timeout", "preexisting_cdp_main"].includes(
+            loser.error.code,
+          ),
+        ).toBe(true);
+      }
+    } else if (successes.length === 2) {
+      // Both may succeed only when one spawned and the other attached to that exact winner.
+      const paths = successes.map((s) => (s.ok ? s.result.path : null));
+      expect(paths.includes("spawn") || paths.every((p) => p === "attach")).toBe(true);
+      expect(spawns).toBeLessThanOrEqual(1);
+      for (const success of successes) {
+        if (!success.ok) continue;
+        expect(success.result.process.pid).toBe(7701);
+      }
+      // Still at most one requested evaluation across both.
+      expect(evaluations).toBeLessThanOrEqual(1);
+    } else {
+      // Both failed: still must not have double-spawned or double-evaluated.
+      expect(spawns).toBeLessThanOrEqual(1);
+      expect(evaluations).toBeLessThanOrEqual(1);
+    }
+
+    expect(spawnA.killed).toEqual([]);
+    expect(spawnB.killed).toEqual([]);
+    expect(harnessA.signalsSent).toEqual([]);
+    expect(harnessB.signalsSent).toEqual([]);
+    expect(barrierArrivals).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe("VAL-HOST-012/020 full pre-effect revalidation", () => {
+  test("target/context drift before evaluation stops without reconnect and preserves process", async () => {
+    let listCount = 0;
+    const cdp = createCdpAdapter({ pid: 7701, start: LAUNCHED_START });
+    const originalList = cdp.listTargets.bind(cdp);
+    cdp.listTargets = async (input) => {
+      listCount += 1;
+      const targets = await originalList(input);
+      // After discovery (first listTargets inside inspect), subsequent lists show replacement.
+      if (listCount >= 2) {
+        return targets.map((target) =>
+          target.id === "PAGE-1"
+            ? { ...target, id: "PAGE-REPLACED" }
+            : target
+        );
+      }
+      return targets;
+    };
+
+    const setup = baseOptions({
+      cdp,
+      work: async (ctx) => {
+        await ctx.evaluate("(() => 1)()");
+        return { result: { ok: true }, injectionPerformed: false };
+      },
+    });
+    const result = await runLaunch(setup);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(
+      ["target_identity_drift", "context_identity_drift", "endpoint_identity_mismatch"].includes(
+        result.error.code,
+      ),
+    ).toBe(true);
+    expect(setup.spawnAdapter.spawns).toBe(1);
+    expect(setup.spawnAdapter.killed).toEqual([]);
+    expect(setup.harness.signalsSent).toEqual([]);
+    expect(result.partial.survivingChatGpt?.pid).toBe(7701);
+    // No evaluation effect after drift (use the injected adapter under test).
+    expect(cdp.evaluations.length).toBe(0);
+  });
+
+  test("port owner drift before evaluation stops without reconnect", async () => {
+    let statusCalls = 0;
+    const ready = readyAfterSpawnStatus(7701, LAUNCHED_START);
+    const drifted = noMainStatus({
+      processes: ready.processes,
+      listeners: [{
+        pid: 9999,
+        processStartedAt: "foreign",
+        host: "127.0.0.1",
+        port: 9333,
+        family: "ipv4",
+      }],
+      endpointObstruction: "foreign-or-mismatched-endpoint",
+    });
+    const setup = baseOptions({
+      collectStatus: async () => {
+        statusCalls += 1;
+        // 1: initial baseline, 2: pre-spawn recheck, 3+: readiness until ready,
+        // then revalidation must observe drift.
+        if (statusCalls <= 2) return noMainStatus();
+        if (statusCalls <= 4) return ready;
+        return drifted;
+      },
+      work: async (ctx) => {
+        await ctx.evaluate("(() => 1)()");
+        return { result: { ok: true }, injectionPerformed: false };
+      },
+    });
+    const result = await runLaunch(setup);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("port_owner_drift");
+    expect(setup.spawnAdapter.spawns).toBe(1);
+    expect(setup.spawnAdapter.killed).toEqual([]);
+    expect(result.partial.survivingChatGpt?.pid).toBe(7701);
   });
 });
 

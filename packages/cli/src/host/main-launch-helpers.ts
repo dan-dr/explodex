@@ -137,6 +137,12 @@ export function mapBoundedCode(code: string): MainLaunchErrorCode {
   if (code === "host_identity_drift") return "host_identity_drift";
   if (code === "process_identity_drift") return "process_identity_drift";
   if (code === "port_owner_drift") return "port_owner_drift";
+  if (code === "browser_identity_drift") return "browser_identity_drift";
+  if (code === "target_identity_drift") return "target_identity_drift";
+  if (code === "context_identity_drift") return "context_identity_drift";
+  if (code === "compatibility_identity_drift") return "compatibility_identity_drift";
+  if (code === "same_operation_authority_mismatch") return "same_operation_authority_mismatch";
+  if (code === "preexisting_cdp_main") return "preexisting_cdp_main";
   if (code === "target_not_found") return "target_not_found";
   if (code === "target_ambiguous") return "target_ambiguous";
   if (code === "context_not_found") return "context_not_found";
@@ -146,6 +152,24 @@ export function mapBoundedCode(code: string): MainLaunchErrorCode {
   if (code === "compatibility_unproven" || code === "compatibility_stale") {
     return code;
   }
+  return "operation_failed";
+}
+
+/** Map a revalidation reason string to a stable launch error code. */
+export function mapRevalidationReason(reason: string): MainLaunchErrorCode {
+  if (reason.startsWith("host_identity_drift") || reason.startsWith("host_recheck")) {
+    return "host_identity_drift";
+  }
+  if (reason.startsWith("process_identity_drift")) return "process_identity_drift";
+  if (reason.startsWith("port_owner_drift")) return "port_owner_drift";
+  if (reason.startsWith("browser_identity_drift") || reason.startsWith("endpoint_published_pid")) {
+    return "browser_identity_drift";
+  }
+  if (reason.startsWith("target_identity_drift")) return "target_identity_drift";
+  if (reason.startsWith("context_identity_drift")) return "context_identity_drift";
+  if (reason.startsWith("compatibility_identity_drift")) return "compatibility_identity_drift";
+  if (reason.startsWith("same_operation_authority")) return "same_operation_authority_mismatch";
+  if (reason.startsWith("point_of_use_endpoint")) return "endpoint_identity_mismatch";
   return "operation_failed";
 }
 
@@ -321,5 +345,76 @@ export async function sleep(
       signal?.removeEventListener("abort", onAbort);
     };
     signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/**
+ * Poll until the bound process owns loopback 9333, or fail readiness.
+ * Never signals the process on failure.
+ */
+export async function waitForMainPortOwnership(input: {
+  runtime: RuntimeAdapters;
+  surviving: LaunchedMainIdentity;
+  path: "spawn" | "attach";
+  pollMs: number;
+  deadlineMs: number;
+  signal: AbortSignal;
+  throwIfInterrupted(): void;
+  tryCommitEffect(): boolean;
+  collectStatus(signal?: AbortSignal): Promise<HostStatusResult>;
+  onInterrupt(): never;
+}): Promise<VerifiedProcess> {
+  while (input.runtime.clock.nowMs() < input.deadlineMs) {
+    input.throwIfInterrupted();
+    const alive = input.surviving.processStartedAt === "unresolved"
+      ? true
+      : await input.runtime.process.isAlive(
+          input.surviving.pid,
+          input.surviving.processStartedAt,
+          { abortSignal: input.signal },
+        );
+    if (!alive) {
+      throw launchFailure({
+        code: "readiness_failed",
+        message: "Launched ChatGPT process exited before readiness",
+        path: "failed",
+        survivingChatGpt: input.surviving,
+        lastCompletedStage: input.path === "spawn" ? "spawn" : "pre-spawn-recheck",
+        stalledStage: "launch-readiness",
+      });
+    }
+
+    const status = await input.collectStatus(input.signal);
+    const match = status.processes.find(
+      (candidate) =>
+        candidate.pid === input.surviving.pid &&
+        (input.surviving.processStartedAt === "unresolved" ||
+          candidate.processStartedAt === input.surviving.processStartedAt),
+    );
+    const ownsPort = status.listeners.some(
+      (listener) =>
+        listener.pid === input.surviving.pid &&
+        listener.host === MAIN_CDP_HOST &&
+        listener.port === MAIN_CDP_PORT &&
+        (input.surviving.processStartedAt === "unresolved" ||
+          listener.processStartedAt === input.surviving.processStartedAt ||
+          listener.processStartedAt === null),
+    );
+
+    if (match !== undefined && ownsPort) {
+      if (!input.tryCommitEffect()) {
+        input.onInterrupt();
+      }
+      return match;
+    }
+    await sleep(input.runtime, input.pollMs, input.signal);
+  }
+  throw launchFailure({
+    code: "readiness_failed",
+    message: "Timed out waiting for launched main to own 127.0.0.1:9333",
+    path: "failed",
+    survivingChatGpt: input.surviving,
+    lastCompletedStage: input.path === "spawn" ? "spawn" : "pre-spawn-recheck",
+    stalledStage: "launch-readiness",
   });
 }
