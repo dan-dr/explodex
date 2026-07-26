@@ -183,6 +183,7 @@ function incompleteContract(options: {
   readiness?: Phase0ReadinessEvidence | null;
   ownership?: Phase0OwnershipEvidence | null;
   acceptanceAuthority?: Phase0AcceptanceAuthority | null;
+  acceptanceOperationId?: string | null;
 }): Phase0LaunchContract {
   return {
     schemaVersion: PHASE0_CONTRACT_SCHEMA_VERSION,
@@ -208,6 +209,7 @@ function incompleteContract(options: {
       envKeys: [],
     },
     acceptanceAuthority: options.acceptanceAuthority ?? null,
+    acceptanceOperationId: options.acceptanceOperationId ?? null,
     provenAt: null,
     reason: options.reason,
   };
@@ -1582,6 +1584,31 @@ export function evaluatePhase0LaunchContract(
       };
     }
 
+    const enclosingOperationId = input.acceptanceOperationId ?? null;
+    if (!isNonEmptyString(enclosingOperationId)) {
+      const contract = incompleteContract({
+        frozenHost,
+        appBuild: frozenHost.appBuild,
+        appVersion: frozenHost.appVersion,
+        reason:
+          "Phase 0 proven contracts require an independently generated enclosing acceptance operation identity outside acceptanceAuthority.",
+        knobMatrix,
+        retainedKnobs,
+        launchMarker: markerResult.marker,
+        isolation,
+        sanitizedLaunchDescriptor: descriptor,
+        comparativeExperiments,
+        readiness: readinessResult.readiness,
+        ownership: ownershipResult.ownership,
+        acceptanceAuthority: input.acceptanceAuthority ?? null,
+        acceptanceOperationId: null,
+      });
+      return {
+        contract,
+        allowsLifecycleMutation: false,
+        allowsCompatibilityProbe: false,
+      };
+    }
     const acceptanceCheck = validatePhase0AcceptanceAuthority(input.acceptanceAuthority, {
       frozenHost,
       readiness: readinessResult.readiness,
@@ -1589,6 +1616,7 @@ export function evaluatePhase0LaunchContract(
       isolation,
       descriptor,
       comparativeExperiments,
+      expectedOperationId: enclosingOperationId,
     });
     if (!acceptanceCheck.ok) {
       const contract = incompleteContract({
@@ -1605,6 +1633,7 @@ export function evaluatePhase0LaunchContract(
         readiness: readinessResult.readiness,
         ownership: ownershipResult.ownership,
         acceptanceAuthority: input.acceptanceAuthority ?? null,
+        acceptanceOperationId: enclosingOperationId,
       });
       return {
         contract,
@@ -1628,6 +1657,7 @@ export function evaluatePhase0LaunchContract(
       ownership: ownershipResult.ownership,
       sanitizedLaunchDescriptor: descriptor,
       acceptanceAuthority: acceptanceCheck.authority,
+      acceptanceOperationId: enclosingOperationId,
       provenAt: input.clockIso,
       reason: null,
     };
@@ -1654,6 +1684,7 @@ export function evaluatePhase0LaunchContract(
     ownership: input.ownership ?? null,
     sanitizedLaunchDescriptor: descriptor,
     acceptanceAuthority: null,
+    acceptanceOperationId: input.acceptanceOperationId ?? null,
     provenAt: input.clockIso,
     reason: null,
   };
@@ -1699,6 +1730,7 @@ export function createDisabledPhase0Contract(options: {
     ownership: null,
     sanitizedLaunchDescriptor: { argv: [], envKeys: [] },
     acceptanceAuthority: null,
+    acceptanceOperationId: null,
     provenAt: null,
     reason: options.reason ?? "Phase 0 launch-isolation proof has not been completed.",
   };
@@ -1708,6 +1740,7 @@ export function createDisabledPhase0Contract(options: {
 export function createPreSpawnIncompleteContract(options: {
   frozenHost: Phase0FrozenHost;
   reason?: string;
+  acceptanceOperationId?: string | null;
 }): Phase0LaunchContract {
   return incompleteContract({
     frozenHost: options.frozenHost,
@@ -1722,6 +1755,7 @@ export function createPreSpawnIncompleteContract(options: {
       effect: "missing" as const,
       evidence: "Pre-spawn incomplete contract; no experiment has run yet.",
     })),
+    acceptanceOperationId: options.acceptanceOperationId ?? null,
   });
 }
 function parseFrozenHost(value: unknown): Phase0FrozenHost | null {
@@ -2279,6 +2313,15 @@ export function parsePhase0LaunchContract(value: unknown): Phase0LaunchContract 
   if (ownership === undefined) return null;
   const acceptanceAuthority = parseAcceptanceAuthority(value.acceptanceAuthority, value.status);
   if (acceptanceAuthority === undefined) return null;
+  // Independently persisted enclosing operation identity (outside acceptanceAuthority).
+  let acceptanceOperationId: string | null = null;
+  if (value.acceptanceOperationId === null || value.acceptanceOperationId === undefined) {
+    acceptanceOperationId = null;
+  } else if (isNonEmptyString(value.acceptanceOperationId)) {
+    acceptanceOperationId = value.acceptanceOperationId;
+  } else {
+    return null;
+  }
 
   const isolation = {
     electronUserDataPath:
@@ -2347,6 +2390,10 @@ export function parsePhase0LaunchContract(value: unknown): Phase0LaunchContract 
     if (launchMarker === null) return null;
     if (frozenHost === null) return null;
     if (acceptanceAuthority === null) return null;
+    // Proven contracts require an independently persisted enclosing operation identity
+    // that exactly equals acceptanceAuthority.operationId. Changing either alone fails closed.
+    if (acceptanceOperationId === null) return null;
+    if (acceptanceAuthority.operationId !== acceptanceOperationId) return null;
 
     const readinessCheck = validatePhase0Readiness(readiness, frozenHost);
     if (!readinessCheck.ok) return null;
@@ -2400,6 +2447,7 @@ export function parsePhase0LaunchContract(value: unknown): Phase0LaunchContract 
       isolation,
       descriptor: sanitizedLaunchDescriptor,
       comparativeExperiments,
+      expectedOperationId: acceptanceOperationId,
     });
     if (!acceptanceCheck.ok) return null;
   }
@@ -2425,6 +2473,7 @@ export function parsePhase0LaunchContract(value: unknown): Phase0LaunchContract 
     ownership,
     sanitizedLaunchDescriptor,
     acceptanceAuthority,
+    acceptanceOperationId,
     provenAt: typeof value.provenAt === "string" || value.provenAt === null ? value.provenAt : null,
     reason: typeof value.reason === "string" || value.reason === null ? value.reason : null,
   };

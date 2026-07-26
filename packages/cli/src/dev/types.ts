@@ -322,6 +322,13 @@ export type Phase0LaunchContract = {
    * Null for incomplete/disabled non-authorizing contracts.
    */
   acceptanceAuthority: Phase0AcceptanceAuthority | null;
+  /**
+   * Independently persisted enclosing acceptance operation identity.
+   * Outside acceptanceAuthority and required for proven contracts. Must equal
+   * acceptanceAuthority.operationId during construction, evaluation, parsing,
+   * round-trip, and lifecycle authorization; changing either alone fails closed.
+   */
+  acceptanceOperationId: string | null;
   provenAt: string | null;
   reason: string | null;
 };
@@ -398,6 +405,11 @@ export type Phase0EvaluationInput = {
    * Acceptance-correlated survivors/cleanup/final host recheck required for proven.
    */
   acceptanceAuthority?: Phase0AcceptanceAuthority | null;
+  /**
+   * Independently generated enclosing acceptance operation identity. Required when
+   * complete proof includes acceptance authority; must equal acceptanceAuthority.operationId.
+   */
+  acceptanceOperationId?: string | null;
   /**
    * When true, require comparative experiments + readiness + ownership for proof.
    * Operation-level evaluation always sets this. Pure unit knob tests may omit it.

@@ -191,6 +191,7 @@ function disabledResult(
       ownership: null,
       sanitizedLaunchDescriptor: { argv: [], envKeys: [] },
       acceptanceAuthority: null,
+      acceptanceOperationId: null,
       provenAt: null,
       reason: message,
     },
@@ -1770,6 +1771,7 @@ export async function runPhase0LaunchIsolation(
         const incomplete = createPreSpawnIncompleteContract({
           frozenHost,
           reason: message,
+          acceptanceOperationId: identity.operationId,
         });
         return {
           ok: false as const,
@@ -1844,7 +1846,10 @@ async function runPhase0LockedBody(input: {
   } = input;
   {
       // Invalidate any residual schema-1 / rejected proof before first spawn.
-      const preSpawn = createPreSpawnIncompleteContract({ frozenHost });
+      const preSpawn = createPreSpawnIncompleteContract({
+        frozenHost,
+        acceptanceOperationId: identity.operationId,
+      });
       await savePhase0LaunchContract({
         adapters: options.adapters,
         path: layout.phase0ContractPath,
@@ -1884,6 +1889,7 @@ async function runPhase0LockedBody(input: {
         const incomplete = createPreSpawnIncompleteContract({
           frozenHost,
           reason: `Development port ${DEV_CDP_HOST}:${DEV_CDP_PORT} is already occupied; refuse adoption.`,
+          acceptanceOperationId: identity.operationId,
         });
         await savePhase0LaunchContract({
           adapters: options.adapters,
@@ -2034,6 +2040,7 @@ async function runPhase0LockedBody(input: {
             proposedMarker: marker,
             layout,
             clockIso: options.adapters.clock.nowIso(),
+            acceptanceOperationId: identity.operationId,
             requireCompleteProof: true,
           });
           await savePhase0LaunchContract({
@@ -2177,62 +2184,65 @@ async function runPhase0LockedBody(input: {
           signal: options.signal,
         });
         if (matched === null) {
-          throw new Error(
-            `Timed out waiting for isolated development ChatGPT process with exact marker on PID ${acceptanceSpawned.pid}`,
-          );
-        }
-        acceptanceStartedAt = matched.processStartedAt;
+          // Leave acceptanceStartedAt null so finally uses unidentified-spawn residual cleanup.
+          // Do not throw: a throw after finally would be misclassified as write_failure and
+          // would skip residual incomplete evaluation/write.
+          cleanupReason =
+            `Timed out waiting for isolated development ChatGPT process with exact marker on PID ${acceptanceSpawned.pid}`;
+        } else {
+          acceptanceStartedAt = matched.processStartedAt;
 
-        const collected = await collectReadiness({
-          cdp,
-          commands,
-          runtimeProcess,
-          frozenHost,
-          pid: matched.process.pid,
-          processStartedAt: matched.processStartedAt,
-          argumentsList: matched.process.arguments,
-          marker: marker.value,
-          expectCdp: true,
-          portTimeoutMs: readinessTimeoutMs,
-          clockIso: options.adapters.clock.nowIso(),
-          signal: options.signal,
-        });
-        acceptanceProcess = {
-          ...collected.process,
-          env: {
-            CODEX_ELECTRON_USER_DATA_PATH: acceptanceBuilt.env.CODEX_ELECTRON_USER_DATA_PATH,
-            CODEX_HOME: acceptanceBuilt.env.CODEX_HOME,
-          },
-        };
-        acceptanceReadiness = collected.readiness;
-        acceptanceOwnership = collected.ownership;
-
-        // Active-operation host recheck before any proven authority.
-        const recheck = await inspectCanonicalHost(options.adapters);
-        if (!recheck.ok || recheck.host === null) {
-          throw new Error("Host became unavailable during Phase 0");
-        }
-        recheckedHost = freezeHostIdentity(recheck.host);
-        if (!frozenHostEquals(frozenHost, recheckedHost)) {
-          throw new Error(
-            "Active-operation host identity drifted from the frozen Phase 0 identity; abort without reconnect or authority transfer.",
-          );
-        }
-
-        ownershipEvidence = buildOwnershipEvidence({
-          positive: acceptanceOwnership,
-          expected: {
+          const collected = await collectReadiness({
+            cdp,
+            commands,
+            runtimeProcess,
+            frozenHost,
+            pid: matched.process.pid,
+            processStartedAt: matched.processStartedAt,
+            argumentsList: matched.process.arguments,
             marker: marker.value,
-            executablePath: frozenHost.executablePath,
-            cdpHost: DEV_CDP_HOST,
-            cdpPort: DEV_CDP_PORT,
-            expectedPid: acceptanceProcess.pid,
-            expectedProcessStartedAt: acceptanceProcess.processStartedAt,
-          },
-          developmentPid: acceptanceProcess.pid,
-          developmentStartedAt: acceptanceProcess.processStartedAt,
-          protectedMains: protectedMainIdentities,
-        });
+            expectCdp: true,
+            portTimeoutMs: readinessTimeoutMs,
+            clockIso: options.adapters.clock.nowIso(),
+            signal: options.signal,
+          });
+          acceptanceProcess = {
+            ...collected.process,
+            env: {
+              CODEX_ELECTRON_USER_DATA_PATH: acceptanceBuilt.env.CODEX_ELECTRON_USER_DATA_PATH,
+              CODEX_HOME: acceptanceBuilt.env.CODEX_HOME,
+            },
+          };
+          acceptanceReadiness = collected.readiness;
+          acceptanceOwnership = collected.ownership;
+
+          // Active-operation host recheck before any proven authority.
+          const recheck = await inspectCanonicalHost(options.adapters);
+          if (!recheck.ok || recheck.host === null) {
+            throw new Error("Host became unavailable during Phase 0");
+          }
+          recheckedHost = freezeHostIdentity(recheck.host);
+          if (!frozenHostEquals(frozenHost, recheckedHost)) {
+            throw new Error(
+              "Active-operation host identity drifted from the frozen Phase 0 identity; abort without reconnect or authority transfer.",
+            );
+          }
+
+          ownershipEvidence = buildOwnershipEvidence({
+            positive: acceptanceOwnership,
+            expected: {
+              marker: marker.value,
+              executablePath: frozenHost.executablePath,
+              cdpHost: DEV_CDP_HOST,
+              cdpPort: DEV_CDP_PORT,
+              expectedPid: acceptanceProcess.pid,
+              expectedProcessStartedAt: acceptanceProcess.processStartedAt,
+            },
+            developmentPid: acceptanceProcess.pid,
+            developmentStartedAt: acceptanceProcess.processStartedAt,
+            protectedMains: protectedMainIdentities,
+          });
+        }
       } finally {
         // Acceptance spawn cleanup always uses a fresh finite cleanup context, never the
         // possibly-aborted operation signal.
@@ -2482,6 +2492,7 @@ async function runPhase0LockedBody(input: {
           ownership: ownershipEvidence,
           acceptanceLaunchDescriptor: acceptanceBuilt.descriptor,
           acceptanceAuthority,
+          acceptanceOperationId: identity.operationId,
           requireCompleteProof: true,
         });
       } else {
@@ -2496,6 +2507,7 @@ async function runPhase0LockedBody(input: {
           ownership: ownershipEvidence,
           acceptanceLaunchDescriptor: acceptanceBuilt.descriptor,
           acceptanceAuthority: null,
+          acceptanceOperationId: identity.operationId,
           requireCompleteProof: true,
         });
       }
@@ -2516,10 +2528,12 @@ async function runPhase0LockedBody(input: {
             createPreSpawnIncompleteContract({
               frozenHost,
               reason,
+              acceptanceOperationId: identity.operationId,
             })),
           status: "incomplete" as const,
           provenAt: null,
           acceptanceAuthority: null,
+          acceptanceOperationId: identity.operationId,
           reason,
           comparativeExperiments,
           readiness: acceptanceReadiness,

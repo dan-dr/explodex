@@ -119,6 +119,8 @@ function sampleOwnership(): Phase0OwnershipEvidence {
   };
 }
 
+const SAMPLE_ACCEPTANCE_OPERATION_ID = "phase0-test-acceptance";
+
 function sampleAcceptanceAuthority(
   frozenHost: Phase0FrozenHost,
   readiness: Phase0ReadinessEvidence,
@@ -127,7 +129,7 @@ function sampleAcceptanceAuthority(
   ],
 ): Phase0AcceptanceAuthority {
   return {
-    operationId: "phase0-test-acceptance",
+    operationId: SAMPLE_ACCEPTANCE_OPERATION_ID,
     readinessPid: readiness.pid,
     readinessProcessStartedAt: readiness.processStartedAt,
     protectedMainInventoryAttested: true,
@@ -654,6 +656,7 @@ describe("Phase 0 launch-isolation contract (VAL-HOST-007)", () => {
       ownership: sampleOwnership(),
       acceptanceLaunchDescriptor: sampleAcceptanceDescriptor(layout.rootPath),
       acceptanceAuthority: sampleAcceptanceAuthority(frozenHost, readiness),
+      acceptanceOperationId: SAMPLE_ACCEPTANCE_OPERATION_ID,
       requireCompleteProof: true,
     });
     expect(proven.contract.status).toBe("proven");
@@ -764,6 +767,7 @@ describe("Phase 0 launch-isolation contract (VAL-HOST-007)", () => {
       ownership: sampleOwnership(),
       acceptanceLaunchDescriptor: sampleAcceptanceDescriptor(layout.rootPath),
       acceptanceAuthority: null,
+      acceptanceOperationId: SAMPLE_ACCEPTANCE_OPERATION_ID,
       requireCompleteProof: true,
     });
     expect(withoutAuthority.contract.status).toBe("incomplete");
@@ -783,6 +787,7 @@ describe("Phase 0 launch-isolation contract (VAL-HOST-007)", () => {
       ownership: sampleOwnership(),
       acceptanceLaunchDescriptor: sampleAcceptanceDescriptor(layout.rootPath),
       acceptanceAuthority: sampleAcceptanceAuthority(frozenHost, readiness),
+      acceptanceOperationId: SAMPLE_ACCEPTANCE_OPERATION_ID,
       requireCompleteProof: true,
     });
     expect(replayed.contract.status).toBe("incomplete");
@@ -808,6 +813,7 @@ describe("Phase 0 launch-isolation contract (VAL-HOST-007)", () => {
       ownership: sampleOwnership(),
       acceptanceLaunchDescriptor: sampleAcceptanceDescriptor(layout.rootPath),
       acceptanceAuthority: sampleAcceptanceAuthority(frozenHost, readiness),
+      acceptanceOperationId: SAMPLE_ACCEPTANCE_OPERATION_ID,
       requireCompleteProof: true,
     });
     expect(forgedExpression.contract.status).toBe("incomplete");
@@ -826,6 +832,7 @@ describe("Phase 0 launch-isolation contract (VAL-HOST-007)", () => {
       ownership,
       acceptanceLaunchDescriptor: sampleAcceptanceDescriptor(layout.rootPath),
       acceptanceAuthority: sampleAcceptanceAuthority(frozenHost, goodReadiness),
+      acceptanceOperationId: SAMPLE_ACCEPTANCE_OPERATION_ID,
       requireCompleteProof: true,
     });
     expect(forgedCodes.contract.status).toBe("incomplete");
@@ -846,9 +853,12 @@ describe("Phase 0 launch-isolation contract (VAL-HOST-007)", () => {
       ownership: sampleOwnership(),
       acceptanceLaunchDescriptor: sampleAcceptanceDescriptor(layout.rootPath),
       acceptanceAuthority: sampleAcceptanceAuthority(frozenHost, readiness),
+      acceptanceOperationId: SAMPLE_ACCEPTANCE_OPERATION_ID,
       requireCompleteProof: true,
     });
     expect(proven.contract.status).toBe("proven");
+    expect(proven.contract.acceptanceOperationId).toBe(SAMPLE_ACCEPTANCE_OPERATION_ID);
+    expect(proven.contract.acceptanceAuthority?.operationId).toBe(SAMPLE_ACCEPTANCE_OPERATION_ID);
 
     // Structurally proven-looking object missing acceptance authority fails parse and gate.
     const forged = {
@@ -864,16 +874,6 @@ describe("Phase 0 launch-isolation contract (VAL-HOST-007)", () => {
     if (gate.allowed) return;
     expect(gate.error.code).toBe("phase0_incomplete");
 
-    // Substituted operation identity is rejected when full re-parse is applied after mutation.
-    const substituted = {
-      ...proven.contract,
-      acceptanceAuthority: {
-        ...proven.contract.acceptanceAuthority!,
-        operationId: "arbitrarily-substituted-operation",
-      },
-    };
-    // Operation ID alone may still parse, but comparative PID reuse and other bindings
-    // keep authority exact. Forcing a calendar-invalid provenAt fails both parse and gate.
     const invalidTimestamp = {
       ...proven.contract,
       provenAt: "2026-02-30T12:00:00.000Z",
@@ -884,7 +884,145 @@ describe("Phase 0 launch-isolation contract (VAL-HOST-007)", () => {
       expectedHost: frozenHost,
     });
     expect(timeGate.allowed).toBe(false);
-    void substituted;
+  });
+
+  test("arbitrary operation-ID substitution fails closed across evaluate, parse, gate, and runIfPhase0Allows", () => {
+    const layout = describeDevLayout("/tmp/homes/phase0-op-id-bind/.explodex/dev/plugin-dev");
+    const frozenHost = sampleFrozenHost();
+    const readiness = sampleReadiness(frozenHost);
+    const authority = sampleAcceptanceAuthority(frozenHost, readiness);
+    const experiments = sampleComparativeExperiments(layout.rootPath);
+    const descriptor = sampleAcceptanceDescriptor(layout.rootPath);
+
+    // Matching enclosing + authority operation IDs prove.
+    const proven = evaluatePhase0LaunchContract({
+      frozenHost,
+      comparativeExperiments: experiments,
+      proposedMarker: { kind: "exact-argv-token", value: MARKER },
+      layout,
+      clockIso: CLOCK,
+      readiness,
+      ownership: sampleOwnership(),
+      acceptanceLaunchDescriptor: descriptor,
+      acceptanceAuthority: authority,
+      acceptanceOperationId: SAMPLE_ACCEPTANCE_OPERATION_ID,
+      requireCompleteProof: true,
+    });
+    expect(proven.contract.status).toBe("proven");
+    expect(proven.allowsLifecycleMutation).toBe(true);
+    expect(parsePhase0LaunchContract(proven.contract)).not.toBeNull();
+    expect(
+      gateDevelopmentLifecycleMutation({
+        operation: "dev-start",
+        contract: proven.contract,
+        expectedHost: frozenHost,
+      }).allowed,
+    ).toBe(true);
+    const allowedRun = runIfPhase0Allows({
+      operation: "dev-start",
+      contract: proven.contract,
+      expectedHost: frozenHost,
+      run: () => "ran",
+    });
+    expect(allowedRun.gate.allowed).toBe(true);
+    expect(allowedRun.result).toBe("ran");
+
+    // Changing only acceptanceAuthority.operationId fails evaluate, parse, gate, run.
+    const onlyAuthority = evaluatePhase0LaunchContract({
+      frozenHost,
+      comparativeExperiments: experiments,
+      proposedMarker: { kind: "exact-argv-token", value: MARKER },
+      layout,
+      clockIso: CLOCK,
+      readiness,
+      ownership: sampleOwnership(),
+      acceptanceLaunchDescriptor: descriptor,
+      acceptanceAuthority: {
+        ...authority,
+        operationId: "arbitrarily-substituted-operation",
+      },
+      acceptanceOperationId: SAMPLE_ACCEPTANCE_OPERATION_ID,
+      requireCompleteProof: true,
+    });
+    expect(onlyAuthority.contract.status).toBe("incomplete");
+    expect(onlyAuthority.allowsLifecycleMutation).toBe(false);
+    expect(onlyAuthority.contract.reason).toMatch(/arbitrarily substituted|operation identity/i);
+
+    const authorityMutated = {
+      ...proven.contract,
+      acceptanceAuthority: {
+        ...proven.contract.acceptanceAuthority!,
+        operationId: "arbitrarily-substituted-operation",
+      },
+    };
+    expect(parsePhase0LaunchContract(authorityMutated)).toBeNull();
+    const authorityGate = gateDevelopmentLifecycleMutation({
+      operation: "dev-start",
+      contract: authorityMutated as typeof proven.contract,
+      expectedHost: frozenHost,
+    });
+    expect(authorityGate.allowed).toBe(false);
+    const authorityRun = runIfPhase0Allows({
+      operation: "dev-start",
+      contract: authorityMutated as typeof proven.contract,
+      expectedHost: frozenHost,
+      run: () => "must-not-run",
+    });
+    expect(authorityRun.gate.allowed).toBe(false);
+    expect(authorityRun.result).toBeUndefined();
+
+    // Changing only the independently persisted enclosing operation ID fails closed.
+    const onlyEnclosing = evaluatePhase0LaunchContract({
+      frozenHost,
+      comparativeExperiments: experiments,
+      proposedMarker: { kind: "exact-argv-token", value: MARKER },
+      layout,
+      clockIso: CLOCK,
+      readiness,
+      ownership: sampleOwnership(),
+      acceptanceLaunchDescriptor: descriptor,
+      acceptanceAuthority: authority,
+      acceptanceOperationId: "arbitrarily-substituted-enclosing-id",
+      requireCompleteProof: true,
+    });
+    expect(onlyEnclosing.contract.status).toBe("incomplete");
+    expect(onlyEnclosing.allowsLifecycleMutation).toBe(false);
+
+    const enclosingMutated = {
+      ...proven.contract,
+      acceptanceOperationId: "arbitrarily-substituted-enclosing-id",
+    };
+    expect(parsePhase0LaunchContract(enclosingMutated)).toBeNull();
+    const enclosingGate = gateDevelopmentLifecycleMutation({
+      operation: "dev-start",
+      contract: enclosingMutated as typeof proven.contract,
+      expectedHost: frozenHost,
+    });
+    expect(enclosingGate.allowed).toBe(false);
+    const enclosingRun = runIfPhase0Allows({
+      operation: "dev-start",
+      contract: enclosingMutated as typeof proven.contract,
+      expectedHost: frozenHost,
+      run: () => "must-not-run",
+    });
+    expect(enclosingRun.gate.allowed).toBe(false);
+    expect(enclosingRun.result).toBeUndefined();
+
+    // Missing enclosing operation ID fails closed even with matching authority.
+    const missingEnclosing = evaluatePhase0LaunchContract({
+      frozenHost,
+      comparativeExperiments: experiments,
+      proposedMarker: { kind: "exact-argv-token", value: MARKER },
+      layout,
+      clockIso: CLOCK,
+      readiness,
+      ownership: sampleOwnership(),
+      acceptanceLaunchDescriptor: descriptor,
+      acceptanceAuthority: authority,
+      requireCompleteProof: true,
+    });
+    expect(missingEnclosing.contract.status).toBe("incomplete");
+    expect(missingEnclosing.contract.reason).toMatch(/independently generated enclosing/i);
   });
 
   test("ISO timestamps reject calendar-normalized invalid dates such as February 30", () => {
@@ -906,6 +1044,7 @@ describe("Phase 0 launch-isolation contract (VAL-HOST-007)", () => {
       ownership: sampleOwnership(),
       acceptanceLaunchDescriptor: sampleAcceptanceDescriptor(layout.rootPath),
       acceptanceAuthority: sampleAcceptanceAuthority(frozenHost, readiness),
+      acceptanceOperationId: SAMPLE_ACCEPTANCE_OPERATION_ID,
       requireCompleteProof: true,
     });
     expect(proven.contract.status).toBe("proven");
@@ -944,6 +1083,7 @@ describe("Phase 0 launch-isolation contract (VAL-HOST-007)", () => {
       ownership: sampleOwnership(),
       acceptanceLaunchDescriptor: substringDescriptor,
       acceptanceAuthority: sampleAcceptanceAuthority(frozenHost, readiness),
+      acceptanceOperationId: SAMPLE_ACCEPTANCE_OPERATION_ID,
       requireCompleteProof: true,
     });
     expect(substring.contract.status).toBe("incomplete");
@@ -964,6 +1104,7 @@ describe("Phase 0 launch-isolation contract (VAL-HOST-007)", () => {
       ownership: sampleOwnership(),
       acceptanceLaunchDescriptor: noEnvValues,
       acceptanceAuthority: sampleAcceptanceAuthority(frozenHost, readiness),
+      acceptanceOperationId: SAMPLE_ACCEPTANCE_OPERATION_ID,
       requireCompleteProof: true,
     });
     expect(missingEnv.contract.status).toBe("incomplete");
@@ -994,6 +1135,7 @@ describe("Phase 0 launch-isolation contract (VAL-HOST-007)", () => {
       ownership: sampleOwnership(),
       acceptanceLaunchDescriptor: sampleAcceptanceDescriptor(layout.rootPath),
       acceptanceAuthority: reused,
+      acceptanceOperationId: SAMPLE_ACCEPTANCE_OPERATION_ID,
       requireCompleteProof: true,
     });
     expect(reuseResult.contract.status).toBe("incomplete");
@@ -1016,6 +1158,7 @@ describe("Phase 0 launch-isolation contract (VAL-HOST-007)", () => {
       ownership: sampleOwnership(),
       acceptanceLaunchDescriptor: sampleAcceptanceDescriptor(layout.rootPath),
       acceptanceAuthority: sampleAcceptanceAuthority(frozenHost, readiness, []),
+      acceptanceOperationId: SAMPLE_ACCEPTANCE_OPERATION_ID,
       requireCompleteProof: true,
     });
     expect(zero.contract.status).toBe("proven");
@@ -1026,7 +1169,7 @@ describe("Phase 0 launch-isolation contract (VAL-HOST-007)", () => {
     const omitted = {
       ...zero.contract,
       acceptanceAuthority: {
-        operationId: "phase0-test-acceptance",
+        operationId: SAMPLE_ACCEPTANCE_OPERATION_ID,
         readinessPid: readiness.pid,
         readinessProcessStartedAt: readiness.processStartedAt,
         protectedMainBefore: [],
@@ -1057,6 +1200,7 @@ describe("Phase 0 launch-isolation contract (VAL-HOST-007)", () => {
         { pid: 60014, processStartedAt: "main-a" },
         { pid: 60015, processStartedAt: "main-b" },
       ]),
+      acceptanceOperationId: SAMPLE_ACCEPTANCE_OPERATION_ID,
       requireCompleteProof: true,
     });
     expect(multi.contract.status).toBe("proven");
@@ -1082,6 +1226,7 @@ describe("Phase 0 launch-isolation contract (VAL-HOST-007)", () => {
       ownership: sampleOwnership(),
       acceptanceLaunchDescriptor: sampleAcceptanceDescriptor(layout.rootPath),
       acceptanceAuthority: authority,
+      acceptanceOperationId: SAMPLE_ACCEPTANCE_OPERATION_ID,
       requireCompleteProof: true,
     });
     expect(result.contract.status).toBe("incomplete");

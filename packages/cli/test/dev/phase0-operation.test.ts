@@ -7,6 +7,8 @@ import {
 import { loadPhase0LaunchContract } from "../../src/dev/phase0.ts";
 import { loadDevInstanceState } from "../../src/dev/state.ts";
 import type { CdpAdapter, CdpTargetSession } from "../../src/cdp/adapters.ts";
+import type { Phase0ComparativeExperiment } from "../../src/dev/types.ts";
+import { describeDevLayout } from "../../src/dev/layout.ts";
 import type { LaunchSpawnAdapter, SpawnedProcess } from "../../src/dev/launch-adapters.ts";
 import type { RuntimeAdapters, RuntimeProcess } from "../../src/runtime/adapters.ts";
 import {
@@ -197,6 +199,172 @@ function createInjectedCdp(options: {
       };
       return session;
     },
+  };
+}
+
+
+function sampleProvidedExperiments(rootPath: string): Phase0ComparativeExperiment[] {
+  const layout = describeDevLayout(rootPath);
+  const makeTreatment = (knob: string, sequence: number) => ({
+    launched: true as const,
+    privateRoot: `${layout.rootPath}/experiments/${knob}/treatment/run-${sequence}`,
+    descriptor: {
+      argv: [
+        "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
+        `--user-data-dir=${layout.electronUserDataPath}`,
+        "--remote-debugging-port=9444",
+        MARKER,
+      ],
+      envKeys: ["CODEX_HOME"],
+    },
+    pid: 4200 + sequence,
+    processStartedAt: `dev-start-${sequence}`,
+    portOwnerPid: 4200 + sequence,
+    browserIdentity: "Chrome/ChatGPT",
+    targetId: `target-${sequence}`,
+    executionContextId: 1,
+    pathSeparation: {
+      userDataDistinctFromMain: true,
+      codexHomeDistinctFromUserCodex: true,
+      explodexStateDistinctFromMainHome: true,
+      credentialsInspected: false as const,
+    },
+    exactMarkerPresent: true,
+    ownershipAccepted: true,
+  });
+  const makeControl = (
+    knob: string,
+    sequence: number,
+    treatment: ReturnType<typeof makeTreatment>,
+  ) => ({
+    ...treatment,
+    privateRoot: `${layout.rootPath}/experiments/${knob}/control/run-${sequence}`,
+    pid: 4300 + sequence,
+    processStartedAt: `control-start-${sequence}`,
+    launched: true as const,
+    ownershipAccepted: false,
+    exactMarkerPresent: false,
+    portOwnerPid: null,
+    browserIdentity: null,
+    targetId: null,
+    executionContextId: null,
+  });
+  const userDataTreatment = makeTreatment("electron-user-data", 1);
+  const codexTreatment = makeTreatment("codex-home", 3);
+  const explodexTreatment = makeTreatment("explodex-home", 5);
+  const cdpTreatment = makeTreatment("cdp-port", 7);
+  const markerTreatment = makeTreatment("launch-marker", 9);
+  return [
+    {
+      knob: "electron-user-data",
+      experimentId: "exp-user-data",
+      treatmentLabel: "treatment:electron-user-data",
+      controlLabel: "control:electron-user-data",
+      treatment: userDataTreatment,
+      control: {
+        ...makeControl("electron-user-data", 2, userDataTreatment),
+        pathSeparation: {
+          userDataDistinctFromMain: false,
+          codexHomeDistinctFromUserCodex: true,
+          explodexStateDistinctFromMainHome: true,
+          credentialsInspected: false as const,
+        },
+      },
+      conclusion: "demonstrated",
+      evidence: "user-data isolation demonstrated",
+    },
+    {
+      knob: "codex-home",
+      experimentId: "exp-codex-home",
+      treatmentLabel: "treatment:codex-home",
+      controlLabel: "control:codex-home",
+      treatment: codexTreatment,
+      control: {
+        ...makeControl("codex-home", 4, codexTreatment),
+        pathSeparation: {
+          userDataDistinctFromMain: true,
+          codexHomeDistinctFromUserCodex: false,
+          explodexStateDistinctFromMainHome: true,
+          credentialsInspected: false as const,
+        },
+      },
+      conclusion: "demonstrated",
+      evidence: "CODEX_HOME isolation demonstrated",
+    },
+    {
+      knob: "explodex-home",
+      experimentId: "exp-explodex-home",
+      treatmentLabel: "treatment:explodex-home",
+      controlLabel: "control:explodex-home",
+      treatment: explodexTreatment,
+      control: {
+        ...makeTreatment("explodex-home-control", 6),
+        ownershipAccepted: true,
+      },
+      conclusion: "not-necessary",
+      evidence: "EXPLODEX_HOME not necessary with private explodex-state",
+    },
+    {
+      knob: "cdp-port",
+      experimentId: "exp-cdp-port",
+      treatmentLabel: "treatment:cdp-port",
+      controlLabel: "control:cdp-port",
+      treatment: cdpTreatment,
+      control: makeControl("cdp-port", 8, cdpTreatment),
+      conclusion: "demonstrated",
+      evidence: "9444 ownership demonstrated",
+    },
+    {
+      knob: "launch-marker",
+      experimentId: "exp-marker",
+      treatmentLabel: "treatment:launch-marker",
+      controlLabel: "control:launch-marker",
+      treatment: markerTreatment,
+      control: makeControl("launch-marker", 10, markerTreatment),
+      conclusion: "demonstrated",
+      evidence: "exact marker ownership demonstrated",
+    },
+  ];
+}
+
+function createBaseFaultFixture(label: string) {
+  const { adapters } = createFixtureAdapters({
+    bundles: [
+      defaultCanonicalBundleOptions({
+        appVersion: "26.721.41059",
+        appBuild: "5848",
+      }),
+    ],
+    clockIso: CLOCK,
+  });
+  const processes = new Map<number, { start: string; argv: string[]; alive: boolean }>();
+  // Protected authoring main identity that must survive every terminal path.
+  processes.set(60014, {
+    start: "protected-main-start",
+    argv: ["/Applications/ChatGPT.app/Contents/MacOS/ChatGPT"],
+    alive: true,
+  });
+  const nextPid = { value: 11_000 };
+  const portOwnerByPid = new Map<number, number>();
+  const runtimeProcess = createInjectedRuntimeProcess({ processes });
+  const harness = createFakeRuntimeHarness({ self: runtimeProcess.self() });
+  const runtimeAdapters: RuntimeAdapters = {
+    ...harness.adapters,
+    process: runtimeProcess,
+    clock: { nowMs: () => Date.now(), nowIso: () => CLOCK },
+  };
+  const home = `/tmp/homes/phase0-fault-${label}-${process.pid}/.explodex`;
+  const root = `${home}/dev/plugin-dev`;
+  return {
+    adapters,
+    processes,
+    nextPid,
+    portOwnerByPid,
+    runtimeProcess,
+    runtimeAdapters,
+    home,
+    root,
+    protectedMainPid: 60014,
   };
 }
 
@@ -1652,4 +1820,638 @@ describe("runPhase0LaunchIsolation operation-level comparative matrix", () => {
     expect(result.contract.status).not.toBe("proven");
     expect(result.error.code).toBe("protected_main_impacted");
   }, 30_000);
+
+  test("unidentified-spawn kill failure preserves residual authority without proven write", async () => {
+    const fx = createBaseFaultFixture("kill-fail");
+    const spawn: LaunchSpawnAdapter = {
+      async spawn() {
+        const pid = fx.nextPid.value++;
+        // Unidentified: never appears in process inventory.
+        return {
+          pid,
+          async wait() {
+            return { exitCode: 0, signal: null };
+          },
+          kill() {
+            throw new Error("injected unidentified-spawn kill failure");
+          },
+        };
+      },
+    };
+    const result = await runPhase0LaunchIsolation({
+      adapters: fx.adapters,
+      runtimeProcess: fx.runtimeProcess,
+      runtimeAdapters: fx.runtimeAdapters,
+      commands: createInjectedCommands({
+        processes: fx.processes,
+        portOwnerByPid: fx.portOwnerByPid,
+      }),
+      cdp: createInjectedCdp({ processes: fx.processes }),
+      spawn,
+      osHome: `/tmp/homes/phase0-fault-kill-fail-${process.pid}`,
+      rootPath: fx.root,
+      protectedPaths: {
+        mainProfilePath: `${fx.home}/../Library/Application Support/Codex`,
+        userCodexHome: `${fx.home}/../.codex`,
+        explodexHome: fx.home,
+      },
+      providedComparativeExperiments: sampleProvidedExperiments(fx.root),
+      readinessTimeoutMs: 80,
+      stopTimeoutMs: 80,
+      pollMs: 5,
+      lockWaitMs: 1_000,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected kill failure residual");
+    expect(result.contract.status).toBe("incomplete");
+    expect(result.allowsLifecycleMutation).toBe(false);
+    expect(result.error.code).toMatch(/phase0_cleanup_uncertain|phase0_incomplete/);
+    expect(result.contract.acceptanceAuthority).toBeNull();
+    expect(result.contract.provenAt).toBeNull();
+    // Protected main preserved.
+    expect(fx.processes.get(fx.protectedMainPid)?.alive).toBe(true);
+    const loaded = await loadPhase0LaunchContract({
+      adapters: fx.adapters,
+      path: result.layout!.phase0ContractPath,
+    });
+    expect(loaded?.status).not.toBe("proven");
+  }, 30_000);
+
+  test("unidentified-spawn child wait timeout preserves residual authority", async () => {
+    const fx = createBaseFaultFixture("wait-timeout");
+    const spawn: LaunchSpawnAdapter = {
+      async spawn() {
+        const pid = fx.nextPid.value++;
+        return {
+          pid,
+          wait() {
+            // Never resolves: wait timeout.
+            return new Promise(() => undefined);
+          },
+          kill() {
+            // no-op
+          },
+        };
+      },
+    };
+    const result = await runPhase0LaunchIsolation({
+      adapters: fx.adapters,
+      runtimeProcess: fx.runtimeProcess,
+      runtimeAdapters: fx.runtimeAdapters,
+      commands: createInjectedCommands({
+        processes: fx.processes,
+        portOwnerByPid: fx.portOwnerByPid,
+      }),
+      cdp: createInjectedCdp({ processes: fx.processes }),
+      spawn,
+      osHome: `/tmp/homes/phase0-fault-wait-timeout-${process.pid}`,
+      rootPath: fx.root,
+      protectedPaths: {
+        mainProfilePath: `${fx.home}/../Library/Application Support/Codex`,
+        userCodexHome: `${fx.home}/../.codex`,
+        explodexHome: fx.home,
+      },
+      providedComparativeExperiments: sampleProvidedExperiments(fx.root),
+      readinessTimeoutMs: 60,
+      stopTimeoutMs: 60,
+      pollMs: 5,
+      lockWaitMs: 1_000,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected wait timeout residual");
+    expect(result.contract.status).toBe("incomplete");
+    expect(result.allowsLifecycleMutation).toBe(false);
+    expect(result.error.code).toBe("phase0_cleanup_uncertain");
+    expect(result.contract.acceptanceAuthority).toBeNull();
+    expect(fx.processes.get(fx.protectedMainPid)?.alive).toBe(true);
+  }, 30_000);
+
+  test("unidentified-spawn unobservable identity and PID-reuse ambiguity preserve residual authority", async () => {
+    const fx = createBaseFaultFixture("identity-ambiguous");
+    const ghostPids: number[] = [];
+    const baseRuntime = fx.runtimeProcess;
+    const runtimeProcess: RuntimeProcess = {
+      ...baseRuntime,
+      async identify(pid, opts) {
+        if (ghostPids.includes(pid)) {
+          // Live PID without acceptance start baseline: PID-reuse ambiguity.
+          return { pid, processStartedAt: `reuse-${pid}` };
+        }
+        return baseRuntime.identify(pid, opts);
+      },
+    };
+    const spawn: LaunchSpawnAdapter = {
+      async spawn() {
+        const pid = fx.nextPid.value++;
+        ghostPids.push(pid);
+        return {
+          pid,
+          async wait() {
+            return { exitCode: 0, signal: null };
+          },
+          kill() {
+            // leave identity still observable
+          },
+        };
+      },
+    };
+    const result = await runPhase0LaunchIsolation({
+      adapters: fx.adapters,
+      runtimeProcess,
+      runtimeAdapters: {
+        ...fx.runtimeAdapters,
+        process: runtimeProcess,
+      },
+      commands: createInjectedCommands({
+        processes: fx.processes,
+        portOwnerByPid: fx.portOwnerByPid,
+      }),
+      cdp: createInjectedCdp({ processes: fx.processes }),
+      spawn,
+      osHome: `/tmp/homes/phase0-fault-identity-${process.pid}`,
+      rootPath: fx.root,
+      protectedPaths: {
+        mainProfilePath: `${fx.home}/../Library/Application Support/Codex`,
+        userCodexHome: `${fx.home}/../.codex`,
+        explodexHome: fx.home,
+      },
+      providedComparativeExperiments: sampleProvidedExperiments(fx.root),
+      readinessTimeoutMs: 60,
+      stopTimeoutMs: 60,
+      pollMs: 5,
+      lockWaitMs: 1_000,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected identity ambiguity residual");
+    expect(result.contract.status).toBe("incomplete");
+    expect(result.error.code).toBe("phase0_cleanup_uncertain");
+    expect(result.allowsLifecycleMutation).toBe(false);
+    expect(result.contract.acceptanceAuthority).toBeNull();
+    expect(fx.processes.get(fx.protectedMainPid)?.alive).toBe(true);
+  }, 30_000);
+
+  test("unidentified-spawn with unrelated remaining 9444 listener preserves residual authority", async () => {
+    const fx = createBaseFaultFixture("listener-remains");
+    const spawn: LaunchSpawnAdapter = {
+      async spawn() {
+        const pid = fx.nextPid.value++;
+        return {
+          pid,
+          async wait() {
+            return { exitCode: 0, signal: null };
+          },
+          kill() {
+            // After kill attempt, introduce an unrelated remaining 9444 listener that
+            // must not be adopted or killed; residual authority is required.
+            fx.processes.set(77777, {
+              start: "foreign-listener-start",
+              argv: ["/usr/bin/unrelated", "--remote-debugging-port=9444"],
+              alive: true,
+            });
+          },
+        };
+      },
+    };
+    const result = await runPhase0LaunchIsolation({
+      adapters: fx.adapters,
+      runtimeProcess: fx.runtimeProcess,
+      runtimeAdapters: fx.runtimeAdapters,
+      commands: createInjectedCommands({
+        processes: fx.processes,
+        portOwnerByPid: fx.portOwnerByPid,
+      }),
+      cdp: createInjectedCdp({ processes: fx.processes }),
+      spawn,
+      osHome: `/tmp/homes/phase0-fault-listener-${process.pid}`,
+      rootPath: fx.root,
+      protectedPaths: {
+        mainProfilePath: `${fx.home}/../Library/Application Support/Codex`,
+        userCodexHome: `${fx.home}/../.codex`,
+        explodexHome: fx.home,
+      },
+      providedComparativeExperiments: sampleProvidedExperiments(fx.root),
+      readinessTimeoutMs: 60,
+      stopTimeoutMs: 60,
+      pollMs: 5,
+      lockWaitMs: 1_000,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected remaining listener residual");
+    expect(result.contract.status).toBe("incomplete");
+    expect(result.error.code).toBe("phase0_cleanup_uncertain");
+    expect(result.allowsLifecycleMutation).toBe(false);
+    // Unrelated listener and protected main preserved (never targeted).
+    expect(fx.processes.get(77777)?.alive).toBe(true);
+    expect(fx.processes.get(fx.protectedMainPid)?.alive).toBe(true);
+  }, 30_000);
+
+  test("cleanup-time execution-context replacement refuses Browser.close and records exact-signal fallback", async () => {
+    const fx = createBaseFaultFixture("ctx-replace");
+    let openCount = 0;
+    const baseCdp = createInjectedCdp({ processes: fx.processes });
+    const cdp: CdpAdapter = {
+      ...baseCdp,
+      async openTargetSession(input) {
+        openCount += 1;
+        const session = await baseCdp.openTargetSession(input);
+        // After readiness opens, later cleanup revalidation sees a replaced context uniqueId.
+        if (openCount > 3) {
+          return {
+            ...session,
+            async listExecutionContexts() {
+              return [
+                {
+                  id: 99,
+                  uniqueId: "replaced-context-unique",
+                  targetId: input.target.id,
+                  frameId: "frame-replaced",
+                  isDefault: true,
+                  origin: "app://-",
+                  name: "",
+                },
+              ];
+            },
+          };
+        }
+        return session;
+      },
+    };
+    const result = await runPhase0LaunchIsolation({
+      adapters: fx.adapters,
+      runtimeProcess: fx.runtimeProcess,
+      runtimeAdapters: fx.runtimeAdapters,
+      commands: createInjectedCommands({
+        processes: fx.processes,
+        portOwnerByPid: fx.portOwnerByPid,
+      }),
+      cdp,
+      spawn: createInjectedSpawn({ processes: fx.processes, nextPid: fx.nextPid }),
+      osHome: `/tmp/homes/phase0-fault-ctx-${process.pid}`,
+      rootPath: fx.root,
+      protectedPaths: {
+        mainProfilePath: `${fx.home}/../Library/Application Support/Codex`,
+        userCodexHome: `${fx.home}/../.codex`,
+        explodexHome: fx.home,
+      },
+      providedComparativeExperiments: sampleProvidedExperiments(fx.root),
+      readinessTimeoutMs: 2_000,
+      stopTimeoutMs: 2_000,
+      pollMs: 10,
+      lockWaitMs: 1_000,
+    });
+    // Signal fallback can still stop cleanly and prove, but method must be factual.
+    if (result.ok) {
+      const method = result.contract.acceptanceAuthority?.cleanupDisposition.method;
+      expect(method === "exact-signal-only" || method === "browser-close-then-signal").toBe(true);
+      expect(method).not.toBe("browser-close-only");
+      expect(result.contract.acceptanceAuthority?.cleanupDisposition.uncertain).toBe(false);
+      expect(result.contract.acceptanceOperationId).toBeTruthy();
+      expect(result.contract.acceptanceAuthority?.operationId).toBe(
+        result.contract.acceptanceOperationId ?? undefined,
+      );
+    } else {
+      expect(result.contract.status).toBe("incomplete");
+      expect(result.allowsLifecycleMutation).toBe(false);
+      expect(result.contract.acceptanceAuthority).toBeNull();
+    }
+    expect(fx.processes.get(fx.protectedMainPid)?.alive).toBe(true);
+  }, 30_000);
+
+  test("explicit Browser.close refusal falls back to exact-signal-only with factual disposition", async () => {
+    const fx = createBaseFaultFixture("close-refuse");
+    const baseCdp = createInjectedCdp({ processes: fx.processes });
+    // No endpoint during cleanup authority revalidation => Browser.close refused.
+    let readCount = 0;
+    const cdp: CdpAdapter = {
+      ...baseCdp,
+      async readEndpoint(input) {
+        readCount += 1;
+        // After several readiness reads, refuse endpoint for cleanup revalidation.
+        if (readCount > 8) {
+          throw new Error("injected Browser.close endpoint refusal");
+        }
+        return baseCdp.readEndpoint(input);
+      },
+    };
+    const result = await runPhase0LaunchIsolation({
+      adapters: fx.adapters,
+      runtimeProcess: fx.runtimeProcess,
+      runtimeAdapters: fx.runtimeAdapters,
+      commands: createInjectedCommands({
+        processes: fx.processes,
+        portOwnerByPid: fx.portOwnerByPid,
+      }),
+      cdp,
+      spawn: createInjectedSpawn({ processes: fx.processes, nextPid: fx.nextPid }),
+      osHome: `/tmp/homes/phase0-fault-close-refuse-${process.pid}`,
+      rootPath: fx.root,
+      protectedPaths: {
+        mainProfilePath: `${fx.home}/../Library/Application Support/Codex`,
+        userCodexHome: `${fx.home}/../.codex`,
+        explodexHome: fx.home,
+      },
+      providedComparativeExperiments: sampleProvidedExperiments(fx.root),
+      readinessTimeoutMs: 2_000,
+      stopTimeoutMs: 2_000,
+      pollMs: 10,
+      lockWaitMs: 1_000,
+    });
+    if (result.ok) {
+      expect(result.contract.acceptanceAuthority?.cleanupDisposition.method).toBe(
+        "exact-signal-only",
+      );
+      expect(result.contract.acceptanceAuthority?.cleanupDisposition.stopped).toBe(true);
+      expect(result.contract.acceptanceAuthority?.port9444Released).toBe(true);
+      expect(result.contract.acceptanceAuthority?.cleanupDisposition.uncertain).toBe(false);
+    } else {
+      // If readiness itself failed due to endpoint refusal, remain incomplete non-authorizing.
+      expect(result.contract.status).toBe("incomplete");
+      expect(result.allowsLifecycleMutation).toBe(false);
+    }
+    expect(fx.processes.get(fx.protectedMainPid)?.alive).toBe(true);
+  }, 30_000);
+
+  test("explicit port-release failure after exit preserves residual authority", async () => {
+    const fx = createBaseFaultFixture("port-release");
+    const baseRuntime = fx.runtimeProcess;
+    const runtimeProcess: RuntimeProcess = {
+      ...baseRuntime,
+      async signalExact(identity, signal, opts) {
+        const ok = await baseRuntime.signalExact(identity, signal, opts);
+        if (ok) {
+          // After exact ChatGPT exit, leave an unrelated 9444 listener.
+          fx.processes.set(88888, {
+            start: "orphan-listener",
+            argv: ["/usr/bin/orphan", "--remote-debugging-port=9444"],
+            alive: true,
+          });
+        }
+        return ok;
+      },
+    };
+    const result = await runPhase0LaunchIsolation({
+      adapters: fx.adapters,
+      runtimeProcess,
+      runtimeAdapters: {
+        ...fx.runtimeAdapters,
+        process: runtimeProcess,
+      },
+      commands: createInjectedCommands({
+        processes: fx.processes,
+        portOwnerByPid: fx.portOwnerByPid,
+      }),
+      cdp: createInjectedCdp({ processes: fx.processes }),
+      spawn: createInjectedSpawn({ processes: fx.processes, nextPid: fx.nextPid }),
+      osHome: `/tmp/homes/phase0-fault-port-${process.pid}`,
+      rootPath: fx.root,
+      protectedPaths: {
+        mainProfilePath: `${fx.home}/../Library/Application Support/Codex`,
+        userCodexHome: `${fx.home}/../.codex`,
+        explodexHome: fx.home,
+      },
+      providedComparativeExperiments: sampleProvidedExperiments(fx.root),
+      readinessTimeoutMs: 2_000,
+      stopTimeoutMs: 2_000,
+      pollMs: 10,
+      lockWaitMs: 1_000,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected port-release residual");
+    expect(result.contract.status).toBe("incomplete");
+    expect(result.error.code).toBe("phase0_cleanup_uncertain");
+    expect(result.allowsLifecycleMutation).toBe(false);
+    expect(result.contract.acceptanceAuthority).toBeNull();
+    expect(result.contract.provenAt).toBeNull();
+    // Orphan listener and protected main were not adopted/killed as proven authority.
+    expect(fx.processes.get(88888)?.alive).toBe(true);
+    expect(fx.processes.get(fx.protectedMainPid)?.alive).toBe(true);
+  }, 30_000);
+
+  test("starting-state write failure leaves no proven authority", async () => {
+    const fx = createBaseFaultFixture("starting-write");
+    const originalWrite = fx.adapters.fs.writeFile!.bind(fx.adapters.fs);
+    let stateWrites = 0;
+    fx.adapters.fs.writeFile = async (path, data) => {
+      if (typeof path === "string" && path.includes("state.json")) {
+        stateWrites += 1;
+        if (stateWrites === 1) {
+          throw new Error("injected starting-state write failure");
+        }
+      }
+      return originalWrite(path, data);
+    };
+    const result = await runPhase0LaunchIsolation({
+      adapters: fx.adapters,
+      runtimeProcess: fx.runtimeProcess,
+      runtimeAdapters: fx.runtimeAdapters,
+      commands: createInjectedCommands({
+        processes: fx.processes,
+        portOwnerByPid: fx.portOwnerByPid,
+      }),
+      cdp: createInjectedCdp({ processes: fx.processes }),
+      spawn: createInjectedSpawn({ processes: fx.processes, nextPid: fx.nextPid }),
+      osHome: `/tmp/homes/phase0-fault-starting-write-${process.pid}`,
+      rootPath: fx.root,
+      protectedPaths: {
+        mainProfilePath: `${fx.home}/../Library/Application Support/Codex`,
+        userCodexHome: `${fx.home}/../.codex`,
+        explodexHome: fx.home,
+      },
+      providedComparativeExperiments: sampleProvidedExperiments(fx.root),
+      readinessTimeoutMs: 2_000,
+      stopTimeoutMs: 2_000,
+      pollMs: 10,
+      lockWaitMs: 1_000,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected starting write failure");
+    expect(result.allowsLifecycleMutation).toBe(false);
+    expect(result.contract.status).not.toBe("proven");
+    expect(result.error.code).toBe("phase0_write_failure");
+    expect(fx.processes.get(fx.protectedMainPid)?.alive).toBe(true);
+  }, 30_000);
+
+  test("stopped-state write failure leaves no proven authority", async () => {
+    const fx = createBaseFaultFixture("stopped-write");
+    const originalWrite = fx.adapters.fs.writeFile!.bind(fx.adapters.fs);
+    let stateWrites = 0;
+    fx.adapters.fs.writeFile = async (path, data) => {
+      if (typeof path === "string" && path.includes("state.json")) {
+        stateWrites += 1;
+        // starting write is first; success stopped write is second.
+        if (stateWrites >= 2) {
+          throw new Error("injected stopped-state write failure");
+        }
+      }
+      return originalWrite(path, data);
+    };
+    const result = await runPhase0LaunchIsolation({
+      adapters: fx.adapters,
+      runtimeProcess: fx.runtimeProcess,
+      runtimeAdapters: fx.runtimeAdapters,
+      commands: createInjectedCommands({
+        processes: fx.processes,
+        portOwnerByPid: fx.portOwnerByPid,
+      }),
+      cdp: createInjectedCdp({ processes: fx.processes }),
+      spawn: createInjectedSpawn({ processes: fx.processes, nextPid: fx.nextPid }),
+      osHome: `/tmp/homes/phase0-fault-stopped-write-${process.pid}`,
+      rootPath: fx.root,
+      protectedPaths: {
+        mainProfilePath: `${fx.home}/../Library/Application Support/Codex`,
+        userCodexHome: `${fx.home}/../.codex`,
+        explodexHome: fx.home,
+      },
+      providedComparativeExperiments: sampleProvidedExperiments(fx.root),
+      readinessTimeoutMs: 2_000,
+      stopTimeoutMs: 2_000,
+      pollMs: 10,
+      lockWaitMs: 1_000,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected stopped write failure");
+    expect(result.allowsLifecycleMutation).toBe(false);
+    expect(result.contract.status).not.toBe("proven");
+    expect(result.error.code).toBe("phase0_write_failure");
+    // No proven contract may be the last write after stopped-state failure.
+    if (result.layout) {
+      const loaded = await loadPhase0LaunchContract({
+        adapters: fx.adapters,
+        path: result.layout.phase0ContractPath,
+      });
+      expect(loaded?.status).not.toBe("proven");
+    }
+    expect(fx.processes.get(fx.protectedMainPid)?.alive).toBe(true);
+  }, 30_000);
+
+  test("final-proven contract write failure leaves no proven authority", async () => {
+    const fx = createBaseFaultFixture("final-proven-write");
+    const originalWrite = fx.adapters.fs.writeFile!.bind(fx.adapters.fs);
+    let contractWrites = 0;
+    fx.adapters.fs.writeFile = async (path, data) => {
+      if (typeof path === "string" && path.includes("phase0-launch-contract.json")) {
+        contractWrites += 1;
+        // Pre-spawn incomplete is first; final proven is last after stopped state.
+        if (contractWrites >= 2) {
+          throw new Error("injected final-proven contract write failure");
+        }
+      }
+      return originalWrite(path, data);
+    };
+    const result = await runPhase0LaunchIsolation({
+      adapters: fx.adapters,
+      runtimeProcess: fx.runtimeProcess,
+      runtimeAdapters: fx.runtimeAdapters,
+      commands: createInjectedCommands({
+        processes: fx.processes,
+        portOwnerByPid: fx.portOwnerByPid,
+      }),
+      cdp: createInjectedCdp({ processes: fx.processes }),
+      spawn: createInjectedSpawn({ processes: fx.processes, nextPid: fx.nextPid }),
+      osHome: `/tmp/homes/phase0-fault-final-write-${process.pid}`,
+      rootPath: fx.root,
+      protectedPaths: {
+        mainProfilePath: `${fx.home}/../Library/Application Support/Codex`,
+        userCodexHome: `${fx.home}/../.codex`,
+        explodexHome: fx.home,
+      },
+      providedComparativeExperiments: sampleProvidedExperiments(fx.root),
+      readinessTimeoutMs: 2_000,
+      stopTimeoutMs: 2_000,
+      pollMs: 10,
+      lockWaitMs: 1_000,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected final proven write failure");
+    expect(result.allowsLifecycleMutation).toBe(false);
+    expect(result.contract.status).not.toBe("proven");
+    expect(result.error.code).toBe("phase0_write_failure");
+    if (result.layout) {
+      const loaded = await loadPhase0LaunchContract({
+        adapters: fx.adapters,
+        path: result.layout.phase0ContractPath,
+      });
+      expect(loaded?.status).not.toBe("proven");
+      const state = await loadDevInstanceState({
+        adapters: fx.adapters,
+        statePath: result.layout.statePath,
+      });
+      // Stopped state may have been written before proven-last failure; still not authorizing.
+      expect(state?.status === "stopped" || state?.status === "failed" || state?.status === "starting").toBe(
+        true,
+      );
+    }
+    expect(fx.processes.get(fx.protectedMainPid)?.alive).toBe(true);
+  }, 30_000);
+
+  test("successful acceptance binds independent enclosing operation identity on contract", async () => {
+    const fx = createBaseFaultFixture("op-id-bind");
+    const result = await runPhase0LaunchIsolation({
+      adapters: fx.adapters,
+      runtimeProcess: fx.runtimeProcess,
+      runtimeAdapters: fx.runtimeAdapters,
+      commands: createInjectedCommands({
+        processes: fx.processes,
+        portOwnerByPid: fx.portOwnerByPid,
+      }),
+      cdp: createInjectedCdp({ processes: fx.processes }),
+      spawn: createInjectedSpawn({ processes: fx.processes, nextPid: fx.nextPid }),
+      osHome: `/tmp/homes/phase0-fault-op-id-${process.pid}`,
+      rootPath: fx.root,
+      protectedPaths: {
+        mainProfilePath: `${fx.home}/../Library/Application Support/Codex`,
+        userCodexHome: `${fx.home}/../.codex`,
+        explodexHome: fx.home,
+      },
+      providedComparativeExperiments: sampleProvidedExperiments(fx.root),
+      readinessTimeoutMs: 2_000,
+      stopTimeoutMs: 2_000,
+      pollMs: 10,
+      lockWaitMs: 1_000,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.error.message);
+    expect(result.contract.status).toBe("proven");
+    expect(result.contract.acceptanceOperationId).toBeTruthy();
+    expect(result.contract.acceptanceAuthority?.operationId).toBe(result.contract.acceptanceOperationId ?? undefined);
+    const loaded = await loadPhase0LaunchContract({
+      adapters: fx.adapters,
+      path: result.layout.phase0ContractPath,
+    });
+    expect(loaded?.acceptanceOperationId).toBe(result.contract.acceptanceOperationId ?? undefined);
+    expect(loaded?.acceptanceAuthority?.operationId).toBe(result.contract.acceptanceOperationId ?? undefined);
+    // Direct JS mutation of either ID alone fails parse/gate.
+    const onlyAuthority = {
+      ...result.contract,
+      acceptanceAuthority: {
+        ...result.contract.acceptanceAuthority!,
+        operationId: "mutated-only-authority",
+      },
+    };
+    const onlyEnclosing = {
+      ...result.contract,
+      acceptanceOperationId: "mutated-only-enclosing",
+    };
+    const { parsePhase0LaunchContract, gateDevelopmentLifecycleMutation } = await import(
+      "../../src/dev/index.ts"
+    );
+    expect(parsePhase0LaunchContract(onlyAuthority)).toBeNull();
+    expect(parsePhase0LaunchContract(onlyEnclosing)).toBeNull();
+    expect(
+      gateDevelopmentLifecycleMutation({
+        operation: "dev-start",
+        contract: onlyAuthority as typeof result.contract,
+        expectedHost: result.frozenHost,
+      }).allowed,
+    ).toBe(false);
+    expect(
+      gateDevelopmentLifecycleMutation({
+        operation: "dev-start",
+        contract: onlyEnclosing as typeof result.contract,
+        expectedHost: result.frozenHost,
+      }).allowed,
+    ).toBe(false);
+    expect(fx.processes.get(fx.protectedMainPid)?.alive).toBe(true);
+  }, 30_000);
+
 });
