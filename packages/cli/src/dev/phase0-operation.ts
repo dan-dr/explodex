@@ -2121,14 +2121,20 @@ async function runPhase0LockedBody(input: {
         useCdpPort: true,
         useExactMarker: true,
       };
-      // Best-effort reclaim of comparative experiment roots and primary profile
-      // residues before the correlated acceptance launch so app:// readiness is
-      // not starved by disk pressure from earlier private roots.
+      // Best-effort reclaim of comparative experiment roots before the correlated
+      // acceptance launch so app:// readiness is not starved by disk pressure from
+      // earlier private roots. Keep-alive acceptance preserves the primary
+      // electron-user-data and codex-home so an interactive isolated-profile
+      // sign-in (and later authenticated anchors) can survive across the probe.
+      // Stopped Phase 0 acceptance still reclaims those primary roots for a clean
+      // one-shot readiness matrix.
       try {
         const { rm } = await import("node:fs/promises");
         await rm(join(layout.rootPath, "experiments"), { recursive: true, force: true });
-        await rm(layout.electronUserDataPath, { recursive: true, force: true });
-        await rm(layout.codexHomePath, { recursive: true, force: true });
+        if (!options.keepProcessAlive) {
+          await rm(layout.electronUserDataPath, { recursive: true, force: true });
+          await rm(layout.codexHomePath, { recursive: true, force: true });
+        }
         await ensureDefaultDevLayout({
           fs: options.adapters.fs,
           rootPath: layout.rootPath,
