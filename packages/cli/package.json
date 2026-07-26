@@ -1,8 +1,8 @@
 {
   "name": "explodex",
-  "version": "0.0.0-migration",
+  "version": "0.2.2",
   "private": true,
-  "description": "Explodex CLI package (migration in progress). Host foundation modules land in M1.",
+  "description": "Explodex CLI for ChatGPT.app plugin management (Node 22/24).",
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -10,7 +10,14 @@
   "os": [
     "darwin"
   ],
+  "bin": {
+    "explodex": "./dist/bin/explodex.js"
+  },
   "exports": {
+    ".": {
+      "types": "./dist/cli/index.d.ts",
+      "import": "./dist/cli/index.js"
+    },
     "./host": {
       "types": "./dist/host/index.d.ts",
       "import": "./dist/host/index.js"
@@ -42,15 +49,19 @@
     "./dev/*": {
       "types": "./dist/dev/*.d.ts",
       "import": "./dist/dev/*.js"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist/",
     "package.json"
   ],
   "scripts": {
-    "build": "bun scripts/build.ts",
-    "prepack": "bun run build",
+    "build": "bash ./scripts/run-build.sh",
+    "prepack": "bash ./scripts/run-build.sh",
     "test": "bun test test"
+  },
+  "dependencies": {
+    "@explodex/sdk": "1.2.0"
   }
 }

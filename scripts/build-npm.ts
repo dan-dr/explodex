@@ -15,11 +15,24 @@ if (!result.success) {
   process.exit(1);
 }
 
-const cliBuild = Bun.spawn(["bun", "run", "build"], {
-  cwd: join(root, "packages", "cli"),
-  stdin: "ignore",
-  stdout: "inherit",
-  stderr: "inherit",
-});
-const cliExitCode = await cliBuild.exited;
-if (cliExitCode !== 0) process.exit(cliExitCode);
+const bunBinary = process.env.HOME
+  ? join(process.env.HOME, ".bun", "bin", "bun")
+  : "bun";
+
+for (const packageName of ["sdk", "cli"] as const) {
+  const packageRoot = join(root, "packages", packageName);
+  const packageBuild = Bun.spawn(["bash", "./scripts/run-build.sh"], {
+    cwd: packageRoot,
+    stdin: "ignore",
+    stdout: "inherit",
+    stderr: "inherit",
+    env: {
+      ...process.env,
+      PATH: `${join(process.env.HOME ?? "", ".bun", "bin")}:${process.env.PATH ?? ""}`,
+      // Ensure nested package builds resolve the official Bun install.
+      EXPLODEX_BUN: bunBinary,
+    },
+  });
+  const packageExitCode = await packageBuild.exited;
+  if (packageExitCode !== 0) process.exit(packageExitCode);
+}

@@ -47,24 +47,24 @@
     "macos"
   ],
   "scripts": {
-    "dev": "bun scripts/dev.ts",
+    "dev": "bun ./scripts/dev.ts",
     "docs:list": "find docs -maxdepth 2 -type f -name '*.md' | sort",
     "inject": "./scripts/launch.sh --inject-only",
     "launch": "./scripts/launch.sh",
-    "package": "bun scripts/package-app.ts",
+    "package": "bun ./scripts/package-app.ts",
     "build:icon": "zsh scripts/build-icon.sh",
     "clean": "zsh scripts/clean.sh",
-    "sync": "bun scripts/package-app.ts",
+    "sync": "bun ./scripts/package-app.ts",
     "validate": "./scripts/validate.sh",
-    "release:check": "bun scripts/release-util.ts check",
-    "release:notes": "bun scripts/release-util.ts notes",
-    "layout:snapshot": "bun scripts/cdp-layout-snapshot.ts",
-    "react-devtools": "bun scripts/cdp-react-devtools.ts",
+    "release:check": "bun ./scripts/release-util.ts check",
+    "release:notes": "bun ./scripts/release-util.ts notes",
+    "layout:snapshot": "bun ./scripts/cdp-layout-snapshot.ts",
+    "react-devtools": "bun ./scripts/cdp-react-devtools.ts",
     "test": "bun test",
-    "build:npm": "bun scripts/build-npm.ts",
-    "checkTs": "bun run --bun tsc -p packages/cli/tsconfig.json && bun run --bun tsc -p packages/sdk/tsconfig.json",
-    "prepack": "bun run build:npm",
-    "node:lts-smoke": "node scripts/node-lts-smoke.mjs"
+    "build:npm": "bash -c 'export PATH=\"${HOME}/.bun/bin:$PATH\"; exec bun ./scripts/build-npm.ts'",
+    "checkTs": "bash -c 'export PATH=\"${HOME}/.bun/bin:$PATH\"; exec bun ./node_modules/.bin/tsc -p packages/cli/tsconfig.json && bun ./node_modules/.bin/tsc -p packages/sdk/tsconfig.json'",
+    "prepack": "bash -c 'export PATH=\"${HOME}/.bun/bin:$PATH\"; exec bun ./scripts/build-npm.ts'",
+    "node:lts-smoke": "node ./scripts/node-lts-smoke.mjs"
   },
   "dependencies": {
     "@clack/prompts": "^1.6.0"

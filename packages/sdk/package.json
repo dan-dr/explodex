@@ -24,8 +24,8 @@
     "package.json"
   ],
   "scripts": {
-    "build": "bun scripts/build.ts",
-    "prepack": "bun run build",
+    "build": "bash ./scripts/run-build.sh",
+    "prepack": "bash ./scripts/run-build.sh",
     "test": "bun test test"
   },
   "sideEffects": [

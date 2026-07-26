@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { chmod, copyFile, mkdir, rename, rm } from "node:fs/promises";
+import { chmod, copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 const packageRoot = join(import.meta.dir, "..");
@@ -25,6 +25,15 @@ const targetHelper = join(targetHelperDirectory, "explodex-runtime-helper");
 await mkdir(targetHelperDirectory, { recursive: true });
 await copyFile(sourceHelper, targetHelper);
 await chmod(targetHelper, 0o755);
+
+// Ensure the public bin has a Node shebang and is executable.
+const binPath = join(stagingRoot, "bin", "explodex.js");
+const binSource = await readFile(binPath, "utf8");
+const withShebang = binSource.startsWith("#!")
+  ? binSource
+  : `#!/usr/bin/env node\n${binSource}`;
+await writeFile(binPath, withShebang, { mode: 0o755 });
+await chmod(binPath, 0o755);
 
 await rm(finalRoot, { recursive: true, force: true });
 await rename(stagingRoot, finalRoot);
