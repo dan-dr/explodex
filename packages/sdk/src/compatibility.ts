@@ -1,7 +1,8 @@
 /**
  * One public SDK version/range compatibility helper.
- * Shared by authoring, CLI validation, install, and runtime acceptance.
- * Full range matrices expand under M2-F03; this implementation is the single authority.
+ * Shared by authoring, CLI validation, install, artifact validation, and runtime acceptance.
+ * This module is the single authority; CLI and other packages must import it rather than
+ * reimplementing SemVer range semantics.
  */
 
 import { SDK_VERSION } from "./version.ts";
@@ -13,6 +14,30 @@ export type ParsedSemVer = {
   prerelease: readonly string[];
   build: string | undefined;
 };
+
+/**
+ * Structured fail-closed verdict for version/range acceptance.
+ * Used by CLI source validation, artifact validation, install, and runtime checks.
+ */
+export type SdkCompatibilityReason =
+  | "version-missing"
+  | "version-malformed"
+  | "range-missing"
+  | "range-malformed"
+  | "out-of-range";
+
+export type SdkCompatibilityVerdict =
+  | {
+      ok: true;
+      version: string;
+      range: string;
+    }
+  | {
+      ok: false;
+      reason: SdkCompatibilityReason;
+      version: unknown;
+      range: unknown;
+    };
 
 const SEMVER_RE =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+([0-9A-Za-z.-]+))?$/;
@@ -215,21 +240,13 @@ function parseRangeSet(range: string): Comparator[][] | null {
   return sets.length === 0 ? null : sets;
 }
 
-/**
- * Return whether an exact SDK runtime version satisfies a peer range.
- * Both inputs are validated from unknown; malformed values fail closed.
- * Prerelease runtime versions only match when the comparator explicitly
- * includes a prerelease of the same major.minor.patch core, matching
- * common SemVer range practice.
- */
-export function satisfiesSdkRange(version: unknown, range: unknown): boolean {
-  const parsedVersion = parseSemVer(version);
-  if (parsedVersion === null) return false;
-  if (!isNonEmptyString(range)) return false;
-  const sets = parseRangeSet(range.trim());
-  if (sets === null) return false;
+function rangeAccepts(parsedVersion: ParsedSemVer, rangeText: string): boolean | null {
+  const sets = parseRangeSet(rangeText);
+  if (sets === null) return null;
 
   return sets.some((comparators) => {
+    // Prerelease runtime versions only match when a comparator explicitly
+    // includes a prerelease of the same major.minor.patch core.
     if (parsedVersion.prerelease.length > 0) {
       const allowsPrerelease = comparators.some(
         (comparator) =>
@@ -242,6 +259,57 @@ export function satisfiesSdkRange(version: unknown, range: unknown): boolean {
     }
     return comparators.every((comparator) => satisfiesComparator(parsedVersion, comparator));
   });
+}
+
+/**
+ * Return whether an exact SDK runtime version satisfies a peer range.
+ * Both inputs are validated from unknown; malformed values fail closed.
+ * Build metadata is parsed but ignored for comparison (SemVer §10).
+ * Prerelease runtime versions only match when the comparator explicitly
+ * includes a prerelease of the same major.minor.patch core.
+ */
+export function satisfiesSdkRange(version: unknown, range: unknown): boolean {
+  const parsedVersion = parseSemVer(version);
+  if (parsedVersion === null) return false;
+  if (!isNonEmptyString(range)) return false;
+  const accepted = rangeAccepts(parsedVersion, range.trim());
+  return accepted === true;
+}
+
+/**
+ * Structured compatibility check for unknown external inputs.
+ * Distinguishes missing/malformed version, missing/malformed range, and out-of-range.
+ * Never throws; always fails closed with an actionable reason code.
+ */
+export function evaluateSdkCompatibility(
+  version: unknown,
+  range: unknown,
+): SdkCompatibilityVerdict {
+  if (version === undefined || version === null || version === "") {
+    return { ok: false, reason: "version-missing", version, range };
+  }
+  if (typeof version !== "string" || version.trim().length === 0) {
+    return { ok: false, reason: "version-malformed", version, range };
+  }
+  const parsedVersion = parseSemVer(version);
+  if (parsedVersion === null) {
+    return { ok: false, reason: "version-malformed", version, range };
+  }
+
+  if (range === undefined || range === null || range === "") {
+    return { ok: false, reason: "range-missing", version, range };
+  }
+  if (typeof range !== "string" || range.trim().length === 0) {
+    return { ok: false, reason: "range-malformed", version, range };
+  }
+  const accepted = rangeAccepts(parsedVersion, range.trim());
+  if (accepted === null) {
+    return { ok: false, reason: "range-malformed", version, range };
+  }
+  if (!accepted) {
+    return { ok: false, reason: "out-of-range", version, range };
+  }
+  return { ok: true, version: version.trim(), range: range.trim() };
 }
 
 /** Convenience: does the authoritative runtime version satisfy this range? */

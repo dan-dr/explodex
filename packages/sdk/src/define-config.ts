@@ -6,27 +6,51 @@ const LIFECYCLES: ReadonlySet<PluginLifecycle> = new Set([
   "app-start",
 ]);
 
+/** Canonical keys accepted by defineConfig. All others fail closed. */
+const ALLOWED_KEYS: ReadonlySet<string> = new Set([
+  "version",
+  "displayName",
+  "description",
+  "entry",
+  "assets",
+  "lifecycle",
+]);
+
+/** Fields that would duplicate identity or compatibility authority. */
+const FORBIDDEN_AUTHORITY_MESSAGES: Readonly<Record<string, string>> = {
+  id: "defineConfig does not accept id; ID is derived from the package name",
+  sdkRange: 'defineConfig does not accept sdkRange; use peerDependencies["@explodex/sdk"]',
+  permissions: "defineConfig does not accept permissions; V1 has no permission model",
+  capabilities: "defineConfig does not accept capabilities; V1 has no capability model",
+  repository: "defineConfig does not accept repository authority",
+  installScripts: "defineConfig does not accept install scripts",
+  scripts: "defineConfig does not accept package scripts",
+};
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /**
  * Accept only canonical authoring metadata.
- * ID and sdkRange are derived elsewhere and rejected if present.
+ * Plugin ID and sdkRange are derived outside this object and are rejected here.
+ * Unknown fields fail closed with actionable diagnostics.
  */
 export function defineConfig(config: ExplodexConfig): ExplodexConfig {
   if (!isRecord(config)) {
     throw new TypeError("defineConfig requires a configuration object");
   }
 
-  // Reject identity/compatibility authority fields even when cast away at the call site.
-  if ("id" in config) {
-    throw new TypeError("defineConfig does not accept id; ID is derived from the package name");
-  }
-  if ("sdkRange" in config) {
-    throw new TypeError(
-      'defineConfig does not accept sdkRange; use peerDependencies["@explodex/sdk"]',
-    );
+  for (const key of Object.keys(config)) {
+    const authorityMessage = FORBIDDEN_AUTHORITY_MESSAGES[key];
+    if (authorityMessage !== undefined) {
+      throw new TypeError(authorityMessage);
+    }
+    if (!ALLOWED_KEYS.has(key)) {
+      throw new TypeError(
+        `defineConfig does not accept unknown field "${key}"; allowed: version, displayName, description, entry, assets, lifecycle`,
+      );
+    }
   }
 
   if (typeof config.version !== "string" || config.version.trim().length === 0) {
