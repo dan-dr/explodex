@@ -1,13 +1,34 @@
 {
   "name": "@explodex/sdk",
-  "version": "0.0.0-migration",
+  "version": "1.2.0",
   "private": true,
-  "description": "Placeholder package metadata until the M2 SDK cutover. Not a release authority.",
+  "description": "Explodex plugin authoring SDK and generated ChatGPT renderer runtime.",
   "type": "module",
-  "files": [
-    "package.json"
-  ],
   "engines": {
     "node": ">=22"
-  }
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime/public.d.ts",
+      "default": "./dist/runtime/explodex-runtime.iife.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist/",
+    "package.json"
+  ],
+  "scripts": {
+    "build": "bun scripts/build.ts",
+    "prepack": "bun run build",
+    "test": "bun test test"
+  },
+  "sideEffects": [
+    "./dist/runtime/explodex-runtime.iife.js"
+  ]
 }

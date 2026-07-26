@@ -62,7 +62,7 @@
     "react-devtools": "bun scripts/cdp-react-devtools.ts",
     "test": "bun test",
     "build:npm": "bun scripts/build-npm.ts",
-    "checkTs": "bun run --bun tsc -p packages/cli/tsconfig.json",
+    "checkTs": "bun run --bun tsc -p packages/cli/tsconfig.json && bun run --bun tsc -p packages/sdk/tsconfig.json",
     "prepack": "bun run build:npm",
     "node:lts-smoke": "node scripts/node-lts-smoke.mjs"
   },
