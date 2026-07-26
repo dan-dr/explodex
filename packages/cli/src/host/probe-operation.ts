@@ -263,6 +263,8 @@ const BRIDGE_EVAL_EXPRESSION = `(() => {
 })()`;
 
 const ANCHOR_EVAL_EXPRESSION = `(() => {
+  // Route-only anchors may be optional/not-applicable when the current shell is signed-in
+  // but that route is not active. Signed-in shell anchors must pass once authenticated.
   const defs = [
     { name: "sidebar", selectors: [
       'aside[data-testid="app-shell-floating-left-panel"]',
@@ -273,14 +275,55 @@ const ANCHOR_EVAL_EXPRESSION = `(() => {
       'aside[class*="sidebar"]',
       'nav[aria-label*="sidebar" i]',
       'nav[aria-label*="navigation" i]',
+      'nav[aria-label="Scheduled task folders"]',
       '[role="navigation"]'
-    ], requiresSignedIn: true },
-    { name: "profileSettingsFooter", selectors: ['[aria-label="Settings"]','button[aria-label="Settings"]','[data-testid="settings-button"]','[aria-label*="Settings" i]'], requiresSignedIn: true },
-    { name: "threadFooter", selectors: ['[data-thread-scroll-footer="true"]'], requiresSignedIn: false },
-    { name: "aboveComposer", selectors: ['[data-above-composer-portal]','#above-composer-portal'], requiresSignedIn: false },
-    { name: "composerInput", selectors: ['[data-testid="composer-input"]','textarea[data-testid="composer-input"]','div[contenteditable="true"][data-placeholder]','[data-composer-root] textarea','form textarea','textarea','[contenteditable="true"]'], requiresSignedIn: true },
-    { name: "browserSidebarBanner", selectors: ['[data-testid="browser-sidebar-top-banner-portal"]'], requiresSignedIn: false },
-    { name: "homeAmbient", selectors: ['[data-home-ambient-suggestions]'], requiresSignedIn: false },
+    ], requiresSignedIn: true, routeOptional: false },
+    { name: "profileSettingsFooter", selectors: [
+      'button[aria-label="Open settings"]',
+      'button[aria-label*="Open settings" i]',
+      'button[aria-label="Open profile menu"]',
+      'button[aria-label*="Open profile" i]',
+      'button[aria-label*="settings" i]',
+      '[aria-label="Settings"]',
+      'button[aria-label="Settings"]',
+      '[data-testid="settings-button"]',
+      '[aria-label*="Settings" i]'
+    ], requiresSignedIn: true, routeOptional: false },
+    { name: "threadFooter", selectors: [
+      '[data-thread-scroll-footer="true"]',
+      '[data-thread-scroll-footer]',
+      '[data-testid="thread-scroll-footer"]'
+    ], requiresSignedIn: false, routeOptional: true },
+    { name: "aboveComposer", selectors: [
+      '[data-above-composer-portal]',
+      '#above-composer-portal',
+      '[data-above-composer-queue-portal]'
+    ], requiresSignedIn: false, routeOptional: true },
+    { name: "composerInput", selectors: [
+      '[data-testid="composer-input"]',
+      'textarea[data-testid="composer-input"]',
+      '[data-codex-composer="true"]',
+      '[data-codex-composer]',
+      'div[contenteditable="true"][data-placeholder]',
+      'div[contenteditable="true"][aria-label]',
+      '[data-composer-root] textarea',
+      'form textarea',
+      'textarea',
+      '[contenteditable="true"]'
+    ], requiresSignedIn: true, routeOptional: false },
+    { name: "browserSidebarBanner", selectors: [
+      '[data-testid="browser-sidebar-top-banner-portal"]',
+      '[data-browser-sidebar-top-banner-portal]',
+      '#browser-sidebar-top-banner-portal'
+    ], requiresSignedIn: false, routeOptional: true },
+    { name: "homeAmbient", selectors: [
+      '[data-home-ambient-suggestions]',
+      '[class*="home-main-content"]',
+      '.home-banners',
+      '[class*="home-banners"]',
+      '[class*="home-ambient"]',
+      '[data-home-ambient]'
+    ], requiresSignedIn: false, routeOptional: true },
   ];
   function firstMatch(selectors) {
     for (const selector of selectors) {
@@ -310,25 +353,38 @@ const ANCHOR_EVAL_EXPRESSION = `(() => {
     "continue with",
     "welcome to chatgpt",
   ];
-  const looksSignedOut = signedOutHints.some((hint) => bodyText.includes(hint));
+  const signedInControl =
+    !!document.querySelector('button[aria-label="Open profile menu"]') ||
+    !!document.querySelector('button[aria-label*="Open settings" i]') ||
+    !!document.querySelector('button[aria-label*="Open profile" i]') ||
+    /\\blog out\\b|\\bsign out\\b/.test(bodyText);
+  const looksSignedOut =
+    !signedInControl && signedOutHints.some((hint) => bodyText.includes(hint));
   const hasAppShell =
     !!document.querySelector('[data-testid="app-shell-floating-left-panel"]') ||
     !!document.querySelector("aside.app-shell-left-panel") ||
-    !!document.querySelector('[data-pip-obstacle="app-shell-floating-left-panel"]');
+    !!document.querySelector('[data-pip-obstacle="app-shell-floating-left-panel"]') ||
+    !!document.querySelector("aside") ||
+    !!document.querySelector('nav[aria-label="Scheduled task folders"]');
   return defs.map((def) => {
     const hit = firstMatch(def.selectors);
     let verdict = "fail";
     let reason = null;
     if (hit.count > 0) {
       verdict = "pass";
-    } else if (def.requiresSignedIn || looksSignedOut || !hasAppShell) {
+    } else if (looksSignedOut || !hasAppShell) {
       // Authenticated shell anchors remain pending when signed-out or shell is not yet available.
-      verdict = "pending-unreachable";
+      verdict = def.requiresSignedIn || def.routeOptional ? "pending-unreachable" : "fail";
       reason = looksSignedOut || !hasAppShell ? "requires_signed_in_or_shell" : "requires_signed_in";
-    } else if (def.name === "homeAmbient" || def.name === "threadFooter" || def.name === "browserSidebarBanner" || def.name === "aboveComposer") {
-      // Route-state dependent anchors: pending rather than hard fail when not on that route.
-      verdict = "pending-unreachable";
+      if (verdict === "fail") reason = "missing_required_anchor";
+    } else if (def.routeOptional) {
+      // Route-state dependent anchors are optional/not-applicable off-route once signed in.
+      verdict = "optional";
       reason = "not_in_current_route";
+    } else if (def.requiresSignedIn) {
+      // Signed-in and shell present: missing required shell anchors fail closed.
+      verdict = "fail";
+      reason = "missing_required_signed_in_anchor";
     } else {
       reason = "missing_required_anchor";
     }
