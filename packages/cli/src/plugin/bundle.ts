@@ -235,10 +235,10 @@ export async function bundlePluginIife(options: {
   }
 
   const globalName = "__ExplodexPluginBundle";
+  // Fixed virtual path so installable JS bytes do not embed absolute workspace/staging paths.
+  const shimVirtualPath = "explodex-sdk-shim.js";
   const shimSource = buildSdkShim(options.pluginId);
-  const shimPath = join(stagingDir, ".explodex-sdk-shim.js");
   await mkdir(stagingDir, { recursive: true });
-  await writeFile(shimPath, shimSource, "utf8");
 
   const importerChain = new Map<string, string[]>();
 
@@ -255,6 +255,8 @@ export async function bundlePluginIife(options: {
       target: ["es2022"],
       globalName,
       sourcemap: "external",
+      // Avoid absolute path comments leaking into installable bytes.
+      legalComments: "none",
       logLevel: "silent",
       // Keep the graph browser-only; fail on Node packages rather than polyfilling.
       packages: "bundle",
@@ -268,7 +270,7 @@ export async function bundlePluginIife(options: {
           setup(build) {
             build.onResolve({ filter: /^@explodex\/sdk(\/.*)?$/ }, (args) => {
               if (args.path === "@explodex/sdk" || args.path === "@explodex/sdk/runtime") {
-                return { path: shimPath };
+                return { path: shimVirtualPath, namespace: "explodex-sdk-shim" };
               }
               diagnostics.push({
                 specifier: args.path,
@@ -284,6 +286,12 @@ export async function bundlePluginIife(options: {
                 ],
               };
             });
+
+            build.onLoad({ filter: /.*/, namespace: "explodex-sdk-shim" }, () => ({
+              contents: shimSource,
+              loader: "js",
+              resolveDir: workspacePath,
+            }));
 
             build.onResolve({ filter: /.*/ }, (args) => {
               // Track importer chains for diagnostics.
@@ -493,13 +501,20 @@ export async function bundlePluginIife(options: {
       if (!jsText.endsWith("\n")) jsText += "\n";
     }
 
+    // Final guard: installable JS must not embed absolute workspace paths.
+    if (jsText.includes(workspacePath) || jsText.includes(stagingDir)) {
+      return {
+        ok: false,
+        code: "plugin.source.invalid",
+        message: "Plugin bundle embedded non-portable absolute paths",
+        diagnostics,
+      };
+    }
+
     if (writeOutputs) {
       await writeFile(join(stagingDir, "index.js"), jsText, "utf8");
       await writeFile(join(stagingDir, "index.js.map"), mapText, "utf8");
     }
-
-    // Cleanup shim from staging if it would pollute outputs.
-    await rm(shimPath, { force: true });
 
     const jsBytes = Buffer.byteLength(jsText, "utf8");
     return {
@@ -514,7 +529,6 @@ export async function bundlePluginIife(options: {
       diagnostics,
     };
   } catch (error: unknown) {
-    await rm(shimPath, { force: true }).catch(() => undefined);
     const message = error instanceof Error ? error.message : "Plugin bundle failed";
     return {
       ok: false,
@@ -528,17 +542,11 @@ export async function bundlePluginIife(options: {
 
 /**
  * Fingerprint a dist directory for prior-dist preservation checks.
+ * Hashes the complete dist tree (installable + private generation metadata).
  */
 export async function fingerprintDist(workspacePath: string): Promise<string | null> {
-  const distPath = join(resolve(workspacePath), "dist");
-  if (!(await pathExists(distPath))) return null;
-  const indexPath = join(distPath, "index.js");
-  if (!(await pathExists(indexPath))) {
-    // Dist exists but without index; still hash directory listing lightly.
-    return sha256Hex(`dir:${distPath}`);
-  }
-  const bytes = await readFile(indexPath);
-  return sha256Hex(bytes);
+  const { fingerprintDistTree } = await import("./dist-files.ts");
+  return fingerprintDistTree(workspacePath);
 }
 
 /**

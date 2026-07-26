@@ -7,61 +7,84 @@ import {
   successEnvelope,
   type RenderedCliResult,
 } from "../output/envelope.ts";
-import { buildPluginWorkspace } from "../plugin/build.ts";
+import { packagePluginWorkspace } from "../plugin/package.ts";
 
-const OPERATION = "plugin.build";
+const OPERATION = "plugin.package";
 
-export async function runPluginBuild(options: {
+function takeOption(
+  tokens: string[],
+  name: string,
+): { value: string | null; rest: string[] } {
+  const rest: string[] = [];
+  let value: string | null = null;
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (token === name) {
+      const next = tokens[index + 1];
+      if (next === undefined || next.startsWith("-")) {
+        return { value: null, rest: tokens };
+      }
+      value = next;
+      index += 1;
+      continue;
+    }
+    if (token.startsWith(`${name}=`)) {
+      value = token.slice(name.length + 1);
+      continue;
+    }
+    rest.push(token);
+  }
+  return { value, rest };
+}
+
+export async function runPluginPackage(options: {
   globals: GlobalOptions;
   env: NodeJS.ProcessEnv;
   rest: readonly string[];
   endOfOptions: readonly string[];
 }): Promise<RenderedCliResult> {
-  const positionals = [...options.rest, ...options.endOfOptions];
-  const unexpected = positionals.filter((token) => token.startsWith("-"));
+  const combined = [...options.rest, ...options.endOfOptions];
+  const { value: outputOption, rest: afterOutput } = takeOption(combined, "--output");
+  const unexpected = afterOutput.filter((token) => token.startsWith("-"));
   if (unexpected.length > 0) {
     return usageFailure({
       operation: OPERATION,
       code: "usage.unknown-option",
       message: `Unexpected option '${unexpected[0]}'.`,
-      usageLine: "Usage: explodex plugin build [workspace]",
-      helpPath: "plugin build",
+      usageLine: "Usage: explodex plugin package [workspace] [--output <directory>]",
+      helpPath: "plugin package",
       details: { option: unexpected[0] },
     });
   }
-  if (positionals.length > 1) {
+  if (afterOutput.length > 1) {
     return usageFailure({
       operation: OPERATION,
       code: "usage.invalid-value",
-      message: `Unexpected extra argument '${positionals[1]}'.`,
-      usageLine: "Usage: explodex plugin build [workspace]",
-      helpPath: "plugin build",
-      details: { argument: positionals[1] },
+      message: `Unexpected extra argument '${afterOutput[1]}'.`,
+      usageLine: "Usage: explodex plugin package [workspace] [--output <directory>]",
+      helpPath: "plugin package",
+      details: { argument: afterOutput[1] },
     });
   }
 
   const cwd = options.env.PWD ?? process.cwd();
   const workspace =
-    positionals.length === 1 ? resolve(cwd, positionals[0]!) : resolve(cwd);
+    afterOutput.length === 1 ? resolve(cwd, afterOutput[0]!) : resolve(cwd);
+  const outputDir = resolve(cwd, outputOption ?? ".");
 
-  const result = await buildPluginWorkspace({
+  const result = await packagePluginWorkspace({
     workspacePath: workspace,
+    outputDir,
     timeoutMs: options.globals.timeoutMs,
     env: options.env,
   });
 
   if (!result.ok) {
-    const details = {
-      ...(result.details ?? {}),
-      priorDistFingerprint: result.priorDistFingerprint,
-      distFingerprintAfter: result.distFingerprintAfter,
-      diagnostics: result.diagnostics,
-    };
     return renderFailure({
       operation: OPERATION,
       code: result.code,
       message: result.message,
-      details,
+      details: result.details,
       exitCode: exitCodeForError(result.code),
       humanStderr: `${result.message}\nerror.code: ${result.code}\n`,
     });
@@ -72,28 +95,19 @@ export async function runPluginBuild(options: {
     packageName: result.report.packageName,
     workspacePath: result.report.workspacePath,
     version: result.report.version,
-    lifecycle: result.report.lifecycle,
-    sdkRange: result.report.sdkRange,
-    entry: result.entry,
-    map: result.map,
-    distPath: result.distPath,
-    jsBytes: result.jsBytes,
-    jsSha256: result.jsSha256,
     payloadSha256: result.payloadSha256,
     generationId: result.generationId,
-    assets: result.report.assets,
+    outputPath: result.outputPath,
+    files: result.files,
   };
 
   const human = [
-    `Built plugin: ${result.report.packageName}`,
+    `Packaged plugin: ${result.report.packageName}`,
     `  id: ${result.report.id}`,
     `  version: ${result.report.version}`,
-    `  entry: dist/${result.entry}`,
-    `  map: dist/${result.map}`,
-    `  jsBytes: ${result.jsBytes}`,
-    `  jsSha256: ${result.jsSha256}`,
     `  payloadSha256: ${result.payloadSha256}`,
     `  generationId: ${result.generationId}`,
+    `  output: ${result.outputPath}`,
     "",
   ].join("\n");
 

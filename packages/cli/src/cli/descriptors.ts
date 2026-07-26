@@ -190,7 +190,7 @@ export const GROUPS: readonly GroupDescriptor[] = [
         path: ["package"],
         operation: "plugin.package",
         summary: "Package a validated plugin artifact archive.",
-        availability: "reserved",
+        availability: "available",
         arguments: [
           { name: "workspace", description: "Plugin workspace path (default: cwd).", required: false },
         ],

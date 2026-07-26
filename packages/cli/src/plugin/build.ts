@@ -1,19 +1,35 @@
 /**
- * Plugin build: validate source, typecheck, bundle browser-safe IIFE.
- * Stages outputs and commits dist/ only on success; preserves prior dist on failure.
- * Full asset/manifest/checksum atomic pipeline is completed by later features.
+ * Plugin build: validate, typecheck, bundle, assets, manifest, map, checksums,
+ * definition registration, generation binding; atomically replace dist/ only on success.
  */
 
 import { spawn } from "node:child_process";
 import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createInertRegistrationHarness } from "@explodex/sdk/testing";
+import { normalizeDeclaredAssets, stageDeclaredAssets } from "./assets.ts";
 import {
   bundlePluginIife,
   commitBundleDist,
-  fingerprintDist,
   type BundleImportDiagnostic,
 } from "./bundle.ts";
+import {
+  buildChecksumsFromDir,
+  computePayloadSha256,
+  writeChecksums,
+} from "./checksums.ts";
+import {
+  fingerprintDistTree,
+  listInstallableFiles,
+  sha256Hex,
+} from "./dist-files.ts";
+import {
+  buildGenerationRecord,
+  collectInputDigests,
+  writeGenerationRecord,
+} from "./generation.ts";
+import { buildPluginManifest, writePluginManifest } from "./manifest.ts";
 import { validatePluginSource } from "./validate.ts";
 import type { NormalizedSourceReport } from "./types.ts";
 
@@ -25,6 +41,8 @@ export type PluginBuildSuccess = {
   map: "index.js.map";
   jsBytes: number;
   jsSha256: string;
+  payloadSha256: string;
+  generationId: string;
   priorDistFingerprint: string | null;
   diagnostics: readonly BundleImportDiagnostic[];
 };
@@ -61,7 +79,6 @@ async function resolveTsc(workspacePath: string): Promise<string | null> {
     join(workspacePath, "..", "..", "node_modules", ".bin", "tsc"),
     join(workspacePath, "..", "..", "..", "node_modules", ".bin", "tsc"),
   ];
-  // Walk from this package to monorepo root.
   const here = dirname(fileURLToPath(import.meta.url));
   candidates.push(join(here, "..", "..", "..", "..", "node_modules", ".bin", "tsc"));
   candidates.push(join(here, "..", "..", "node_modules", ".bin", "tsc"));
@@ -77,8 +94,6 @@ async function typecheckWorkspace(options: {
 }): Promise<{ ok: true } | { ok: false; message: string; details?: Record<string, unknown> }> {
   const tsc = await resolveTsc(options.workspacePath);
   if (tsc === null) {
-    // Typecheck is required when typescript is present; skip only if no tsc and no local tsconfig tooling.
-    // Prefer failing closed when tsconfig exists (always true for valid workspaces).
     return {
       ok: false,
       message: "Unable to resolve tsc for plugin typecheck",
@@ -144,8 +159,27 @@ async function typecheckWorkspace(options: {
   return { ok: true };
 }
 
+function failResult(options: {
+  code: string;
+  message: string;
+  details?: Record<string, unknown>;
+  priorDistFingerprint: string | null;
+  distFingerprintAfter: string | null;
+  diagnostics?: readonly BundleImportDiagnostic[];
+}): PluginBuildFailure {
+  return {
+    ok: false,
+    code: options.code,
+    message: options.message,
+    details: options.details,
+    priorDistFingerprint: options.priorDistFingerprint,
+    distFingerprintAfter: options.distFingerprintAfter,
+    diagnostics: options.diagnostics ?? [],
+  };
+}
+
 /**
- * Build a plugin workspace into dist/index.js (+ map).
+ * Build a plugin workspace into a complete dist/ payload.
  * Failure preserves prior dist byte-for-byte (or leaves no dist).
  */
 export async function buildPluginWorkspace(options: {
@@ -154,7 +188,7 @@ export async function buildPluginWorkspace(options: {
   env?: NodeJS.ProcessEnv;
 }): Promise<PluginBuildResult> {
   const workspacePath = resolve(options.workspacePath);
-  const priorDistFingerprint = await fingerprintDist(workspacePath);
+  const priorDistFingerprint = await fingerprintDistTree(workspacePath);
   const emptyDiagnostics: BundleImportDiagnostic[] = [];
 
   const validated = await validatePluginSource({
@@ -163,27 +197,24 @@ export async function buildPluginWorkspace(options: {
     env: options.env,
   });
   if (!validated.ok) {
-    const after = await fingerprintDist(workspacePath);
-    return {
-      ok: false,
+    const after = await fingerprintDistTree(workspacePath);
+    return failResult({
       code: validated.code,
       message: validated.message,
       details: validated.details,
       priorDistFingerprint,
       distFingerprintAfter: after,
-      diagnostics: emptyDiagnostics,
-    };
+    });
   }
 
   const report = validated.report;
 
-  // Typecheck against public SDK exports.
   const typechecked = await typecheckWorkspace({
     workspacePath,
     timeoutMs: options.timeoutMs,
   });
   if (!typechecked.ok) {
-    const after = await fingerprintDist(workspacePath);
+    const after = await fingerprintDistTree(workspacePath);
     const detailStdout =
       typechecked.details && typeof typechecked.details.stdout === "string"
         ? typechecked.details.stdout.trim()
@@ -193,7 +224,6 @@ export async function buildPluginWorkspace(options: {
         ? typechecked.details.stderr.trim()
         : "";
     const compilerText = [detailStdout, detailStderr].filter((part) => part.length > 0).join("\n");
-    // Promote compiler paths into import-style diagnostics when present.
     const typeDiagnostics: BundleImportDiagnostic[] = [];
     const moduleMatch = /Cannot find module '([^']+)'/g;
     for (const match of compilerText.matchAll(moduleMatch)) {
@@ -204,8 +234,7 @@ export async function buildPluginWorkspace(options: {
         reason: "TypeScript could not resolve module",
       });
     }
-    return {
-      ok: false,
+    return failResult({
       code: "plugin.source.invalid",
       message:
         compilerText.length > 0
@@ -215,7 +244,22 @@ export async function buildPluginWorkspace(options: {
       priorDistFingerprint,
       distFingerprintAfter: after,
       diagnostics: typeDiagnostics,
-    };
+    });
+  }
+
+  const assetsNormalized = await normalizeDeclaredAssets({
+    workspacePath,
+    declared: report.assets,
+  });
+  if (!assetsNormalized.ok) {
+    const after = await fingerprintDistTree(workspacePath);
+    return failResult({
+      code: assetsNormalized.code,
+      message: assetsNormalized.message,
+      details: assetsNormalized.details,
+      priorDistFingerprint,
+      distFingerprintAfter: after,
+    });
   }
 
   // Stage on the same filesystem as the workspace so rename is atomic.
@@ -233,31 +277,118 @@ export async function buildPluginWorkspace(options: {
 
     if (!bundled.ok) {
       await rm(stagingDir, { recursive: true, force: true });
-      const after = await fingerprintDist(workspacePath);
-      return {
-        ok: false,
+      const after = await fingerprintDistTree(workspacePath);
+      return failResult({
         code: bundled.code,
         message: bundled.message,
         details: bundled.details,
         priorDistFingerprint,
         distFingerprintAfter: after,
         diagnostics: bundled.diagnostics,
-      };
+      });
     }
 
-    // Commit only after successful bundle. Staging becomes dist/.
-    await commitBundleDist({ workspacePath, stagingDir });
+    // Portable map absolute-path guard.
+    const mapText = await readFile(join(stagingDir, "index.js.map"), "utf8");
+    if (mapText.includes(workspacePath) || /"sources"\s*:\s*\[[^\]]*"\//.test(mapText)) {
+      // Allow only relative sources; reject absolute workspace leakage.
+      const mapJson = JSON.parse(mapText) as { sources?: string[] };
+      const bad = (mapJson.sources ?? []).some(
+        (source) => source.startsWith("/") || source.includes(workspacePath),
+      );
+      if (bad) {
+        await rm(stagingDir, { recursive: true, force: true });
+        const after = await fingerprintDistTree(workspacePath);
+        return failResult({
+          code: "plugin.source.invalid",
+          message: "Generated source map contains non-portable absolute paths",
+          priorDistFingerprint,
+          distFingerprintAfter: after,
+          diagnostics: bundled.diagnostics,
+        });
+      }
+    }
 
-    const after = await fingerprintDist(workspacePath);
-    if (after === null) {
-      return {
-        ok: false,
-        code: "plugin.source.invalid",
-        message: "Build failed to commit dist/index.js",
+    const stagedAssets = await stageDeclaredAssets({
+      stagingDir,
+      assets: assetsNormalized.assets,
+    });
+    if (!stagedAssets.ok) {
+      await rm(stagingDir, { recursive: true, force: true });
+      const after = await fingerprintDistTree(workspacePath);
+      return failResult({
+        code: stagedAssets.code,
+        message: stagedAssets.message,
+        details: stagedAssets.details,
         priorDistFingerprint,
         distFingerprintAfter: after,
         diagnostics: bundled.diagnostics,
-      };
+      });
+    }
+
+    const manifest = buildPluginManifest({
+      id: report.id,
+      version: report.version,
+      displayName: report.displayName,
+      description: report.description,
+      sdkRange: report.sdkRange,
+      lifecycle: report.lifecycle,
+      assets: assetsNormalized.installablePaths,
+    });
+    await writePluginManifest(stagingDir, manifest);
+
+    // Definition registration must succeed before commit.
+    const jsText = await readFile(join(stagingDir, "index.js"), "utf8");
+    const harness = createInertRegistrationHarness();
+    const registration = harness.evaluateSource({
+      expectedPluginId: report.id,
+      source: jsText,
+    });
+    if (!registration.ok) {
+      await rm(stagingDir, { recursive: true, force: true });
+      const after = await fingerprintDistTree(workspacePath);
+      return failResult({
+        code: "plugin.source.invalid",
+        message: `Plugin definition registration failed: ${registration.message}`,
+        details: { registration },
+        priorDistFingerprint,
+        distFingerprintAfter: after,
+        diagnostics: bundled.diagnostics,
+      });
+    }
+
+    const checksums = await buildChecksumsFromDir(stagingDir);
+    await writeChecksums(stagingDir, checksums);
+    const payloadSha256 = computePayloadSha256(checksums);
+
+    const inputDigests = await collectInputDigests({ workspacePath, report });
+    // Actual staged digests (includes true checksums.json bytes).
+    const installable = await listInstallableFiles(stagingDir);
+    const outputDigests: Record<string, string> = {};
+    for (const relative of installable) {
+      const bytes = await readFile(join(stagingDir, relative));
+      outputDigests[relative] = sha256Hex(bytes);
+    }
+    const generation = buildGenerationRecord({
+      report,
+      inputDigests,
+      checksums,
+      outputDigests,
+    });
+    await writeGenerationRecord(stagingDir, generation);
+
+    // Final staging inventory: installable set + generation record only.
+    await commitBundleDist({ workspacePath, stagingDir });
+
+    const after = await fingerprintDistTree(workspacePath);
+    if (after === null) {
+      return failResult({
+        code: "plugin.source.invalid",
+        message: "Build failed to commit dist/",
+        priorDistFingerprint,
+        distFingerprintAfter: after,
+        diagnostics: bundled.diagnostics,
+      });
     }
 
     return {
@@ -268,20 +399,20 @@ export async function buildPluginWorkspace(options: {
       map: "index.js.map",
       jsBytes: bundled.jsBytes,
       jsSha256: bundled.jsSha256,
+      payloadSha256,
+      generationId: generation.generationId,
       priorDistFingerprint,
       diagnostics: bundled.diagnostics,
     };
   } catch (error: unknown) {
     await rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
-    const after = await fingerprintDist(workspacePath);
-    return {
-      ok: false,
+    const after = await fingerprintDistTree(workspacePath);
+    return failResult({
       code: "plugin.source.invalid",
       message: error instanceof Error ? error.message : "Plugin build failed",
       priorDistFingerprint,
       distFingerprintAfter: after,
-      diagnostics: emptyDiagnostics,
-    };
+    });
   }
 }
 
