@@ -139,17 +139,18 @@ async function main(): Promise<void> {
         "owned-child-shutdown": 1_000,
       },
       run: async (ctx: OperationContext) => {
+        const pendingHandle = acquireStageLock(ctx, {
+          explodexHome: home,
+          resource: "plugins-state",
+          pollIntervalMs: 10,
+        });
         const readyFile = process.env.EXPLODEX_WORKER_READY_FILE;
         if (readyFile !== undefined) {
           await writeFile(readyFile, `${JSON.stringify({ pid: process.pid, stage: "lock-acquisition" })}\n`, {
             mode: 0o600,
           });
         }
-        const handle = await acquireStageLock(ctx, {
-          explodexHome: home,
-          resource: "plugins-state",
-          pollIntervalMs: 10,
-        });
+        const handle = await pendingHandle;
         return {
           descriptor: handle.descriptor,
           leaseDevice: handle.record.leaseDevice,

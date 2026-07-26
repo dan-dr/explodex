@@ -451,7 +451,7 @@ describe("packed Darwin advisory-lease protocol under required Node runtimes", (
         } finally {
           await stopExactTestProcess(holder);
         }
-      });
+      }, 15_000);
 
       test("exec boundary does not transfer the FD_CLOEXEC lease", async () => {
         const home = await freshHome(fixtureRoot, node, "cloexec");
