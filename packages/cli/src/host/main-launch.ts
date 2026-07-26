@@ -1,7 +1,8 @@
 /**
- * Explicit no-main one-shot main launch/attach path with bounded launch
- * coordination, same-operation race-winner attach, full pre-effect
- * revalidation, partial-stage reporting, and process preservation.
+ * Explicit no-main one-shot main launch/attach path with atomic producer
+ * coordination records, same-operation race-winner attach, reloaded
+ * compatibility at the effect barrier, a single declarative evaluation,
+ * exact partial-stage reporting, and process preservation.
  *
  * VAL-HOST-012 / VAL-HOST-013 / VAL-HOST-014 / VAL-HOST-015
  */
@@ -18,11 +19,19 @@ import {
 } from "../runtime/operation.ts";
 import type { BoundedOperationResult } from "../runtime/types.ts";
 import { gateCompatibilityDependentOperation } from "./compatibility-gate.ts";
+import { compatibilityKeysEqual } from "./compatibility-key.ts";
 import {
   authorizeSameOperationAttach,
   captureNoMainLaunchBaseline,
   type SameOperationAuthority,
 } from "./main-launch-authority.ts";
+import {
+  buildLaunchCoordinationRecord,
+  consumeLaunchCoordinationEffect,
+  loadLaunchCoordinationRecord,
+  writeLaunchCoordinationRecord,
+  type LaunchCoordinationRecord,
+} from "./main-launch-coordination.ts";
 import {
   errorMessage,
   freezeHostOrThrow,
@@ -30,6 +39,7 @@ import {
   isLaunchFailure,
   launchFailure,
   loadCurrentCompatibility,
+  mapCoordinationFailure,
   mapRevalidationReason,
   mapTargetCode,
   markLaunchStage,
@@ -47,15 +57,14 @@ import {
 } from "./main-launch-revalidate.ts";
 import {
   buildMainLaunchArgv,
-  DEFAULT_BENIGN_MAIN_EXPRESSION,
   formatMainLaunchHuman,
   formatMainLaunchJson,
   MAIN_CDP_HOST,
   MAIN_CDP_PORT,
+  resolveDeclarativeEffect,
   type LaunchedMainIdentity,
   type MainLaunchOptions,
   type MainLaunchSuccess,
-  type MainLaunchWorkContext,
 } from "./main-launch-types.ts";
 import {
   MAIN_HOT_PATH_RECOVERY_GUIDANCE,
@@ -76,16 +85,17 @@ export {
   formatMainLaunchJson,
   MAIN_CDP_HOST,
   MAIN_CDP_PORT,
+  resolveDeclarativeEffect,
 } from "./main-launch-types.ts";
 export type {
   LaunchedMainIdentity,
+  MainLaunchDeclarativeEffect,
   MainLaunchErrorCode,
   MainLaunchFailureDetails,
   MainLaunchOptions,
   MainLaunchPath,
   MainLaunchStage,
   MainLaunchSuccess,
-  MainLaunchWorkContext,
 } from "./main-launch-types.ts";
 export {
   authorizeSameOperationAttach,
@@ -97,6 +107,17 @@ export type {
   MainLaunchBaseline,
   SameOperationAuthority,
 } from "./main-launch-authority.ts";
+export {
+  buildLaunchCoordinationRecord,
+  consumeLaunchCoordinationEffect,
+  loadLaunchCoordinationRecord,
+  parseLaunchCoordinationRecord,
+  validateLaunchCoordinationRecord,
+  writeLaunchCoordinationRecord,
+} from "./main-launch-coordination.ts";
+export type {
+  LaunchCoordinationRecord,
+} from "./main-launch-coordination.ts";
 
 function resolveProbe(probe: ProbeIdentity | undefined): ProbeIdentity {
   return probe ?? {
@@ -107,8 +128,9 @@ function resolveProbe(probe: ProbeIdentity | undefined): ProbeIdentity {
 
 /**
  * Explicit normal launch from no-main with free 9333, or freshly verified
- * same-operation race-winner attach. Initially present cdp-main is refused.
- * Never shadows or mutates a plain/user-owned main.
+ * same-operation race-winner attach bound to a producer coordination record.
+ * Initially present cdp-main is refused. Never shadows or mutates a plain/
+ * user-owned main.
  */
 export async function runExplicitMainLaunch(
   options: MainLaunchOptions,
@@ -120,6 +142,7 @@ export async function runExplicitMainLaunch(
   const endpoint = roleEndpoint("main");
   const signalsSent: Array<{ pid: number; signal: string }> = [];
   const probe = resolveProbe(options.probe);
+  const declarativeEffect = resolveDeclarativeEffect(options.effect);
 
   return runBoundedOperation({
     adapters: options.runtime,
@@ -158,6 +181,28 @@ export async function runExplicitMainLaunch(
           details: {
             nextAction: gate.error.nextAction,
             compatibility: gate.compatibility,
+          },
+        });
+      }
+
+      const frozenCompatibilityKey = buildMainLaunchCompatibilityKey({
+        host: frozenHost,
+        sdkRuntime: options.sdkRuntime,
+        probe,
+      });
+      if (
+        compatibility.key === null ||
+        !compatibilityKeysEqual(compatibility.key, frozenCompatibilityKey)
+      ) {
+        throw launchFailure({
+          code: "compatibility_stale",
+          message: "Compatibility key does not match the frozen host/runtime identity.",
+          path: "refused",
+          lastCompletedStage: "preflight",
+          stalledStage: "preflight",
+          details: {
+            frozenKey: frozenCompatibilityKey,
+            compatibility,
           },
         });
       }
@@ -280,6 +325,7 @@ export async function runExplicitMainLaunch(
       let spawnedByThisOperation = false;
       let surviving: LaunchedMainIdentity | null = null;
       let authority: SameOperationAuthority | null = null;
+      let coordination: LaunchCoordinationRecord | null = null;
 
       // ── Launch coordination lock ───────────────────────────────────────
       const lock = await acquireStageLock(ctx, {
@@ -290,6 +336,7 @@ export async function runExplicitMainLaunch(
       ctx.markStageComplete("lock-acquisition");
       markLaunchStage(ctx, "lock-acquisition");
       const holdsLaunchCoordination = true;
+      const lockGeneration = lock.record.generation;
 
       try {
         // ── Pre-spawn recheck ────────────────────────────────────────────
@@ -364,7 +411,7 @@ export async function runExplicitMainLaunch(
         }
 
         if (recheck.mainState === "cdp-main") {
-          // Same-operation race-winner attach only (not initially present cdp-main).
+          // Same-operation race-winner attach only via exact producer record.
           path = "attach";
           const process = recheck.processes[0];
           if (process === undefined || recheck.selectedTarget === null) {
@@ -377,19 +424,33 @@ export async function runExplicitMainLaunch(
               stalledStage: "cdp-discovery",
             });
           }
+
+          const existingRecord = await loadLaunchCoordinationRecord({
+            adapters: options.hostAdapters,
+            explodexHome,
+          });
           const attachAuth = authorizeSameOperationAttach({
             baseline,
             holdsLaunchCoordination,
             candidate: process,
             selectedTargetPresent: recheck.selectedTarget !== null,
+            coordination: existingRecord,
+            frozenHost,
+            compatibilityKey: frozenCompatibilityKey,
+            requireUnconsumedEffect: true,
           });
           if (!attachAuth.ok) {
-            throw launchFailure({
-              code: attachAuth.reason === "not_same_operation_winner"
+            const code = attachAuth.reason === "not_same_operation_winner" ||
+                attachAuth.reason === "missing_record" ||
+                attachAuth.reason === "missing"
+              ? attachAuth.reason === "not_same_operation_winner"
                 ? "preexisting_cdp_main"
-                : "same_operation_authority_mismatch",
+                : "coordination_record_missing"
+              : mapCoordinationFailure(attachAuth.reason);
+            throw launchFailure({
+              code,
               message:
-                "Attach refused: winner is not a same-operation race process that appeared after exact no-main/free-9333 under launch coordination.",
+                "Attach refused: winner is not bound by an exact unconsumed producer coordination record under launch coordination from a no-main/free-9333 baseline.",
               path: "refused",
               mainState: "cdp-main",
               endpointObstruction: recheck.endpointObstruction,
@@ -399,10 +460,12 @@ export async function runExplicitMainLaunch(
                 reason: attachAuth.reason,
                 baseline,
                 candidate: summarizeProcess(process),
+                coordinationPresent: existingRecord !== null,
               },
             });
           }
           authority = attachAuth.authority;
+          coordination = attachAuth.authority.coordination;
           boundProcess = process;
           surviving = {
             pid: process.pid,
@@ -487,19 +550,14 @@ export async function runExplicitMainLaunch(
             arguments: [frozenHost.executablePath, ...buildMainLaunchArgv()],
             processStartedAt: identity.processStartedAt,
           };
-          authority = {
-            kind: "spawned-by-this-operation",
-            process: boundProcess,
-            operationId: ctx.identity.operationId,
-          };
           setSurviving(ctx, surviving);
           registerProtectedChatGpt(ctx, surviving, signalsSent);
         }
 
-        if (boundProcess === null || surviving === null || authority === null) {
+        if (boundProcess === null || surviving === null) {
           throw launchFailure({
             code: "operation_failed",
-            message: "Internal error: process binding or same-operation authority missing after spawn/attach decision",
+            message: "Internal error: process binding missing after spawn/attach decision",
             path: "failed",
             lastCompletedStage: "pre-spawn-recheck",
             stalledStage: "launch-readiness",
@@ -549,11 +607,6 @@ export async function runExplicitMainLaunch(
           port: MAIN_CDP_PORT,
           host: MAIN_CDP_HOST,
         };
-        // Keep authority bound to the exact ready identity.
-        authority = {
-          ...authority,
-          process: readyProcess,
-        };
         setSurviving(ctx, surviving);
 
         // Host revalidation before CDP attach/evaluation
@@ -572,9 +625,6 @@ export async function runExplicitMainLaunch(
         }
 
         // ── CDP discovery ────────────────────────────────────────────────
-        // Pre-register session-opening authority before adapter open (same
-        // semantics as runExactTargetOperation) so delayed open after timeout
-        // or SIGINT cannot create an untracked session after a false-clean result.
         const sessionGuard = registerSessionOpeningGuard(ctx.scope, {
           label: `cdp-open:main:${ctx.identity.operationId}`,
         });
@@ -589,7 +639,6 @@ export async function runExplicitMainLaunch(
               signal: ctl.signal,
               retainSession: true,
               onSessionOpened(session) {
-                // Adopt into the pre-existing guard; never double-register or double-close.
                 sessionGuard.adopt(session);
               },
             });
@@ -642,11 +691,86 @@ export async function runExplicitMainLaunch(
         ctx.markStageComplete("cdp-discovery");
         markLaunchStage(ctx, "cdp-discovery");
 
-        const compatibilityKey = buildMainLaunchCompatibilityKey({
-          host: frozenHost,
-          sdkRuntime: options.sdkRuntime,
-          probe,
-        });
+        // ── Atomic producer coordination record ──────────────────────────
+        if (path === "spawn") {
+          coordination = buildLaunchCoordinationRecord({
+            producerOperationId: ctx.identity.operationId,
+            lockGeneration,
+            writtenAt: options.runtime.clock.nowIso(),
+            frozenHost,
+            compatibilityKey: frozenCompatibilityKey,
+            process: boundProcess,
+            browserIdentity: discovery.target.browserIdentity,
+            target: discovery.target,
+          });
+          await writeLaunchCoordinationRecord({
+            adapters: options.hostAdapters,
+            explodexHome,
+            record: coordination,
+          });
+          authority = {
+            kind: "spawned-by-this-operation",
+            process: boundProcess,
+            operationId: ctx.identity.operationId,
+            lockGeneration,
+            coordination,
+          };
+          markLaunchStage(ctx, "coordination-record");
+        } else {
+          // Attach path: revalidate record against discovered identity.
+          if (coordination === null || authority === null) {
+            throw launchFailure({
+              code: "coordination_record_missing",
+              message: "Attach path missing producer coordination record after discovery.",
+              path: "failed",
+              survivingChatGpt: surviving ?? undefined,
+              lastCompletedStage: "cdp-discovery",
+              stalledStage: "coordination-record",
+            });
+          }
+          if (
+            coordination.process.pid !== boundProcess.pid ||
+            coordination.process.processStartedAt !== boundProcess.processStartedAt ||
+            coordination.target.targetId !== discovery.target.targetId ||
+            coordination.target.executionContextId !== discovery.target.executionContextId ||
+            coordination.target.executionContextUniqueId !==
+              discovery.target.executionContextUniqueId ||
+            coordination.browserIdentity !== discovery.target.browserIdentity
+          ) {
+            throw launchFailure({
+              code: "coordination_record_invalid",
+              message:
+                "Discovered identity does not exactly match the producer coordination record; refusing evaluation.",
+              path: "failed",
+              survivingChatGpt: surviving ?? undefined,
+              lastCompletedStage: "cdp-discovery",
+              stalledStage: "coordination-record",
+              details: {
+                recordProcess: coordination.process,
+                boundProcess: summarizeProcess(boundProcess),
+                recordTarget: coordination.target,
+                discoveredTarget: discovery.target,
+              },
+            });
+          }
+          authority = {
+            ...authority,
+            process: boundProcess,
+            coordination,
+          };
+          markLaunchStage(ctx, "coordination-record");
+        }
+
+        if (authority === null || coordination === null) {
+          throw launchFailure({
+            code: "operation_failed",
+            message: "Internal error: same-operation authority or coordination missing",
+            path: "failed",
+            survivingChatGpt: surviving ?? undefined,
+            lastCompletedStage: "cdp-discovery",
+            stalledStage: "compatibility-barrier",
+          });
+        }
 
         const collectStatus = async (signal?: AbortSignal) =>
           options.collectStatus !== undefined
@@ -666,6 +790,8 @@ export async function runExplicitMainLaunch(
           reason: string,
           observation: unknown,
           survivingProcess: LaunchedMainIdentity | undefined,
+          stalledStage: "compatibility-barrier" | "effect-consume" | "requested-work" =
+            "compatibility-barrier",
         ): never => {
           throw launchFailure({
             code: mapRevalidationReason(reason),
@@ -673,91 +799,145 @@ export async function runExplicitMainLaunch(
               `Pre-effect revalidation failed (${reason}); stopping without reconnect and preserving any operation-launched process.`,
             path: "failed",
             survivingChatGpt: survivingProcess,
-            lastCompletedStage: "cdp-discovery",
-            stalledStage: "requested-work",
+            lastCompletedStage: "coordination-record",
+            stalledStage,
             details: { reason, observation },
           });
         };
 
-        // Full revalidation before requested work (and every subsequent evaluation).
-        await requireMainLaunchRevalidation({
-          freezeHost,
-          collectStatus,
-          runtimeProcess: options.runtime.process,
-          cdp: options.cdp,
-          session: discovery.session,
-          expected: {
-            host: frozenHost,
-            process: boundProcess,
-            target: discovery.target,
-            compatibilityKey,
-            sdkRuntime: options.sdkRuntime,
-            probe,
-            authority,
-          },
-          onFailure: (reason, observation) =>
-            failRevalidation(reason, observation, surviving ?? undefined),
-        });
+        // ── Effect barrier: reload compatibility, revalidate, consume, evaluate once ──
+        const evaluation = await ctx.runExternalWait("cdp-evaluation", async (ctl) => {
+          ctl.throwIfInterrupted();
 
-        // ── Requested work once ──────────────────────────────────────────
-        const workResult = await ctx.runExternalWait("cdp-evaluation", async (ctl) => {
-          const workCtx: MainLaunchWorkContext = {
-            operationId: ctx.identity.operationId,
-            host: frozenHost,
-            process: surviving!,
-            target: discovery.target,
-            path,
-            signal: ctl.signal,
-            throwIfInterrupted: () => ctl.throwIfInterrupted(),
-            evaluate: async (expression) => {
-              ctl.throwIfInterrupted();
-              await requireMainLaunchRevalidation({
-                freezeHost,
-                collectStatus,
-                runtimeProcess: options.runtime.process,
-                cdp: options.cdp,
-                session: discovery.session,
-                expected: {
+          // Immediately before the sole declarative evaluation, reload and gate
+          // persisted compatibility; require exact equality with the frozen key.
+          const reloadedCompatibility = options.reloadCompatibility !== undefined
+            ? await options.reloadCompatibility()
+            : options.loadCompatibility !== undefined
+              ? await options.loadCompatibility()
+              : await loadCurrentCompatibility({
+                  hostAdapters: options.hostAdapters,
                   host: frozenHost,
-                  process: boundProcess!,
-                  target: discovery.target,
-                  compatibilityKey,
+                  explodexHome,
                   sdkRuntime: options.sdkRuntime,
-                  probe,
-                  authority: authority!,
-                },
-                signal: ctl.signal,
-                onFailure: (reason, observation) =>
-                  failRevalidation(reason, observation, surviving ?? undefined),
-              });
-              if (!ctl.tryCommitEffect()) {
-                throw new InterruptError("cdp-evaluation");
-              }
-              return discovery.session.evaluate({
-                executionContextId: discovery.target.executionContextId,
-                executionContextUniqueId: discovery.target.executionContextUniqueId,
-                expression,
-                signal: ctl.signal,
-              });
+                  probe: options.probe,
+                });
+
+          const reloadedGate = gateCompatibilityDependentOperation({
+            operation: "launch-with-injection",
+            compatibility: reloadedCompatibility,
+          });
+          if (!reloadedGate.allowed) {
+            throw launchFailure({
+              code: reloadedGate.error.code,
+              message:
+                `Persisted compatibility failed at the effect barrier: ${reloadedGate.error.message}`,
+              path: "failed",
+              survivingChatGpt: surviving ?? undefined,
+              lastCompletedStage: "coordination-record",
+              stalledStage: "compatibility-barrier",
+              details: {
+                nextAction: reloadedGate.error.nextAction,
+                compatibility: reloadedGate.compatibility,
+              },
+            });
+          }
+          if (
+            reloadedCompatibility.key === null ||
+            !compatibilityKeysEqual(reloadedCompatibility.key, frozenCompatibilityKey) ||
+            !compatibilityKeysEqual(
+              reloadedCompatibility.key,
+              coordination!.compatibilityKey,
+            )
+          ) {
+            throw launchFailure({
+              code: "compatibility_identity_drift",
+              message:
+                "Reloaded persisted compatibility key does not exactly equal the frozen coordination key.",
+              path: "failed",
+              survivingChatGpt: surviving ?? undefined,
+              lastCompletedStage: "coordination-record",
+              stalledStage: "compatibility-barrier",
+              details: {
+                frozenKey: frozenCompatibilityKey,
+                recordKey: coordination!.compatibilityKey,
+                reloadedKey: reloadedCompatibility.key,
+              },
+            });
+          }
+          markLaunchStage(ctx, "compatibility-barrier");
+
+          await requireMainLaunchRevalidation({
+            freezeHost,
+            collectStatus,
+            runtimeProcess: options.runtime.process,
+            cdp: options.cdp,
+            session: discovery.session,
+            expected: {
+              host: frozenHost,
+              process: boundProcess!,
+              target: discovery.target,
+              compatibilityKey: frozenCompatibilityKey,
+              sdkRuntime: options.sdkRuntime,
+              probe,
+              authority: authority!,
+              coordination: coordination!,
+              reloadedCompatibility,
             },
+            signal: ctl.signal,
+            onFailure: (reason, observation) =>
+              failRevalidation(reason, observation, surviving ?? undefined),
+          });
+
+          // Atomically consume one-shot effect authority before evaluation.
+          const consumed = await consumeLaunchCoordinationEffect({
+            adapters: options.hostAdapters,
+            explodexHome,
+            expected: coordination!,
+            consumerOperationId: ctx.identity.operationId,
+            nowIso: options.runtime.clock.nowIso(),
+          });
+          if (!consumed.ok) {
+            throw launchFailure({
+              code: mapCoordinationFailure(consumed.reason),
+              message:
+                `One-shot effect authority could not be consumed (${consumed.reason}); stopping before evaluation.`,
+              path: "failed",
+              survivingChatGpt: surviving ?? undefined,
+              lastCompletedStage: "compatibility-barrier",
+              stalledStage: "effect-consume",
+              details: { reason: consumed.reason },
+            });
+          }
+          coordination = consumed.record;
+          authority = {
+            ...authority!,
+            coordination: consumed.record,
           };
+          markLaunchStage(ctx, "effect-consume");
+
+          if (!ctl.tryCommitEffect()) {
+            throw new InterruptError("cdp-evaluation");
+          }
 
           try {
-            if (options.work !== undefined) {
-              return await options.work(workCtx);
-            }
-            const evaluation = await workCtx.evaluate(DEFAULT_BENIGN_MAIN_EXPRESSION);
-            return { result: evaluation.value, injectionPerformed: false };
+            const result = await discovery.session.evaluate({
+              executionContextId: discovery.target.executionContextId,
+              executionContextUniqueId: discovery.target.executionContextUniqueId,
+              expression: declarativeEffect.expression,
+              signal: ctl.signal,
+            });
+            return result;
           } catch (error: unknown) {
             if (isLaunchFailure(error) || error instanceof InterruptError || error instanceof TimeoutError) {
               throw error;
             }
             throw launchFailure({
               code: "requested_work_failed",
-              message: error instanceof Error ? error.message : "Requested work failed",
+              message: error instanceof Error ? error.message : "Declarative evaluation failed",
               path: "failed",
               survivingChatGpt: surviving ?? undefined,
-              lastCompletedStage: "cdp-discovery",
+              lastCompletedStage: "effect-consume",
               stalledStage: "requested-work",
               details: { cause: errorMessage(error) },
             });
@@ -772,18 +952,24 @@ export async function runExplicitMainLaunch(
           host: frozenHost,
           process: surviving,
           target: discovery.target,
-          work: workResult.result,
+          work: evaluation.value,
           stagesCompleted,
           spawnedByThisOperation,
           chatgptSurvives: true as const,
-          injectionClaimed: workResult.injectionPerformed === true,
+          injectionClaimed: false,
+          effect: {
+            kind: "evaluate-expression",
+            expression: declarativeEffect.expression,
+            evaluation,
+          },
         } satisfies MainLaunchSuccess;
       } finally {
         // Lock is released via scope dispose. Never signal protected ChatGPT.
+        // Do not mark cleanup here — ResourceScope disposal owns cleanup and
+        // must not be claimed before residual disposal completes.
         void lock;
         void signalsSent;
         void baseline;
-        markLaunchStage(ctx, "cleanup");
       }
     },
   }).then((result) => normalizeLaunchResult(result));

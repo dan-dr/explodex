@@ -1,16 +1,19 @@
 /**
  * Full pre-effect revalidation for explicit main launch/attach.
  *
- * Before work and every evaluation, independently revalidate frozen host,
+ * Before the sole declarative evaluation, independently revalidate frozen host,
  * PID/start/executable, unique 9333 owner, browser, target/frame/context,
- * compatibility identity, and same-operation authority. Drift stops effects
- * without reconnect and never selects a replacement target.
+ * reloaded persisted compatibility equality with the frozen key, and the
+ * coordination record. Drift stops effects without reconnect and never selects
+ * a replacement target.
  */
 
 import type { CdpAdapter, CdpTargetSession } from "../cdp/adapters.ts";
 import type { TargetIdentity } from "../cdp/types.ts";
 import type { RuntimeProcess } from "../runtime/adapters.ts";
-import { deriveCompatibilityKey } from "./compatibility-key.ts";
+import { compatibilityKeysEqual, deriveCompatibilityKey } from "./compatibility-key.ts";
+import type { LaunchCoordinationRecord } from "./main-launch-coordination.ts";
+import { validateLaunchCoordinationRecord } from "./main-launch-coordination.ts";
 import {
   authorityStillMatches,
   type SameOperationAuthority,
@@ -19,6 +22,7 @@ import { MAIN_CDP_HOST, MAIN_CDP_PORT } from "./main-launch-types.ts";
 import type { HostStatusResult, ListenerObservation, VerifiedProcess } from "./status.ts";
 import type {
   CompatibilityKey,
+  CompatibilityReport,
   HostIdentity,
   ProbeIdentity,
   SdkRuntimeIdentity,
@@ -28,10 +32,14 @@ export type MainLaunchRevalidateExpected = {
   host: HostIdentity;
   process: VerifiedProcess;
   target: TargetIdentity;
+  /** Frozen compatibility key bound into the coordination record. */
   compatibilityKey: CompatibilityKey;
   sdkRuntime: SdkRuntimeIdentity;
   probe: ProbeIdentity;
   authority: SameOperationAuthority;
+  coordination: LaunchCoordinationRecord;
+  /** Reloaded and gated persisted compatibility at the effect barrier. */
+  reloadedCompatibility: CompatibilityReport;
 };
 
 export type MainLaunchRevalidateObservation = {
@@ -47,8 +55,10 @@ export type MainLaunchRevalidateObservation = {
   executionContextId: number | null;
   executionContextUniqueId: string | null;
   frameId: string | null;
-  compatibilityKey: CompatibilityKey;
+  compatibilityKey: CompatibilityKey | null;
+  reloadedMatched: boolean;
   authorityMatches: boolean;
+  coordinationValid: boolean;
 };
 
 export type MainLaunchRevalidateResult =
@@ -98,7 +108,6 @@ export function matchMainPortOwner(
   if (onPort.length === 0) return "port_owner_drift:missing";
   const owned = onPort.filter((entry) => entry.pid === expected.pid);
   if (owned.length === 0) return "port_owner_drift:missing_owner";
-  // Foreign co-listeners on 9333 fail closed for main (unique owner required).
   const foreign = onPort.filter((entry) => entry.pid !== expected.pid);
   if (foreign.length > 0) return "port_owner_drift:not_unique";
   const withStart = owned.filter((entry) => entry.processStartedAt !== null);
@@ -164,14 +173,14 @@ export function correlateMainLaunchObservation(input: {
     return "context_identity_drift:frame";
   }
 
-  const expectedKey = input.expected.compatibilityKey;
-  const observedKey = input.observation.compatibilityKey;
+  if (!input.observation.reloadedMatched || input.observation.compatibilityKey === null) {
+    return "compatibility_identity_drift";
+  }
   if (
-    observedKey.appVersion !== expectedKey.appVersion ||
-    observedKey.appBuild !== expectedKey.appBuild ||
-    observedKey.sdkRuntimeSha256.toLowerCase() !== expectedKey.sdkRuntimeSha256.toLowerCase() ||
-    observedKey.probeSchemaVersion !== expectedKey.probeSchemaVersion ||
-    observedKey.probeToolVersion !== expectedKey.probeToolVersion
+    !compatibilityKeysEqual(
+      input.observation.compatibilityKey,
+      input.expected.compatibilityKey,
+    )
   ) {
     return "compatibility_identity_drift";
   }
@@ -179,12 +188,17 @@ export function correlateMainLaunchObservation(input: {
   if (!input.observation.authorityMatches) {
     return "same_operation_authority_mismatch";
   }
+  if (!input.observation.coordinationValid) {
+    return "coordination_record_invalid";
+  }
   return null;
 }
 
 /**
  * Independently revalidate every pre-effect identity barrier for main 9333.
- * Never reconnects and never selects a replacement target/context.
+ * Compatibility is taken from a reloaded/gated report, never locally re-derived
+ * as a substitute for persisted proof. Never reconnects and never selects a
+ * replacement target/context.
  */
 export async function revalidateMainLaunchPointOfUse(input: {
   freezeHost: () => Promise<HostIdentity>;
@@ -217,7 +231,6 @@ export async function revalidateMainLaunchPointOfUse(input: {
     abortSignal: input.signal,
   });
   if (identified === null || identified.processStartedAt !== input.expected.process.processStartedAt) {
-    // Dead or start-mismatched identity is process drift; executable stays expected for correlation.
     processExecutablePath = identified === null ? null : processExecutablePath;
   }
 
@@ -261,7 +274,6 @@ export async function revalidateMainLaunchPointOfUse(input: {
       targetUrl = selected.url;
       targetType = selected.type;
     } else if (exact.length === 0) {
-      // Record a replacement if present, but never select it for evaluation.
       const anyCompatible = targets.filter(
         (target) => target.type === "page" && target.url === "app://-/index.html",
       );
@@ -314,6 +326,26 @@ export async function revalidateMainLaunchPointOfUse(input: {
         identified.processStartedAt === input.expected.process.processStartedAt
   );
 
+  const reloaded = input.expected.reloadedCompatibility;
+  const reloadedMatched =
+    reloaded.status === "proven" &&
+    reloaded.matched &&
+    reloaded.allowsCompatibilityDependentWork &&
+    reloaded.key !== null &&
+    compatibilityKeysEqual(reloaded.key, input.expected.compatibilityKey);
+
+  const coordinationCheck = validateLaunchCoordinationRecord({
+    record: input.expected.coordination,
+    expectedProducerOperationId: input.expected.coordination.producerOperationId,
+    expectedLockGeneration: input.expected.coordination.lockGeneration,
+    frozenHost: input.expected.host,
+    compatibilityKey: input.expected.compatibilityKey,
+    process: input.expected.process,
+    browserIdentity: input.expected.target.browserIdentity,
+    target: input.expected.target,
+    requireUnconsumedEffect: true,
+  });
+
   const observation: MainLaunchRevalidateObservation = {
     host: {
       bundlePath: host.bundlePath,
@@ -336,17 +368,10 @@ export async function revalidateMainLaunchPointOfUse(input: {
     executionContextId,
     executionContextUniqueId,
     frameId,
-    compatibilityKey: deriveCompatibilityKey({
-      host: {
-        signingTeam: host.signingTeam,
-        appVersion: host.appVersion,
-        appBuild: host.appBuild,
-        hostHashes: { ...host.hostHashes },
-      },
-      sdkRuntime: input.expected.sdkRuntime,
-      probe: input.expected.probe,
-    }),
+    compatibilityKey: reloaded.key,
+    reloadedMatched,
     authorityMatches,
+    coordinationValid: coordinationCheck.ok,
   };
 
   const drift = correlateMainLaunchObservation({

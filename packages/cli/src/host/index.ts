@@ -19,4 +19,10 @@ export * from "./main-launch-types.ts";
 export * from "./main-launch-authority.ts";
 export * from "./main-launch-revalidate.ts";
 export * from "./main-launch.ts";
-export { resolveExplodexHome, compatibilityStatePath, stateDirectory } from "../home/paths.ts";
+export {
+  resolveExplodexHome,
+  compatibilityStatePath,
+  mainLaunchCoordinationPath,
+  stateDirectory,
+} from "../home/paths.ts";
+export * from "./main-launch-coordination.ts";

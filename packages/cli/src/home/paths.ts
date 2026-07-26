@@ -22,6 +22,10 @@ export function compatibilityStatePath(explodexHome: string): string {
   return join(explodexHome, "state", "compatibility.json");
 }
 
+export function mainLaunchCoordinationPath(explodexHome: string): string {
+  return join(explodexHome, "state", "main-launch-coordination.json");
+}
+
 export function stateDirectory(explodexHome: string): string {
   return join(explodexHome, "state");
 }

@@ -143,6 +143,9 @@ export function mapBoundedCode(code: string): MainLaunchErrorCode {
   if (code === "compatibility_identity_drift") return "compatibility_identity_drift";
   if (code === "same_operation_authority_mismatch") return "same_operation_authority_mismatch";
   if (code === "preexisting_cdp_main") return "preexisting_cdp_main";
+  if (code === "coordination_record_missing") return "coordination_record_missing";
+  if (code === "coordination_record_invalid") return "coordination_record_invalid";
+  if (code === "coordination_effect_consumed") return "coordination_effect_consumed";
   if (code === "target_not_found") return "target_not_found";
   if (code === "target_ambiguous") return "target_ambiguous";
   if (code === "context_not_found") return "context_not_found";
@@ -169,8 +172,39 @@ export function mapRevalidationReason(reason: string): MainLaunchErrorCode {
   if (reason.startsWith("context_identity_drift")) return "context_identity_drift";
   if (reason.startsWith("compatibility_identity_drift")) return "compatibility_identity_drift";
   if (reason.startsWith("same_operation_authority")) return "same_operation_authority_mismatch";
+  if (reason.startsWith("coordination_record_invalid") || reason.startsWith("coordination_record")) {
+    return "coordination_record_invalid";
+  }
+  if (reason.startsWith("coordination_effect_consumed") || reason === "effect_consumed") {
+    return "coordination_effect_consumed";
+  }
   if (reason.startsWith("point_of_use_endpoint")) return "endpoint_identity_mismatch";
   return "operation_failed";
+}
+
+export function mapCoordinationFailure(
+  reason: string,
+): MainLaunchErrorCode {
+  if (reason === "missing" || reason === "missing_record") return "coordination_record_missing";
+  if (reason === "effect_consumed") return "coordination_effect_consumed";
+  if (
+    reason === "malformed" ||
+    reason === "stale_producer" ||
+    reason === "host_mismatch" ||
+    reason === "key_mismatch" ||
+    reason === "process_mismatch" ||
+    reason === "endpoint_mismatch" ||
+    reason === "browser_mismatch" ||
+    reason === "target_mismatch" ||
+    reason === "field_substitution" ||
+    reason === "not_same_operation_winner" ||
+    reason === "no_baseline" ||
+    reason === "no_coordination" ||
+    reason === "missing_target"
+  ) {
+    return "coordination_record_invalid";
+  }
+  return "same_operation_authority_mismatch";
 }
 
 export function mapTargetCode(
@@ -183,16 +217,32 @@ export function mapStage(stage: MainLaunchStage | null): OperationStage | null {
   if (stage === null) return null;
   if (stage === "launch-readiness") return "launch-readiness";
   if (stage === "cdp-discovery") return "cdp-discovery";
-  if (stage === "requested-work") return "cdp-evaluation";
+  if (
+    stage === "requested-work" ||
+    stage === "coordination-record" ||
+    stage === "compatibility-barrier" ||
+    stage === "effect-consume"
+  ) {
+    return "cdp-evaluation";
+  }
   if (stage === "lock-acquisition") return "lock-acquisition";
   if (stage === "cleanup") return "cleanup";
   return "local-work";
 }
 
+/**
+ * Record an exact main-launch stage. Never marks cleanup as completed before
+ * ResourceScope disposal; callers must not claim cleanup from operation logic.
+ */
 export function markLaunchStage(ctx: OperationContext, stage: MainLaunchStage): void {
+  if (stage === "cleanup") {
+    // Cleanup is owned by ResourceScope disposal after the operation returns.
+    // Claiming it here would report cleanup before residual disposal.
+    return;
+  }
   const partial = ctx.getPartial();
   const completed = readLaunchStages(ctx);
-  if (!completed.includes(stage) && stage !== "cleanup") {
+  if (!completed.includes(stage)) {
     completed.push(stage);
   }
   ctx.setPartial({

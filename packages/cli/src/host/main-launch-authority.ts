@@ -3,11 +3,18 @@
  *
  * An initially observed cdp-main is availability only and never grants
  * attach/evaluation authority. Attach is permitted only when this operation
- * began from exact no-main/free-9333, holds launch coordination, and
- * independently proves the exact winner appeared after the operation began.
+ * began from exact no-main/free-9333, holds launch coordination, and validates
+ * an exact unconsumed producer coordination record bound to the winner.
+ * Absence from baseline or later appearance alone is never attach authority.
  */
 
+import type {
+  CoordinationValidationFailure,
+  LaunchCoordinationRecord,
+} from "./main-launch-coordination.ts";
+import { validateLaunchCoordinationRecord } from "./main-launch-coordination.ts";
 import type { HostStatusResult, VerifiedProcess } from "./status.ts";
+import type { CompatibilityKey, HostIdentity } from "./types.ts";
 
 export type MainLaunchBaseline = {
   /** Operation ID that established this baseline. */
@@ -25,12 +32,16 @@ export type SameOperationAuthority =
       kind: "spawned-by-this-operation";
       process: VerifiedProcess;
       operationId: string;
+      lockGeneration: string;
+      coordination: LaunchCoordinationRecord;
     }
   | {
       kind: "same-operation-race-winner";
       process: VerifiedProcess;
       operationId: string;
+      lockGeneration: string;
       baseline: MainLaunchBaseline;
+      coordination: LaunchCoordinationRecord;
     };
 
 export function processKey(process: Pick<VerifiedProcess, "pid" | "processStartedAt">): string {
@@ -61,9 +72,8 @@ export function captureNoMainLaunchBaseline(input: {
 }
 
 /**
- * Pure predicate: may this exact process be treated as the same-operation race
- * winner for attach? Requires a no-main baseline and a process that was not
- * present in the initial inventory.
+ * Pure process novelty check. Never sufficient for attach authority without an
+ * exact producer coordination record.
  */
 export function isSameOperationRaceWinner(input: {
   baseline: MainLaunchBaseline;
@@ -76,19 +86,33 @@ export function isSameOperationRaceWinner(input: {
   return !input.baseline.initialProcessKeys.includes(key);
 }
 
+export type AttachAuthorizationFailure =
+  | "no_baseline"
+  | "no_coordination"
+  | "not_same_operation_winner"
+  | "missing_target"
+  | "missing_record"
+  | CoordinationValidationFailure;
+
 /**
  * Authorize attach to a freshly observed cdp-main winner under launch
- * coordination. Refuses initially-present mains and any candidate that was
- * already inventoried at operation start.
+ * coordination. Requires an exact unconsumed producer coordination record
+ * matching frozen host/key/process (and optionally target/browser). Refuses
+ * initially-present mains, unrelated late debug mains, and
+ * stale/malformed/mismatched/consumed/substituted records.
  */
 export function authorizeSameOperationAttach(input: {
   baseline: MainLaunchBaseline | null;
   holdsLaunchCoordination: boolean;
   candidate: VerifiedProcess;
   selectedTargetPresent: boolean;
+  coordination: LaunchCoordinationRecord | null;
+  frozenHost: HostIdentity;
+  compatibilityKey: CompatibilityKey;
+  requireUnconsumedEffect?: boolean;
 }):
   | { ok: true; authority: SameOperationAuthority }
-  | { ok: false; reason: "no_baseline" | "no_coordination" | "not_same_operation_winner" | "missing_target" } {
+  | { ok: false; reason: AttachAuthorizationFailure } {
   if (input.baseline === null) {
     return { ok: false, reason: "no_baseline" };
   }
@@ -104,28 +128,52 @@ export function authorizeSameOperationAttach(input: {
   })) {
     return { ok: false, reason: "not_same_operation_winner" };
   }
+  if (input.coordination === null) {
+    return { ok: false, reason: "missing_record" };
+  }
+
+  const validated = validateLaunchCoordinationRecord({
+    record: input.coordination,
+    frozenHost: input.frozenHost,
+    compatibilityKey: input.compatibilityKey,
+    process: input.candidate,
+    requireUnconsumedEffect: input.requireUnconsumedEffect ?? true,
+  });
+  if (!validated.ok) {
+    return { ok: false, reason: validated.reason };
+  }
+
   return {
     ok: true,
     authority: {
       kind: "same-operation-race-winner",
       process: input.candidate,
       operationId: input.baseline.operationId,
+      lockGeneration: validated.record.lockGeneration,
       baseline: input.baseline,
+      coordination: validated.record,
     },
   };
 }
 
 /**
  * True when the bound process still matches the operation's same-operation
- * authority (spawned by this op, or exact race-winner identity).
+ * authority (spawned by this op, or exact race-winner identity + record).
  */
 export function authorityStillMatches(
   authority: SameOperationAuthority,
   process: Pick<VerifiedProcess, "pid" | "processStartedAt" | "executablePath">,
 ): boolean {
+  if (
+    authority.process.pid !== process.pid ||
+    authority.process.processStartedAt !== process.processStartedAt ||
+    authority.process.executablePath !== process.executablePath
+  ) {
+    return false;
+  }
   return (
-    authority.process.pid === process.pid &&
-    authority.process.processStartedAt === process.processStartedAt &&
-    authority.process.executablePath === process.executablePath
+    authority.coordination.process.pid === process.pid &&
+    authority.coordination.process.processStartedAt === process.processStartedAt &&
+    authority.coordination.process.executablePath === process.executablePath
   );
 }
