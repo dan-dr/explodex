@@ -69,12 +69,14 @@ import type {
   DevLayoutPaths,
   LaunchMarkerContract,
   Phase0AcceptanceAuthority,
+  Phase0CleanupMethod,
   Phase0ComparativeExperiment,
   Phase0ExperimentSideObservation,
   Phase0FrozenHost,
   Phase0OperationProcessEvidence,
   Phase0OperationResult,
   Phase0OwnershipEvidence,
+  Phase0ProtectedMainObservation,
   Phase0ReadinessEvidence,
   SanitizedLaunchDescriptor,
 } from "./types.ts";
@@ -210,11 +212,13 @@ function buildPlanForRoot(options: {
   const argv: string[] = [];
   const envKeys: string[] = [];
   const env: Record<string, string | undefined> = {};
+  const envValues: Record<string, string> = {};
 
   if (options.plan.useUserData) {
     argv.push(`--user-data-dir=${options.layout.electronUserDataPath}`);
     env.CODEX_ELECTRON_USER_DATA_PATH = options.layout.electronUserDataPath;
     envKeys.push("CODEX_ELECTRON_USER_DATA_PATH");
+    envValues.CODEX_ELECTRON_USER_DATA_PATH = options.layout.electronUserDataPath;
   }
   if (options.plan.useCdpPort) {
     argv.push(`--remote-debugging-port=${DEV_CDP_PORT}`);
@@ -227,10 +231,12 @@ function buildPlanForRoot(options: {
   if (options.plan.useCodexHome) {
     env.CODEX_HOME = options.layout.codexHomePath;
     envKeys.push("CODEX_HOME");
+    envValues.CODEX_HOME = options.layout.codexHomePath;
   }
   if (options.plan.useExplodexHome) {
     env.EXPLODEX_HOME = options.layout.explodexStatePath;
     envKeys.push("EXPLODEX_HOME");
+    envValues.EXPLODEX_HOME = options.layout.explodexStatePath;
   }
 
   return {
@@ -240,6 +246,7 @@ function buildPlanForRoot(options: {
     descriptor: {
       argv: [options.frozenHost.executablePath, ...argv],
       envKeys,
+      ...(Object.keys(envValues).length > 0 ? { envValues } : {}),
     },
   };
 }
@@ -972,6 +979,14 @@ async function stopPrivateRootHelpers(options: {
   }
 }
 
+type StopExactProcessResult = {
+  stopped: boolean;
+  portReleased: boolean;
+  uncertain: boolean;
+  method: Phase0CleanupMethod;
+  reason?: string;
+};
+
 async function stopExactProcess(options: {
   runtimeProcess: RuntimeProcess;
   commands: ReadOnlyCommandRunner;
@@ -988,7 +1003,7 @@ async function stopExactProcess(options: {
   privateRoots?: readonly string[];
   /** Intentionally ignored for cleanup; cleanup always uses a fresh finite context. */
   signal?: AbortSignal;
-}): Promise<{ stopped: boolean; portReleased: boolean; uncertain: boolean; reason?: string }> {
+}): Promise<StopExactProcessResult> {
   const cleanup = createCleanupContext(options.timeoutMs + 2_000);
   try {
     const processAuthority = await revalidateProcessCleanupAuthority({
@@ -1005,6 +1020,7 @@ async function stopExactProcess(options: {
         stopped: false,
         portReleased: false,
         uncertain: true,
+        method: "none",
         reason: processAuthority.reason,
       };
     }
@@ -1012,7 +1028,9 @@ async function stopExactProcess(options: {
     // Browser.close requires exclusive endpoint/target/context revalidation.
     // Co-ownership or foreign/mismatched endpoint refuses Browser.close but still
     // permits exact-PID SIGTERM of the verified process identity below.
+    let browserCloseAttempted = false;
     let browserCloseOk = false;
+    let exactSignalUsed = false;
     const closeAuthority = await revalidateEndpointCleanupAuthority({
       commands: options.commands,
       cdp: options.cdp,
@@ -1022,6 +1040,7 @@ async function stopExactProcess(options: {
       signal: cleanup.signal,
     });
     if (closeAuthority.ok) {
+      browserCloseAttempted = true;
       try {
         browserCloseOk = await browserCloseIfPossible(options.cdp, cleanup.signal);
       } catch {
@@ -1060,18 +1079,26 @@ async function stopExactProcess(options: {
         signal: cleanup.signal,
       });
       if (!recheck.ok) {
-        return { stopped: false, portReleased: false, uncertain: true, reason: recheck.reason };
+        return {
+          stopped: false,
+          portReleased: false,
+          uncertain: true,
+          method: browserCloseAttempted ? "browser-close-then-signal" : "exact-signal-only",
+          reason: recheck.reason,
+        };
       }
       const signaled = await options.runtimeProcess.signalExact(
         { pid: options.pid, processStartedAt: options.processStartedAt },
         "SIGTERM",
         { abortSignal: cleanup.signal },
       );
+      exactSignalUsed = true;
       if (!signaled) {
         return {
           stopped: false,
           portReleased: false,
           uncertain: true,
+          method: browserCloseAttempted ? "browser-close-then-signal" : "exact-signal-only",
           reason: "Exact SIGTERM failed after Browser.close; residual authority preserved.",
         };
       }
@@ -1092,11 +1119,20 @@ async function stopExactProcess(options: {
       options.processStartedAt,
       { abortSignal: cleanup.signal },
     );
+    const method: Phase0CleanupMethod =
+      browserCloseOk && exactSignalUsed
+        ? "browser-close-then-signal"
+        : browserCloseOk && !exactSignalUsed
+          ? "browser-close-only"
+          : exactSignalUsed
+            ? "exact-signal-only"
+            : "none";
     if (stillAlive) {
       return {
         stopped: false,
         portReleased: false,
         uncertain: true,
+        method,
         reason: `Exact development PID ${options.pid} did not exit within the cleanup bound.`,
       };
     }
@@ -1117,16 +1153,18 @@ async function stopExactProcess(options: {
 
     const ports = createNodePortInventoryAdapter(options.commands);
     const listeners = await ports.listenersFor(DEV_CDP_PORT, { signal: cleanup.signal });
-    const stillOwned = listeners.some((entry) => entry.pid === options.pid);
-    if (stillOwned) {
-      return {
-        stopped: true,
-        portReleased: false,
-        uncertain: true,
-        reason: "Process exited but 9444 was not released; residual authority preserved.",
-      };
-    }
+    // Stopped proven authority requires zero remaining 9444 listeners.
     if (listeners.length > 0) {
+      const stillOwned = listeners.some((entry) => entry.pid === options.pid);
+      if (stillOwned) {
+        return {
+          stopped: true,
+          portReleased: false,
+          uncertain: true,
+          method,
+          reason: "Process exited but 9444 was not released; residual authority preserved.",
+        };
+      }
       const inventory = createNodeProcessInventoryAdapter({
         commands: options.commands,
         exactProcess: options.runtimeProcess,
@@ -1149,25 +1187,25 @@ async function stopExactProcess(options: {
           stopped: true,
           portReleased: false,
           uncertain: true,
+          method,
           reason:
             "Private-root helper still holds 9444 after ChatGPT exit; residual authority preserved.",
         };
       }
-      // Non-private foreign listener is not our residual authority, but the port is
-      // still not free for subsequent development launches.
       return {
         stopped: true,
         portReleased: false,
         uncertain: true,
+        method,
         reason:
           "9444 still has a non-development listener after exact ChatGPT exit; residual authority preserved.",
       };
     }
-    void browserCloseOk;
     return {
       stopped: true,
       portReleased: true,
       uncertain: false,
+      method,
     };
   } catch (error) {
     const message =
@@ -1176,6 +1214,7 @@ async function stopExactProcess(options: {
       stopped: false,
       portReleased: false,
       uncertain: true,
+      method: "none",
       reason: message,
     };
   } finally {
@@ -1378,7 +1417,7 @@ async function runOneExperimentLaunch(options: {
   } finally {
     // Every experiment spawn is enclosed by exact cleanup using a fresh finite cleanup context.
     if (spawned !== null && processStartedAt !== null && matchedPid !== null) {
-      let stop: { stopped: boolean; portReleased: boolean; uncertain: boolean; reason?: string };
+      let stop: StopExactProcessResult;
       if (options.plan.useCdpPort && options.plan.useExactMarker) {
         stop = await stopExactProcess({
           runtimeProcess: options.runtimeProcess,
@@ -1420,6 +1459,7 @@ async function runOneExperimentLaunch(options: {
             stopped: !alive,
             portReleased: true,
             uncertain: alive,
+            method: "exact-signal-only",
             reason: alive
               ? `Exact experiment PID ${matchedPid} did not exit within the cleanup bound.`
               : undefined,
@@ -1429,6 +1469,7 @@ async function runOneExperimentLaunch(options: {
             stopped: false,
             portReleased: false,
             uncertain: true,
+            method: "exact-signal-only",
             reason: error instanceof Error ? error.message : "experiment cleanup failed",
           };
         } finally {
@@ -1456,31 +1497,42 @@ async function runOneExperimentLaunch(options: {
       }
     } else if (spawned !== null) {
       // Spawned child without independently proven PID/start authority is never clean.
+      // identify(null) alone is not exit confirmation; require wait() and zero 9444 listeners.
       const cleanup = createCleanupContext(options.stopTimeoutMs + 2_000);
+      residualAuthority = true;
       try {
         try {
           spawned.kill("SIGTERM");
         } catch {
-          residualAuthority = true;
+          // Kill failure preserves residual authority.
         }
+        let childExitConfirmed = false;
+        const waitPromise = spawned
+          .wait()
+          .then(() => {
+            childExitConfirmed = true;
+          })
+          .catch(() => undefined);
         const deadline = Date.now() + options.stopTimeoutMs;
-        let confirmedExit = false;
-        while (Date.now() < deadline) {
-          const identity = await options.runtimeProcess.identify(spawned.pid, {
-            abortSignal: cleanup.signal,
-          });
-          if (identity === null) {
-            confirmedExit = true;
+        while (Date.now() < deadline && !childExitConfirmed) {
+          try {
+            await options.runtimeProcess.identify(spawned.pid, {
+              abortSignal: cleanup.signal,
+            });
+          } catch {
             break;
           }
-          await sleep(options.pollMs, cleanup.signal);
+          await Promise.race([
+            waitPromise,
+            sleep(options.pollMs, cleanup.signal).catch(() => undefined),
+          ]);
         }
         const ports = createNodePortInventoryAdapter(options.commands);
         const listeners = await ports.listenersFor(DEV_CDP_PORT, {
           signal: cleanup.signal,
         });
-        const portHeldByChild = listeners.some((entry) => entry.pid === spawned!.pid);
-        if (!confirmedExit || portHeldByChild) {
+        // Residual authority remains unless child exit is confirmed and 9444 is free.
+        if (!(childExitConfirmed && listeners.length === 0)) {
           residualAuthority = true;
         }
       } catch {
@@ -1685,6 +1737,105 @@ export async function runPhase0LaunchIsolation(
       abortSignal: options.signal,
     },
     async () => {
+      try {
+        return await runPhase0LockedBody({
+          options,
+          runtimeProcess,
+          runtimeAdapters,
+          commands,
+          cdp,
+          spawnAdapter,
+          protectedPaths,
+          osHome,
+          layout,
+          frozenHost,
+          protectedMainIdentities,
+          identity,
+          readinessTimeoutMs,
+          stopTimeoutMs,
+          pollMs,
+        });
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Phase 0 authority write or operation failed; residual authority remains non-authorizing.";
+        const incomplete = createPreSpawnIncompleteContract({
+          frozenHost,
+          reason: message,
+        });
+        return {
+          ok: false as const,
+          result: {
+            ok: false as const,
+            contract: incomplete,
+            allowsLifecycleMutation: false as const,
+            allowsCompatibilityProbe: false as const,
+            layout,
+            frozenHost,
+            process: null,
+            protectedMainSurvived: true,
+            grantsOwnershipFromPathsOnly: false as const,
+            error: {
+              code: "phase0_write_failure",
+              message,
+            },
+          },
+        };
+      }
+    },
+  );
+
+  if (!lockResult.ok) {
+    return disabledResult(
+      lockResult.message,
+      lockResult.code,
+      frozenHost,
+    );
+  }
+
+  return lockResult.value.result;
+}
+
+async function runPhase0LockedBody(input: {
+  options: Phase0OperationOptions;
+  runtimeProcess: RuntimeProcess;
+  runtimeAdapters: RuntimeAdapters;
+  commands: ReadOnlyCommandRunner;
+  cdp: CdpAdapter;
+  spawnAdapter: LaunchSpawnAdapter;
+  protectedPaths: ProtectedPathSet;
+  osHome: string;
+  layout: DevLayoutPaths;
+  frozenHost: Phase0FrozenHost;
+  protectedMainIdentities: Array<{
+    pid: number;
+    processStartedAt: string;
+    executablePath: string;
+    arguments: string[];
+  }>;
+  identity: OperationIdentity;
+  readinessTimeoutMs: number;
+  stopTimeoutMs: number;
+  pollMs: number;
+}): Promise<{ ok: true; result: Phase0OperationResult } | { ok: false; result: Phase0OperationResult }> {
+  const {
+    options,
+    runtimeProcess,
+    commands,
+    cdp,
+    spawnAdapter,
+    protectedPaths,
+    osHome,
+    layout,
+    frozenHost,
+    protectedMainIdentities,
+    identity,
+    readinessTimeoutMs,
+    stopTimeoutMs,
+    pollMs,
+  } = input;
+  {
       // Invalidate any residual schema-1 / rejected proof before first spawn.
       const preSpawn = createPreSpawnIncompleteContract({ frozenHost });
       await savePhase0LaunchContract({
@@ -2093,7 +2244,7 @@ export async function runPhase0LaunchIsolation(
             ],
           });
           cleanupDisposition = {
-            method: stop.stopped && stop.portReleased && !stop.uncertain ? "browser-close" : "exact-signal",
+            method: stop.method,
             stopped: stop.stopped,
             portReleased: stop.portReleased,
             uncertain: stop.uncertain,
@@ -2110,47 +2261,79 @@ export async function runPhase0LaunchIsolation(
           acceptanceSpawned !== null &&
           acceptanceStartedAt === null
         ) {
-          // Unidentified spawned child: never report clean without residual truth.
+          // Unidentified spawned child: never treat identify(null) alone as confirmed exit.
+          // Require child-exit confirmation via wait(), and zero remaining 9444 listeners.
           const cleanup = createCleanupContext(stopTimeoutMs + 2_000);
           try {
+            let killFailed = false;
             try {
               acceptanceSpawned.kill("SIGTERM");
             } catch {
+              killFailed = true;
               cleanupUncertain = true;
             }
-            const deadline = Date.now() + stopTimeoutMs;
-            let confirmedExit = false;
-            while (Date.now() < deadline) {
-              const identity = await runtimeProcess.identify(acceptanceSpawned.pid, {
-                abortSignal: cleanup.signal,
+            let childExitConfirmed = false;
+            let identityUnobservable = false;
+            let pidReuseAmbiguity = false;
+            let waitTimedOut = false;
+            const waitPromise = acceptanceSpawned
+              .wait()
+              .then(() => {
+                childExitConfirmed = true;
+              })
+              .catch(() => {
+                // wait() rejection is not certain exit.
               });
-              if (identity === null) {
-                confirmedExit = true;
+            const deadline = Date.now() + stopTimeoutMs;
+            while (Date.now() < deadline && !childExitConfirmed) {
+              let identity: { pid: number; processStartedAt: string } | null = null;
+              try {
+                identity = await runtimeProcess.identify(acceptanceSpawned.pid, {
+                  abortSignal: cleanup.signal,
+                });
+              } catch {
+                identityUnobservable = true;
                 break;
               }
-              await sleep(pollMs, cleanup.signal);
+              // identify(null) alone is not exit confirmation: PID may have been reused
+              // and exited, or the identity may simply be unobservable without start proof.
+              if (identity !== null) {
+                // A live PID without known start identity is residual authority.
+                // If start identity appears but we never had a baseline, treat as ambiguity.
+                pidReuseAmbiguity = true;
+              }
+              await Promise.race([
+                waitPromise,
+                sleep(pollMs, cleanup.signal).catch(() => undefined),
+              ]);
+            }
+            if (!childExitConfirmed) {
+              waitTimedOut = true;
             }
             const ports = createNodePortInventoryAdapter(commands);
             const listeners = await ports.listenersFor(DEV_CDP_PORT, {
               signal: cleanup.signal,
             });
-            const portHeld = listeners.some((entry) => entry.pid === acceptanceSpawned!.pid);
+            // Any remaining 9444 listener (not only the spawned PID) is residual authority.
+            const anyListenerRemains = listeners.length > 0;
+            const uncertain =
+              killFailed ||
+              waitTimedOut ||
+              !childExitConfirmed ||
+              identityUnobservable ||
+              pidReuseAmbiguity ||
+              anyListenerRemains;
             cleanupDisposition = {
-              method: "unidentified-child",
-              stopped: confirmedExit,
-              portReleased: !portHeld,
-              uncertain: !confirmedExit || portHeld,
+              method: "none",
+              stopped: childExitConfirmed && !uncertain,
+              portReleased: !anyListenerRemains,
+              uncertain: true,
               reason:
-                !confirmedExit || portHeld
-                  ? "Unidentified spawned child cleanup could not confirm exact exit and 9444 release; residual authority preserved."
-                  : undefined,
+                "Unidentified spawned child cleanup cannot prove exact exit/start identity and 9444 release; residual authority preserved.",
             };
-            if (!confirmedExit || portHeld) {
-              cleanupUncertain = true;
-              cleanupReason =
-                cleanupDisposition.reason ??
-                "Unidentified spawned child left residual authority.";
-            }
+            cleanupUncertain = true;
+            cleanupReason = cleanupDisposition.reason!;
+            void uncertain;
           } catch (error) {
             cleanupUncertain = true;
             cleanupReason =
@@ -2158,7 +2341,7 @@ export async function runPhase0LaunchIsolation(
                 ? error.message
                 : "Unidentified spawned child cleanup failed; residual authority preserved.";
             cleanupDisposition = {
-              method: "unidentified-child",
+              method: "none",
               stopped: false,
               portReleased: false,
               uncertain: true,
@@ -2172,7 +2355,7 @@ export async function runPhase0LaunchIsolation(
             method: "none",
             stopped: false,
             portReleased: false,
-            uncertain: false,
+            uncertain: true,
             reason: "Acceptance process intentionally kept alive; no stopped proven authority.",
           };
           cleanupUncertain = true;
@@ -2226,14 +2409,44 @@ export async function runPhase0LaunchIsolation(
         recheckedHost !== null &&
         finalHostRecheck !== null
       ) {
+        const protectedMainBefore: Phase0ProtectedMainObservation[] =
+          protectedMainIdentities.map((entry) => {
+            const verdict = classifyDevelopmentOwnership({
+              role: "protected-main",
+              pid: entry.pid,
+              processStartedAt: entry.processStartedAt,
+              executablePath: entry.executablePath,
+              arguments: entry.arguments,
+              portOwnerPid: null,
+              port: 9333,
+              endpointHost: DEV_CDP_HOST,
+              browserIdentity: null,
+              targetIds: [],
+              defaultExecutionContextCount: 0,
+              expected: {
+                marker: marker.value,
+                executablePath: frozenHost.executablePath,
+                cdpHost: DEV_CDP_HOST,
+                cdpPort: DEV_CDP_PORT,
+              },
+            });
+            return {
+              pid: entry.pid,
+              processStartedAt: entry.processStartedAt,
+              executablePath: entry.executablePath,
+              arguments: [...entry.arguments],
+              expectedVerdict: {
+                owned: false as const,
+                code: verdict.code,
+              },
+            };
+          });
         const acceptanceAuthority: Phase0AcceptanceAuthority = {
           operationId: identity.operationId,
           readinessPid: acceptanceReadiness.pid,
           readinessProcessStartedAt: acceptanceReadiness.processStartedAt,
-          protectedMainBefore: protectedMainIdentities.map((entry) => ({
-            pid: entry.pid,
-            processStartedAt: entry.processStartedAt,
-          })),
+          protectedMainInventoryAttested: true,
+          protectedMainBefore,
           protectedMainAfter,
           finalHostRecheck,
           cleanupDisposition,
@@ -2394,18 +2607,7 @@ export async function runPhase0LaunchIsolation(
           grantsOwnershipFromPathsOnly: false as const,
         },
       };
-    },
-  );
-
-  if (!lockResult.ok) {
-    return disabledResult(
-      lockResult.message,
-      lockResult.code,
-      frozenHost,
-    );
   }
-
-  return lockResult.value.result;
 }
 
 /** True when a later operation must re-run Phase 0 for a new frozen host. */

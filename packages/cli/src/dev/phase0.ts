@@ -18,6 +18,7 @@ import type {
   DevLayoutPaths,
   LaunchMarkerContract,
   Phase0AcceptanceAuthority,
+  Phase0CleanupMethod,
   Phase0ComparativeExperiment,
   Phase0EvaluationInput,
   Phase0EvaluationResult,
@@ -26,6 +27,7 @@ import type {
   Phase0KnobVerdict,
   Phase0LaunchContract,
   Phase0OwnershipEvidence,
+  Phase0ProtectedMainObservation,
   Phase0ReadinessEvidence,
   SanitizedLaunchDescriptor,
 } from "./types.ts";
@@ -40,10 +42,35 @@ function isNonEmptyString(value: unknown): value is string {
 
 /** Strict ISO-8601 UTC proof timestamp used by provenAt and evaluation times. */
 export function isIsoUtcTimestamp(value: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(value)) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?Z$/.exec(
+    value,
+  );
+  if (match === null) {
     return false;
   }
-  return Number.isFinite(Date.parse(value));
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) {
+    return false;
+  }
+  // Exact calendar round-trip rejects Date-normalized invalid dates such as February 30.
+  const date = new Date(parsed);
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  const fraction = match[7] ?? "";
+  const ms = fraction.length === 0 ? 0 : Number(fraction.padEnd(3, "0"));
+  return (
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() + 1 === month &&
+    date.getUTCDate() === day &&
+    date.getUTCHours() === hour &&
+    date.getUTCMinutes() === minute &&
+    date.getUTCSeconds() === second &&
+    date.getUTCMilliseconds() === ms
+  );
 }
 
 /** Validate the approved readiness evaluation expression/result/href shape. */
@@ -375,6 +402,21 @@ export function validatePhase0Ownership(
   return { ok: true, ownership };
 }
 
+const ACCEPTED_CLEANUP_METHODS = new Set<Phase0CleanupMethod>([
+  "browser-close-only",
+  "exact-signal-only",
+  "browser-close-then-signal",
+  "none",
+]);
+
+function isExactUserDataArg(token: string, userDataPath: string): boolean {
+  return token === `--user-data-dir=${userDataPath}`;
+}
+
+function isExactPortArg(token: string): boolean {
+  return token === `--remote-debugging-port=${DEV_CDP_PORT}`;
+}
+
 /** Validate acceptance-correlated survivors, cleanup, and final host recheck. */
 export function validatePhase0AcceptanceAuthority(
   authority: Phase0AcceptanceAuthority | null | undefined,
@@ -384,6 +426,8 @@ export function validatePhase0AcceptanceAuthority(
     launchMarker: string;
     isolation: Phase0LaunchContract["isolation"];
     descriptor: SanitizedLaunchDescriptor;
+    comparativeExperiments?: readonly Phase0ComparativeExperiment[];
+    expectedOperationId?: string;
   },
 ): { ok: true; authority: Phase0AcceptanceAuthority } | { ok: false; reason: string } {
   if (authority === null || authority === undefined) {
@@ -395,6 +439,16 @@ export function validatePhase0AcceptanceAuthority(
   }
   if (!isNonEmptyString(authority.operationId)) {
     return { ok: false, reason: "Acceptance authority requires one exact operation identity." };
+  }
+  if (
+    options.expectedOperationId !== undefined &&
+    authority.operationId !== options.expectedOperationId
+  ) {
+    return {
+      ok: false,
+      reason:
+        "Acceptance authority operation identity cannot be arbitrarily substituted for another operation.",
+    };
   }
   if (authority.readinessPid !== options.readiness.pid) {
     return {
@@ -409,16 +463,55 @@ export function validatePhase0AcceptanceAuthority(
         "Acceptance authority readiness start identity must match the one exact readiness identity.",
     };
   }
+  // Acceptance PID/start cannot reuse any comparative experiment side identity.
+  if (options.comparativeExperiments !== undefined) {
+    for (const experiment of options.comparativeExperiments) {
+      for (const side of [experiment.treatment, experiment.control] as const) {
+        if (side === null || !side.launched) continue;
+        if (
+          side.pid === authority.readinessPid &&
+          side.processStartedAt === authority.readinessProcessStartedAt
+        ) {
+          return {
+            ok: false,
+            reason:
+              "Acceptance readiness PID/start must not reuse any comparative experiment side identity.",
+          };
+        }
+      }
+    }
+  }
+  if (authority.protectedMainInventoryAttested !== true) {
+    return {
+      ok: false,
+      reason:
+        "Acceptance authority must explicitly attest the protected-main inventory (including attested zero).",
+    };
+  }
   if (!frozenHostEquals(authority.finalHostRecheck, options.frozenHost)) {
     return {
       ok: false,
       reason: "Acceptance final host recheck must equal the frozen operation host identity.",
     };
   }
+  if (!ACCEPTED_CLEANUP_METHODS.has(authority.cleanupDisposition.method)) {
+    return {
+      ok: false,
+      reason:
+        "Acceptance cleanup disposition method must be browser-close-only, exact-signal-only, browser-close-then-signal, or none.",
+    };
+  }
   if (authority.cleanupDisposition.uncertain) {
     return {
       ok: false,
       reason: "Acceptance cleanup disposition is uncertain; residual authority remains non-authorizing.",
+    };
+  }
+  if (authority.cleanupDisposition.method === "none") {
+    return {
+      ok: false,
+      reason:
+        "Acceptance cleanup method 'none' cannot authorize stopped proven authority.",
     };
   }
   if (!authority.cleanupDisposition.stopped || !authority.cleanupDisposition.portReleased) {
@@ -440,6 +533,53 @@ export function validatePhase0AcceptanceAuthority(
     };
   }
   for (const before of authority.protectedMainBefore) {
+    if (!isNonEmptyString(before.executablePath) || !Array.isArray(before.arguments)) {
+      return {
+        ok: false,
+        reason:
+          "Protected-main inventory entries must record executable and argv classifier inputs.",
+      };
+    }
+    if (
+      before.expectedVerdict === undefined ||
+      before.expectedVerdict.owned !== false ||
+      !isNonEmptyString(before.expectedVerdict.code)
+    ) {
+      return {
+        ok: false,
+        reason:
+          "Protected-main inventory entries must record the expected pure-classifier verdict.",
+      };
+    }
+    // Re-run the pure classifier against the attested observation.
+    const rederived = classifyDevelopmentOwnership({
+      role: "protected-main",
+      pid: before.pid,
+      processStartedAt: before.processStartedAt,
+      executablePath: before.executablePath,
+      arguments: before.arguments,
+      portOwnerPid: null,
+      port: 9333,
+      endpointHost: DEV_CDP_HOST,
+      browserIdentity: null,
+      targetIds: [],
+      defaultExecutionContextCount: 0,
+      expected: {
+        marker: options.launchMarker,
+        executablePath: options.frozenHost.executablePath,
+        cdpHost: DEV_CDP_HOST,
+        cdpPort: DEV_CDP_PORT,
+      },
+    });
+    if (
+      rederived.owned !== false ||
+      rederived.code !== before.expectedVerdict.code
+    ) {
+      return {
+        ok: false,
+        reason: `Protected-main PID ${before.pid} classifier verdict does not survive pure re-derivation.`,
+      };
+    }
     const after = authority.protectedMainAfter.find(
       (entry) =>
         entry.pid === before.pid && entry.processStartedAt === before.processStartedAt,
@@ -451,41 +591,55 @@ export function validatePhase0AcceptanceAuthority(
       };
     }
   }
-  // Bind descriptor/profile/CODEX_HOME/endpoint to the acceptance identity.
+  // Bind descriptor executable/profile/CODEX_HOME/endpoint exactly to the acceptance identity.
+  if (options.descriptor.argv[0] !== options.frozenHost.executablePath) {
+    return {
+      ok: false,
+      reason:
+        "Acceptance descriptor argv[0] must exactly equal the frozen canonical executable path.",
+    };
+  }
   if (!options.descriptor.argv.includes(options.launchMarker)) {
     return {
       ok: false,
       reason: "Acceptance descriptor must include the exact retained launch marker.",
     };
   }
-  if (
-    options.isolation.electronUserDataPath !== null &&
-    !options.descriptor.argv.some((token) =>
-      token.includes(options.isolation.electronUserDataPath!),
-    ) &&
-    !options.descriptor.envKeys.includes("CODEX_ELECTRON_USER_DATA_PATH")
-  ) {
+  if (options.isolation.electronUserDataPath !== null) {
+    const exactUserData = options.descriptor.argv.some((token) =>
+      isExactUserDataArg(token, options.isolation.electronUserDataPath!),
+    );
+    const envUserData =
+      options.descriptor.envValues?.CODEX_ELECTRON_USER_DATA_PATH ===
+      options.isolation.electronUserDataPath;
+    if (!exactUserData && !envUserData) {
+      return {
+        ok: false,
+        reason:
+          "Acceptance descriptor must bind the retained electron-user-data profile path with an exact argument or non-secret env value.",
+      };
+    }
+  }
+  if (options.isolation.codexHomePath !== null) {
+    if (!options.descriptor.envKeys.includes("CODEX_HOME")) {
+      return {
+        ok: false,
+        reason: "Acceptance descriptor must bind retained CODEX_HOME for the acceptance launch.",
+      };
+    }
+    if (options.descriptor.envValues?.CODEX_HOME !== options.isolation.codexHomePath) {
+      return {
+        ok: false,
+        reason:
+          "Acceptance descriptor must persist the exact non-secret CODEX_HOME value for acceptance binding.",
+      };
+    }
+  }
+  if (!options.descriptor.argv.some((token) => isExactPortArg(token))) {
     return {
       ok: false,
       reason:
-        "Acceptance descriptor must bind the retained electron-user-data profile path for the acceptance launch.",
-    };
-  }
-  if (
-    options.isolation.codexHomePath !== null &&
-    !options.descriptor.envKeys.includes("CODEX_HOME")
-  ) {
-    return {
-      ok: false,
-      reason: "Acceptance descriptor must bind retained CODEX_HOME for the acceptance launch.",
-    };
-  }
-  if (
-    !options.descriptor.argv.some((token) => token.includes(`remote-debugging-port=${DEV_CDP_PORT}`))
-  ) {
-    return {
-      ok: false,
-      reason: "Acceptance descriptor must bind the exact 9444 development endpoint.",
+        "Acceptance descriptor must bind the exact `--remote-debugging-port=9444` argument (not a substring match).",
     };
   }
   return { ok: true, authority };
@@ -1402,6 +1556,7 @@ export function evaluatePhase0LaunchContract(
       launchMarker: markerResult.marker.value,
       isolation,
       descriptor,
+      comparativeExperiments,
     });
     if (!acceptanceCheck.ok) {
       const contract = incompleteContract({
@@ -1849,17 +2004,32 @@ function parseAcceptanceAuthority(
     return undefined;
   }
   if (!isNonEmptyString(value.readinessProcessStartedAt)) return undefined;
+  // Attested inventory flag is mandatory; absence is omission and never zero-inventory.
+  if (value.protectedMainInventoryAttested !== true) return undefined;
   if (!Array.isArray(value.protectedMainBefore) || !Array.isArray(value.protectedMainAfter)) {
     return undefined;
   }
-  const protectedMainBefore: Phase0AcceptanceAuthority["protectedMainBefore"] = [];
+  const protectedMainBefore: Phase0ProtectedMainObservation[] = [];
   for (const entry of value.protectedMainBefore) {
     if (!isRecord(entry)) return undefined;
     if (typeof entry.pid !== "number" || !Number.isInteger(entry.pid)) return undefined;
     if (!isNonEmptyString(entry.processStartedAt)) return undefined;
+    if (!isNonEmptyString(entry.executablePath)) return undefined;
+    if (!Array.isArray(entry.arguments)) return undefined;
+    if (!isRecord(entry.expectedVerdict)) return undefined;
+    if (entry.expectedVerdict.owned !== false) return undefined;
+    if (!isNonEmptyString(entry.expectedVerdict.code)) return undefined;
     protectedMainBefore.push({
       pid: entry.pid,
       processStartedAt: entry.processStartedAt,
+      executablePath: entry.executablePath,
+      arguments: entry.arguments.filter(
+        (token: unknown): token is string => typeof token === "string",
+      ),
+      expectedVerdict: {
+        owned: false,
+        code: entry.expectedVerdict.code,
+      },
     });
   }
   const protectedMainAfter: Phase0AcceptanceAuthority["protectedMainAfter"] = [];
@@ -1879,9 +2049,9 @@ function parseAcceptanceAuthority(
   if (!isRecord(value.cleanupDisposition)) return undefined;
   const method = value.cleanupDisposition.method;
   if (
-    method !== "browser-close" &&
-    method !== "exact-signal" &&
-    method !== "unidentified-child" &&
+    method !== "browser-close-only" &&
+    method !== "exact-signal-only" &&
+    method !== "browser-close-then-signal" &&
     method !== "none"
   ) {
     return undefined;
@@ -1894,6 +2064,7 @@ function parseAcceptanceAuthority(
     operationId: value.operationId,
     readinessPid: value.readinessPid,
     readinessProcessStartedAt: value.readinessProcessStartedAt,
+    protectedMainInventoryAttested: true,
     protectedMainBefore,
     protectedMainAfter,
     finalHostRecheck,
@@ -2114,13 +2285,23 @@ export function parsePhase0LaunchContract(value: unknown): Phase0LaunchContract 
     return null;
   }
 
-  const sanitizedLaunchDescriptor = {
+  const envValuesRaw = value.sanitizedLaunchDescriptor.envValues;
+  const envValues: Record<string, string> = {};
+  if (envValuesRaw !== undefined && envValuesRaw !== null) {
+    if (!isRecord(envValuesRaw)) return null;
+    for (const [key, entry] of Object.entries(envValuesRaw)) {
+      if (typeof entry !== "string") return null;
+      envValues[key] = entry;
+    }
+  }
+  const sanitizedLaunchDescriptor: SanitizedLaunchDescriptor = {
     argv: value.sanitizedLaunchDescriptor.argv.filter(
       (entry): entry is string => typeof entry === "string",
     ),
     envKeys: value.sanitizedLaunchDescriptor.envKeys.filter(
       (entry): entry is string => typeof entry === "string",
     ),
+    ...(Object.keys(envValues).length > 0 ? { envValues } : {}),
   };
 
   // Proven contracts require complete readiness + ownership + semantic re-derivation.
@@ -2183,6 +2364,7 @@ export function parsePhase0LaunchContract(value: unknown): Phase0LaunchContract 
       launchMarker: launchMarker.value,
       isolation,
       descriptor: sanitizedLaunchDescriptor,
+      comparativeExperiments,
     });
     if (!acceptanceCheck.ok) return null;
   }
@@ -2287,10 +2469,12 @@ export function markerMatchesExactly(options: {
 export function buildSanitizedLaunchDescriptor(options: {
   argv: readonly string[];
   envKeys: readonly string[];
+  envValues?: Readonly<Record<string, string>>;
 }): SanitizedLaunchDescriptor {
   return {
     argv: [...options.argv],
     envKeys: [...options.envKeys],
+    ...(options.envValues !== undefined ? { envValues: { ...options.envValues } } : {}),
   };
 }
 

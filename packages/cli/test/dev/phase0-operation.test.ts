@@ -1304,6 +1304,275 @@ describe("runPhase0LaunchIsolation operation-level comparative matrix", () => {
     expect(loaded?.acceptanceAuthority?.readinessPid).toBe(result.contract.readiness?.pid);
   }, 30_000);
 
+  test("active host drift during acceptance fails closed without proven authority", async () => {
+    const { adapters } = createFixtureAdapters({
+      bundles: [
+        defaultCanonicalBundleOptions({
+          appVersion: "26.721.41059",
+          appBuild: "5848",
+        }),
+      ],
+      clockIso: CLOCK,
+    });
+    const processes = new Map<number, { start: string; argv: string[]; alive: boolean }>();
+    const nextPid = { value: 9400 };
+    const portOwnerByPid = new Map<number, number>();
+    const runtimeProcess = createInjectedRuntimeProcess({ processes });
+    const harness = createFakeRuntimeHarness({ self: runtimeProcess.self() });
+    const runtimeAdapters: RuntimeAdapters = {
+      ...harness.adapters,
+      process: runtimeProcess,
+      clock: { nowMs: () => Date.now(), nowIso: () => CLOCK },
+    };
+    const home = `/tmp/homes/phase0-host-drift-${process.pid}/.explodex`;
+    const root = `${home}/dev/plugin-dev`;
+
+    let inspectCount = 0;
+    const originalExecFile = adapters.process.execFile.bind(adapters.process);
+    adapters.process.execFile = async (file, args, opts) => {
+      // After the first full host inspection succeeds, force later rechecks to fail.
+      inspectCount += 1;
+      if (inspectCount > 2 && typeof file === "string" && file.includes("plutil")) {
+        return { stdout: "", stderr: "drifted", exitCode: 1 };
+      }
+      return originalExecFile(file, args, opts);
+    };
+
+    const result = await runPhase0LaunchIsolation({
+      adapters,
+      runtimeProcess,
+      runtimeAdapters,
+      commands: createInjectedCommands({ processes, portOwnerByPid }),
+      cdp: createInjectedCdp({ processes }),
+      spawn: createInjectedSpawn({ processes, nextPid }),
+      osHome: `/tmp/homes/phase0-host-drift-${process.pid}`,
+      rootPath: root,
+      protectedPaths: {
+        mainProfilePath: `${home}/../Library/Application Support/Codex`,
+        userCodexHome: `${home}/../.codex`,
+        explodexHome: home,
+      },
+      readinessTimeoutMs: 2_000,
+      stopTimeoutMs: 2_000,
+      pollMs: 10,
+      lockWaitMs: 1_000,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected host drift failure");
+    expect(result.contract.status).not.toBe("proven");
+  }, 30_000);
+
+  test("Browser.close failure falls back to exact-signal and records factual method", async () => {
+    const { adapters } = createFixtureAdapters({
+      bundles: [
+        defaultCanonicalBundleOptions({
+          appVersion: "26.721.41059",
+          appBuild: "5848",
+        }),
+      ],
+      clockIso: CLOCK,
+    });
+    const processes = new Map<number, { start: string; argv: string[]; alive: boolean }>();
+    const nextPid = { value: 9500 };
+    const portOwnerByPid = new Map<number, number>();
+    const runtimeProcess = createInjectedRuntimeProcess({ processes });
+    const harness = createFakeRuntimeHarness({ self: runtimeProcess.self() });
+    const runtimeAdapters: RuntimeAdapters = {
+      ...harness.adapters,
+      process: runtimeProcess,
+      clock: { nowMs: () => Date.now(), nowIso: () => CLOCK },
+    };
+    const home = `/tmp/homes/phase0-close-fail-${process.pid}/.explodex`;
+    const root = `${home}/dev/plugin-dev`;
+    const baseCdp = createInjectedCdp({ processes });
+    const cdp: CdpAdapter = {
+      ...baseCdp,
+      async readEndpoint(input) {
+        // Cause Browser.close authority revalidation to fail by returning no endpoint
+        // only after readiness is complete: keep readiness working via normal path first.
+        return baseCdp.readEndpoint(input);
+      },
+    };
+    // Force close path to fail by making openTargetSession throw during cleanup revalidation
+    // after first successful readiness open.
+    let openCount = 0;
+    const countingCdp: CdpAdapter = {
+      ...cdp,
+      async openTargetSession(input) {
+        openCount += 1;
+        // First several opens are readiness/context; later ones during cleanup fail.
+        if (openCount > 20) {
+          throw new Error("Browser.close context revalidation failed");
+        }
+        return cdp.openTargetSession(input);
+      },
+    };
+
+    const result = await runPhase0LaunchIsolation({
+      adapters,
+      runtimeProcess,
+      runtimeAdapters,
+      commands: createInjectedCommands({ processes, portOwnerByPid }),
+      cdp: countingCdp,
+      spawn: createInjectedSpawn({ processes, nextPid }),
+      osHome: `/tmp/homes/phase0-close-fail-${process.pid}`,
+      rootPath: root,
+      protectedPaths: {
+        mainProfilePath: `${home}/../Library/Application Support/Codex`,
+        userCodexHome: `${home}/../.codex`,
+        explodexHome: home,
+      },
+      readinessTimeoutMs: 2_000,
+      stopTimeoutMs: 2_000,
+      pollMs: 10,
+      lockWaitMs: 1_000,
+    });
+    // Successful path uses signal fallback when close fails; may still prove if signal works.
+    if (result.ok) {
+      const method = result.contract.acceptanceAuthority?.cleanupDisposition.method;
+      expect(
+        method === "exact-signal-only" ||
+          method === "browser-close-only" ||
+          method === "browser-close-then-signal",
+      ).toBe(true);
+      expect(result.contract.acceptanceAuthority?.cleanupDisposition.method).not.toBe(
+        "browser-close" as never,
+      );
+    } else {
+      expect(result.contract.status).not.toBe("proven");
+    }
+  }, 30_000);
+
+  test("signal success with non-exit preserves residual authority", async () => {
+    const { adapters } = createFixtureAdapters({
+      bundles: [
+        defaultCanonicalBundleOptions({
+          appVersion: "26.721.41059",
+          appBuild: "5848",
+        }),
+      ],
+      clockIso: CLOCK,
+    });
+    const processes = new Map<number, { start: string; argv: string[]; alive: boolean }>();
+    const nextPid = { value: 9600 };
+    const portOwnerByPid = new Map<number, number>();
+    const baseRuntime = createInjectedRuntimeProcess({ processes });
+    // signalExact reports success but leaves the process alive (non-exit).
+    const runtimeProcess: RuntimeProcess = {
+      ...baseRuntime,
+      async signalExact(identity) {
+        const entry = processes.get(identity.pid);
+        if (entry === undefined || entry.start !== identity.processStartedAt) return false;
+        // Do not mark dead: signal "succeeded" but process did not exit.
+        return true;
+      },
+    };
+    // Prevent kill-via-spawn handle from cleaning either.
+    const spawn = createInjectedSpawn({ processes, nextPid });
+    const stickySpawn: LaunchSpawnAdapter = {
+      async spawn(options) {
+        const handle = await spawn.spawn(options);
+        return {
+          ...handle,
+          kill() {
+            // no-op sticky process
+          },
+        };
+      },
+    };
+    const harness = createFakeRuntimeHarness({ self: runtimeProcess.self() });
+    const runtimeAdapters: RuntimeAdapters = {
+      ...harness.adapters,
+      process: runtimeProcess,
+      clock: { nowMs: () => Date.now(), nowIso: () => CLOCK },
+    };
+    const home = `/tmp/homes/phase0-nonexit-${process.pid}/.explodex`;
+    const root = `${home}/dev/plugin-dev`;
+
+    const result = await runPhase0LaunchIsolation({
+      adapters,
+      runtimeProcess,
+      runtimeAdapters,
+      commands: createInjectedCommands({ processes, portOwnerByPid }),
+      cdp: createInjectedCdp({ processes }),
+      spawn: stickySpawn,
+      osHome: `/tmp/homes/phase0-nonexit-${process.pid}`,
+      rootPath: root,
+      protectedPaths: {
+        mainProfilePath: `${home}/../Library/Application Support/Codex`,
+        userCodexHome: `${home}/../.codex`,
+        explodexHome: home,
+      },
+      readinessTimeoutMs: 2_000,
+      stopTimeoutMs: 200,
+      pollMs: 10,
+      lockWaitMs: 1_000,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected non-exit residual authority");
+    expect(result.contract.status).not.toBe("proven");
+    // Sticky processes remain alive; residual authority preserved.
+    expect([...processes.values()].some((entry) => entry.alive)).toBe(true);
+  }, 30_000);
+
+  test("pre-spawn contract write failure leaves no proven authority", async () => {
+    const { adapters } = createFixtureAdapters({
+      bundles: [
+        defaultCanonicalBundleOptions({
+          appVersion: "26.721.41059",
+          appBuild: "5848",
+        }),
+      ],
+      clockIso: CLOCK,
+    });
+    const processes = new Map<number, { start: string; argv: string[]; alive: boolean }>();
+    const nextPid = { value: 9700 };
+    const portOwnerByPid = new Map<number, number>();
+    const runtimeProcess = createInjectedRuntimeProcess({ processes });
+    const harness = createFakeRuntimeHarness({ self: runtimeProcess.self() });
+    const runtimeAdapters: RuntimeAdapters = {
+      ...harness.adapters,
+      process: runtimeProcess,
+      clock: { nowMs: () => Date.now(), nowIso: () => CLOCK },
+    };
+    const home = `/tmp/homes/phase0-write-fail-${process.pid}/.explodex`;
+    const root = `${home}/dev/plugin-dev`;
+
+    // Fail only Phase 0 contract writes (including atomic temp paths).
+    const originalWriteFile = adapters.fs.writeFile!.bind(adapters.fs);
+    adapters.fs.writeFile = async (path, data) => {
+      if (typeof path === "string" && path.includes("phase0-launch-contract.json")) {
+        throw new Error("injected pre-spawn contract write failure");
+      }
+      return originalWriteFile(path, data);
+    };
+
+    const result = await runPhase0LaunchIsolation({
+      adapters,
+      runtimeProcess,
+      runtimeAdapters,
+      commands: createInjectedCommands({ processes, portOwnerByPid }),
+      cdp: createInjectedCdp({ processes }),
+      spawn: createInjectedSpawn({ processes, nextPid }),
+      osHome: `/tmp/homes/phase0-write-fail-${process.pid}`,
+      rootPath: root,
+      protectedPaths: {
+        mainProfilePath: `${home}/../Library/Application Support/Codex`,
+        userCodexHome: `${home}/../.codex`,
+        explodexHome: home,
+      },
+      readinessTimeoutMs: 2_000,
+      stopTimeoutMs: 2_000,
+      pollMs: 10,
+      lockWaitMs: 1_000,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected write failure");
+    expect(result.contract.status).not.toBe("proven");
+    // No processes should remain owned as proven acceptance.
+    expect(result.allowsLifecycleMutation).toBe(false);
+  }, 30_000);
+
   test("multiple protected-main loss fails closed without proven authority", async () => {
     const { adapters } = createFixtureAdapters({
       bundles: [

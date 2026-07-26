@@ -110,6 +110,33 @@ export type Phase0ContractStatus = "proven" | "incomplete" | "disabled";
 export type SanitizedLaunchDescriptor = {
   argv: string[];
   envKeys: string[];
+  /**
+   * Non-secret environment values bound to this launch (for example CODEX_HOME and
+   * CODEX_ELECTRON_USER_DATA_PATH). Secrets are never persisted.
+   */
+  envValues?: Record<string, string>;
+};
+
+/** Cleanup method that must truthfully record how acceptance authority was stopped. */
+export type Phase0CleanupMethod =
+  | "browser-close-only"
+  | "exact-signal-only"
+  | "browser-close-then-signal"
+  | "none";
+
+/**
+ * Attested protected-main inventory entry with the exact classifier inputs observed
+ * read-only before spawn, plus the expected pure-classifier verdict.
+ */
+export type Phase0ProtectedMainObservation = {
+  pid: number;
+  processStartedAt: string;
+  executablePath: string;
+  arguments: string[];
+  expectedVerdict: {
+    owned: false;
+    code: string;
+  };
 };
 
 /**
@@ -216,8 +243,17 @@ export type Phase0AcceptanceAuthority = {
   operationId: string;
   readinessPid: number;
   readinessProcessStartedAt: string;
-  /** Every pre-existing exact canonical ChatGPT process identity captured before spawn. */
-  protectedMainBefore: Array<{ pid: number; processStartedAt: string }>;
+  /**
+   * Always true when the inventory was collected. Distinguishes an attested zero inventory
+   * (empty protectedMainBefore with this flag) from omission of inventory evidence.
+   */
+  protectedMainInventoryAttested: true;
+  /**
+   * Every pre-existing exact canonical ChatGPT process identity captured before spawn,
+   * including classifier inputs (executable/argv) and expected pure-classifier verdict.
+   * Empty array means attested zero protected mains, never an omitted inventory.
+   */
+  protectedMainBefore: Phase0ProtectedMainObservation[];
   /** Post-cleanup survival of each protected-main identity. */
   protectedMainAfter: Array<{
     pid: number;
@@ -227,13 +263,13 @@ export type Phase0AcceptanceAuthority = {
   /** Final frozen-host recheck identity that must equal the operation freeze. */
   finalHostRecheck: Phase0FrozenHost;
   cleanupDisposition: {
-    method: "browser-close" | "exact-signal" | "unidentified-child" | "none";
+    method: Phase0CleanupMethod;
     stopped: boolean;
     portReleased: boolean;
     uncertain: boolean;
     reason?: string;
   };
-  /** True only when 9444 is free after acceptance cleanup. */
+  /** True only when 9444 is free after acceptance cleanup (zero remaining listeners). */
   port9444Released: boolean;
 };
 
