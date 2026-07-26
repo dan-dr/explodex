@@ -242,6 +242,24 @@ export function decideProbeCommit(
       outcome: "failed",
     };
   }
+  // Nondestructive claims require factual bridge surface evidence; fabricated
+  // true flags without before/after observations cannot authorize proven.
+  if (
+    !result.bridge.surfaceEvidenceComplete ||
+    result.bridge.conversationMutated !== false ||
+    result.bridge.turnStarted !== false ||
+    result.bridge.settingsChanged !== false ||
+    result.bridge.beforeSurface === null ||
+    result.bridge.afterSurface === null
+  ) {
+    return {
+      commit: false,
+      status: "unproven",
+      recordReady: false,
+      reason: "bridge_nondestructive_evidence_incomplete",
+      outcome: "unproven",
+    };
+  }
   if (result.safety.authoringMain.survived === false) {
     return {
       commit: false,

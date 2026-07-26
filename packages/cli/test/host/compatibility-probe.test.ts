@@ -11,6 +11,22 @@ import {
   saveCompatibilityRecord,
 } from "../../src/host/compatibility-state.ts";
 import {
+  buildBridgeEvalExpression,
+  conversationNondestructiveFromBridge,
+  deriveNondestructiveFromSurfaces,
+  factuallyObservedRequiredMethods,
+  parseBridgeValue,
+} from "../../src/host/probe-bridge.ts";
+import {
+  correlatePointOfUseObservation,
+  matchBrowserTargetContext,
+  matchCompatibilityIdentity,
+  matchFrozenHost,
+  matchProcessIdentity,
+  matchUniquePortOwner,
+  type ProbePointOfUseExpected,
+} from "../../src/host/probe-point-of-use.ts";
+import {
   assembleCompatibilityProbeResult,
   buildCompatibilityRecordFromProbe,
   correlateProbeSections,
@@ -21,6 +37,7 @@ import {
   REQUIRED_PROBE_ANCHORS,
   type ProbeAnchorsSection,
   type ProbeBridgeSection,
+  type ProbeConversationSurface,
   type ProbeCorrelationIdentity,
   type ProbeEndpointSection,
   type ProbeIsolationSection,
@@ -33,6 +50,7 @@ import { createFixtureAdapters, sha256Of } from "./fixture-fs.ts";
 import { inspectHost } from "../../src/host/identity.ts";
 import { validatePhase0AcceptanceAuthority } from "../../src/dev/phase0.ts";
 import type { Phase0AcceptanceAuthority, Phase0FrozenHost } from "../../src/dev/types.ts";
+import type { TargetIdentity } from "../../src/cdp/types.ts";
 
 const SDK = { version: "1.2.0", sha256: sha256Of("sdk-runtime-probe") };
 const PROBE = { schemaVersion: PROBE_SCHEMA_VERSION, toolVersion: DEFAULT_PROBE_TOOL_VERSION };
@@ -110,7 +128,20 @@ function completeEndpoint(identity: ProbeCorrelationIdentity): ProbeEndpointSect
   };
 }
 
+function completeSurface(overrides: Partial<ProbeConversationSurface> = {}): ProbeConversationSurface {
+  return {
+    href: "app://-/index.html",
+    readyState: "complete",
+    conversationIds: ["c1"],
+    messageCount: 2,
+    composerValue: "",
+    nextTurnHints: [{ key: "model", value: "gpt" }],
+    ...overrides,
+  };
+}
+
 function completeBridge(): ProbeBridgeSection {
+  const surface = completeSurface();
   return {
     complete: true,
     transportAvailable: true,
@@ -121,6 +152,9 @@ function completeBridge(): ProbeBridgeSection {
     conversationMutated: false,
     turnStarted: false,
     settingsChanged: false,
+    beforeSurface: surface,
+    afterSurface: surface,
+    surfaceEvidenceComplete: true,
     reason: null,
   };
 }
@@ -261,9 +295,12 @@ describe("compatibility probe pure result (VAL-HOST-008/037-040)", () => {
         observedMethods: [],
         benignRequest: null,
         benignResponse: null,
-        conversationMutated: false,
-        turnStarted: false,
-        settingsChanged: false,
+        conversationMutated: null,
+        turnStarted: null,
+        settingsChanged: null,
+        beforeSurface: null,
+        afterSurface: null,
+        surfaceEvidenceComplete: false,
         reason: "bridge_not_run",
       },
       sdkBootstrap: {
@@ -408,9 +445,12 @@ describe("compatibility probe pure result (VAL-HOST-008/037-040)", () => {
         observedMethods: [],
         benignRequest: null,
         benignResponse: null,
-        conversationMutated: false,
-        turnStarted: false,
-        settingsChanged: false,
+        conversationMutated: null,
+        turnStarted: null,
+        settingsChanged: null,
+        beforeSurface: null,
+        afterSurface: null,
+        surfaceEvidenceComplete: false,
         reason: "missing",
       },
       sdkBootstrap: {
@@ -428,6 +468,42 @@ describe("compatibility probe pure result (VAL-HOST-008/037-040)", () => {
     });
     expect(result.status).toBe("unproven");
     expect(result.allowsCompatibilityCommit).toBe(false);
+  });
+
+  test("fabricated nondestructive bridge without surface evidence cannot commit proven", async () => {
+    const host = await validHost();
+    const identity = identityFor(host);
+    const fabricated: ProbeBridgeSection = {
+      complete: true,
+      transportAvailable: true,
+      requiredMethods: REQUIRED_BRIDGE_METHODS,
+      observedMethods: [...REQUIRED_BRIDGE_METHODS],
+      benignRequest: "theme-or-availability",
+      benignResponse: { kind: "theme", value: "dark" },
+      conversationMutated: false,
+      turnStarted: false,
+      settingsChanged: false,
+      beforeSurface: null,
+      afterSurface: null,
+      surfaceEvidenceComplete: false,
+      reason: null,
+    };
+    const result = assembleCompatibilityProbeResult({
+      identity,
+      isolation: completeIsolation(host),
+      endpoint: completeEndpoint(identity),
+      bridge: fabricated,
+      sdkBootstrap: completeSdk(),
+      anchors: completeAnchors("all-pass"),
+      safety: {
+        ...completeSafety(host),
+        conversationNondestructive: true,
+      },
+      clockIso: "2026-07-26T18:00:00.000Z",
+    });
+    expect(result.allowsCompatibilityCommit).toBe(false);
+    expect(result.status).toBe("unproven");
+    expect(result.reason).toContain("nondestructive");
   });
 
   test("changed compatibility key invalidates prior proven record", async () => {
@@ -621,5 +697,210 @@ describe("Phase 0 keep-alive acceptance authority (M1-F05)", () => {
       },
     });
     expect(check.ok).toBe(false);
+  });
+});
+
+describe("factual bridge observations (VAL-HOST-038 / M1-F05R)", () => {
+  test("required methods are recorded only when factually observed", () => {
+    const missing = factuallyObservedRequiredMethods([]);
+    expect(missing.observedRequired).toEqual([]);
+    expect(missing.missingRequired).toEqual([...REQUIRED_BRIDGE_METHODS]);
+
+    const partial = factuallyObservedRequiredMethods(["start-turn-for-host"]);
+    expect(partial.observedRequired).toEqual(["start-turn-for-host"]);
+    expect(partial.missingRequired).toEqual(["update-thread-settings-for-next-turn"]);
+
+    const full = factuallyObservedRequiredMethods([...REQUIRED_BRIDGE_METHODS, "extra"]);
+    expect(full.missingRequired).toEqual([]);
+  });
+
+  test("bridge expression never invents required methods into observedMethods", () => {
+    const expression = buildBridgeEvalExpression();
+    expect(expression.includes("if (!observed.includes(method)) observed.push(method)")).toBe(
+      false,
+    );
+    expect(expression.includes("observed.push(method)")).toBe(true);
+    expect(expression.includes("beforeSurface")).toBe(true);
+    expect(expression.includes("afterSurface")).toBe(true);
+  });
+
+  test("missing required methods leave bridge non-authorizing even with transport", () => {
+    const surface = completeSurface();
+    const section = parseBridgeValue({
+      transportAvailable: true,
+      observedMethods: [],
+      benignRequest: "theme-or-availability",
+      benignResponse: { kind: "availability", transportAvailable: true },
+      beforeSurface: surface,
+      afterSurface: surface,
+    });
+    expect(section.complete).toBe(false);
+    expect(section.reason).toContain("bridge_methods_missing");
+    expect(section.observedMethods).toEqual([]);
+  });
+
+  test("hard-coded mutation false flags without surfaces cannot authorize nondestructive", () => {
+    const section = parseBridgeValue({
+      transportAvailable: true,
+      observedMethods: [...REQUIRED_BRIDGE_METHODS],
+      benignRequest: "theme-or-availability",
+      benignResponse: { kind: "theme", value: "dark" },
+      conversationMutated: false,
+      turnStarted: false,
+      settingsChanged: false,
+    });
+    expect(section.complete).toBe(false);
+    expect(section.surfaceEvidenceComplete).toBe(false);
+    expect(conversationNondestructiveFromBridge(section)).toBe(false);
+  });
+
+  test("changed conversation surface cannot be reported nondestructive", () => {
+    const before = completeSurface({ messageCount: 1, conversationIds: ["a"] });
+    const after = completeSurface({ messageCount: 2, conversationIds: ["a"] });
+    const derived = deriveNondestructiveFromSurfaces(before, after);
+    expect(derived.surfaceEvidenceComplete).toBe(true);
+    expect(derived.turnStarted).toBe(true);
+    expect(derived.conversationNondestructive).toBe(false);
+
+    const section = parseBridgeValue({
+      transportAvailable: true,
+      observedMethods: [...REQUIRED_BRIDGE_METHODS],
+      benignRequest: "theme-or-availability",
+      benignResponse: { kind: "theme", value: "dark" },
+      beforeSurface: before,
+      afterSurface: after,
+    });
+    expect(section.complete).toBe(false);
+    expect(section.reason).toBe("bridge_mutated_conversation");
+    expect(conversationNondestructiveFromBridge(section)).toBe(false);
+  });
+
+  test("complete matching before/after surfaces authorize nondestructive bridge", () => {
+    const surface = completeSurface();
+    const section = parseBridgeValue({
+      transportAvailable: true,
+      observedMethods: [...REQUIRED_BRIDGE_METHODS],
+      benignRequest: "theme-or-availability",
+      benignResponse: { kind: "theme", value: "dark" },
+      beforeSurface: surface,
+      afterSurface: { ...surface, conversationIds: [...surface.conversationIds] },
+    });
+    expect(section.complete).toBe(true);
+    expect(section.surfaceEvidenceComplete).toBe(true);
+    expect(conversationNondestructiveFromBridge(section)).toBe(true);
+  });
+});
+
+describe("point-of-use identity barriers (VAL-HOST-037/039/040 / M1-F05R)", () => {
+  test("host, process, port, target/context, and compatibility barriers detect drift", async () => {
+    const host = await validHost();
+    const identity = identityFor(host);
+    const process = {
+      pid: identity.pid,
+      parentPid: 0,
+      processStartedAt: identity.processStartedAt,
+      executablePath: host.executablePath,
+      arguments: [host.executablePath],
+    };
+    const target: TargetIdentity = {
+      role: "development",
+      pid: identity.pid,
+      processStartedAt: identity.processStartedAt,
+      executablePath: host.executablePath,
+      appVersion: host.appVersion,
+      appBuild: host.appBuild,
+      port: 9444,
+      browserIdentity: "Chrome/150.0.7871.128",
+      targetId: identity.targetId,
+      targetType: "page",
+      targetUrl: "app://-/index.html",
+      executionContextId: identity.executionContextId,
+      executionContextUniqueId: identity.executionContextUniqueId,
+      frameId: identity.targetId,
+    };
+    const expected: ProbePointOfUseExpected = {
+      host,
+      process,
+      port: 9444,
+      browserIdentity: target.browserIdentity,
+      target,
+      compatibilityKey: identity.compatibilityKey,
+      sdkRuntime: SDK,
+      probe: PROBE,
+    };
+
+    expect(matchFrozenHost(host, { ...host, appBuild: "9999" })).toBe("active_host_drift");
+    expect(
+      matchProcessIdentity(process, {
+        pid: process.pid,
+        processStartedAt: "other-start",
+        executablePath: process.executablePath,
+        alive: true,
+      }),
+    ).toBe("process_identity_drift:start");
+    expect(
+      matchUniquePortOwner(process, 9444, [
+        {
+          pid: process.pid + 1,
+          processStartedAt: process.processStartedAt,
+          host: "127.0.0.1",
+          port: 9444,
+          family: "ipv4",
+        },
+      ]),
+    ).toBe("port_owner_drift:missing_acceptance");
+    expect(
+      matchBrowserTargetContext(target, {
+        browserIdentity: target.browserIdentity,
+        endpointPublishedPid: target.pid,
+        targetId: "OTHER",
+        targetUrl: target.targetUrl,
+        targetType: target.targetType,
+        executionContextId: target.executionContextId,
+        executionContextUniqueId: target.executionContextUniqueId,
+        frameId: target.frameId,
+      }),
+    ).toBe("target_identity_drift:id");
+    expect(
+      matchCompatibilityIdentity(
+        identity.compatibilityKey,
+        host,
+        { version: SDK.version, sha256: sha256Of("different-sdk") },
+        PROBE,
+      ),
+    ).toBe("compatibility_identity_drift");
+
+    const okObservation = {
+      host,
+      processAlive: true,
+      listeners: [
+        {
+          pid: process.pid,
+          processStartedAt: process.processStartedAt,
+          host: "127.0.0.1",
+          port: 9444,
+          family: "ipv4" as const,
+        },
+      ],
+      browserIdentity: target.browserIdentity,
+      endpointPublishedPid: target.pid,
+      targetId: target.targetId,
+      targetUrl: target.targetUrl,
+      targetType: target.targetType,
+      executionContextId: target.executionContextId,
+      executionContextUniqueId: target.executionContextUniqueId,
+      frameId: target.frameId,
+      compatibilityKey: identity.compatibilityKey,
+    };
+    expect(correlatePointOfUseObservation({ expected, observation: okObservation })).toBeNull();
+    expect(
+      correlatePointOfUseObservation({
+        expected,
+        observation: {
+          ...okObservation,
+          executionContextUniqueId: "drifted",
+        },
+      }),
+    ).toBe("context_identity_drift:uniqueId");
   });
 });

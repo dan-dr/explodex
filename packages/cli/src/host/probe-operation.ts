@@ -33,17 +33,26 @@ import {
   type ReadOnlyCommandRunner,
 } from "./process-adapters.ts";
 import {
+  buildBridgeEvalExpression,
+  conversationNondestructiveFromBridge,
+  incompleteBridge,
+  parseBridgeValue,
+} from "./probe-bridge.ts";
+import {
+  revalidateProbePointOfUse,
+  type ProbePointOfUseExpected,
+  type ProbePointOfUseStage,
+} from "./probe-point-of-use.ts";
+import {
   assembleCompatibilityProbeResult,
   buildCompatibilityRecordFromProbe,
 } from "./probe-result.ts";
 import {
-  REQUIRED_BRIDGE_METHODS,
   REQUIRED_PROBE_ANCHORS,
   type CompatibilityProbeResult,
   type ProbeAnchorName,
   type ProbeAnchorObservation,
   type ProbeAnchorsSection,
-  type ProbeBridgeSection,
   type ProbeCorrelationIdentity,
   type ProbeEndpointSection,
   type ProbeIsolationSection,
@@ -134,21 +143,6 @@ function incompleteEndpoint(reason: string): ProbeEndpointSection {
   };
 }
 
-function incompleteBridge(reason: string): ProbeBridgeSection {
-  return {
-    complete: false,
-    transportAvailable: false,
-    requiredMethods: REQUIRED_BRIDGE_METHODS,
-    observedMethods: [],
-    benignRequest: null,
-    benignResponse: null,
-    conversationMutated: false,
-    turnStarted: false,
-    settingsChanged: false,
-    reason,
-  };
-}
-
 function incompleteSdk(reason: string): ProbeSdkBootstrapSection {
   return {
     complete: false,
@@ -223,44 +217,7 @@ async function recheckHost(
   return { ok: true, host: hostToIdentity(inspection.host) };
 }
 
-const BRIDGE_EVAL_EXPRESSION = `(() => {
-  const required = ${JSON.stringify([...REQUIRED_BRIDGE_METHODS])};
-  const appServer = globalThis.__explodexAppServerSend || globalThis.__bcAppServerSend;
-  const electron = globalThis.electronBridge;
-  const transportAvailable = typeof appServer === "function" || typeof electron?.sendMessageFromView === "function";
-  const observed = [];
-  try {
-    const scripts = Array.from(document.scripts || []).map((s) => s.textContent || s.src || "");
-    const blob = scripts.join("\\n");
-    for (const method of required) {
-      if (blob.includes(method)) observed.push(method);
-    }
-  } catch {}
-  for (const method of required) {
-    if (!observed.includes(method)) observed.push(method);
-  }
-  let benignResponse = null;
-  const benignRequest = "theme-or-availability";
-  try {
-    if (typeof electron?.getSystemThemeVariant === "function") {
-      benignResponse = { kind: "theme", value: electron.getSystemThemeVariant() };
-    } else {
-      benignResponse = { kind: "availability", transportAvailable };
-    }
-  } catch (err) {
-    benignResponse = { kind: "error", message: String(err && err.message ? err.message : err) };
-  }
-  return {
-    transportAvailable,
-    requiredMethods: required,
-    observedMethods: observed,
-    benignRequest,
-    benignResponse,
-    conversationMutated: false,
-    turnStarted: false,
-    settingsChanged: false,
-  };
-})()`;
+const BRIDGE_EVAL_EXPRESSION = buildBridgeEvalExpression();
 
 const ANCHOR_EVAL_EXPRESSION = `(() => {
   // Route-only anchors may be optional/not-applicable when the current shell is signed-in
@@ -400,53 +357,6 @@ const ANCHOR_EVAL_EXPRESSION = `(() => {
     };
   });
 })()`;
-
-function parseBridgeValue(value: unknown): ProbeBridgeSection {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return incompleteBridge("bridge_eval_malformed");
-  }
-  const record = value as Record<string, unknown>;
-  const transportAvailable = record.transportAvailable === true;
-  const observedMethods = Array.isArray(record.observedMethods)
-    ? record.observedMethods.filter((entry): entry is string => typeof entry === "string")
-    : [];
-  const missing = REQUIRED_BRIDGE_METHODS.filter((method) => !observedMethods.includes(method));
-  if (!transportAvailable) {
-    return {
-      ...incompleteBridge("bridge_transport_unavailable"),
-      observedMethods,
-      benignRequest: typeof record.benignRequest === "string" ? record.benignRequest : null,
-      benignResponse: record.benignResponse ?? null,
-    };
-  }
-  if (missing.length > 0) {
-    return {
-      ...incompleteBridge(`bridge_methods_missing:${missing.join(",")}`),
-      transportAvailable: true,
-      observedMethods,
-      benignRequest: typeof record.benignRequest === "string" ? record.benignRequest : null,
-      benignResponse: record.benignResponse ?? null,
-    };
-  }
-  if (record.conversationMutated === true || record.turnStarted === true || record.settingsChanged === true) {
-    return incompleteBridge("bridge_mutated_conversation");
-  }
-  if (record.benignResponse === null || record.benignResponse === undefined) {
-    return incompleteBridge("bridge_benign_response_missing");
-  }
-  return {
-    complete: true,
-    transportAvailable: true,
-    requiredMethods: REQUIRED_BRIDGE_METHODS,
-    observedMethods,
-    benignRequest: typeof record.benignRequest === "string" ? record.benignRequest : "theme-or-availability",
-    benignResponse: record.benignResponse,
-    conversationMutated: false,
-    turnStarted: false,
-    settingsChanged: false,
-    reason: null,
-  };
-}
 
 function parseAnchorMatrix(value: unknown): ProbeAnchorsSection {
   if (!Array.isArray(value)) {
@@ -714,17 +624,6 @@ export async function runCompatibilityProbe(
         const listeners = await ports.listenersFor(DEV_ENDPOINT.port, {
           signal: options.signal,
         });
-        const matching = listeners.filter(
-          (entry) => entry.pid === options.acceptanceProcess.pid,
-        );
-        if (matching.length !== 1) {
-          endpointSection = incompleteEndpoint(
-            matching.length === 0 ? "port_owner_missing" : "port_owner_ambiguous",
-          );
-          throw Object.assign(new Error(endpointSection.reason ?? "port_owner"), {
-            code: endpointSection.reason ?? "port_owner",
-          });
-        }
         const verified: VerifiedProcess = {
           pid: options.acceptanceProcess.pid,
           parentPid: 0,
@@ -732,6 +631,17 @@ export async function runCompatibilityProbe(
           executablePath: options.acceptanceProcess.executablePath,
           arguments: [options.acceptanceProcess.executablePath],
         };
+        // Acceptance process must still uniquely own the role of 9444 ChatGPT owner.
+        // Helper children may co-listen on the shared FD.
+        const matching = listeners.filter((entry) => entry.pid === verified.pid);
+        if (matching.length === 0) {
+          endpointSection = incompleteEndpoint(
+            listeners.length === 0 ? "port_owner_missing" : "port_owner_foreign",
+          );
+          throw Object.assign(new Error(endpointSection.reason ?? "port_owner"), {
+            code: endpointSection.reason ?? "port_owner",
+          });
+        }
         const alive = await runtimeProcess.isAlive(
           verified.pid,
           verified.processStartedAt,
@@ -799,13 +709,46 @@ export async function runCompatibilityProbe(
           reason: null,
         };
 
-        // Bridge section
-        const preBridge = await recheckHost(options.adapters, frozenHost);
-        if (!preBridge.ok) {
-          bridgeSection = incompleteBridge(preBridge.reason);
-          throw Object.assign(new Error(preBridge.reason), { code: preBridge.reason });
-        }
-        hostSnapshots.preBridge = preBridge.host;
+        const compatibilityKey = deriveCompatibilityKey({
+          host: frozenHost,
+          sdkRuntime: sdkRuntime!,
+          probe: probeIdentity,
+        });
+        const pointOfUseExpected: ProbePointOfUseExpected = {
+          host: frozenHost,
+          process: verified,
+          port: 9444,
+          browserIdentity: selected.browserIdentity,
+          target: selected,
+          compatibilityKey,
+          sdkRuntime: sdkRuntime!,
+          probe: probeIdentity,
+        };
+
+        const barrierOrThrow = async (
+          stage: ProbePointOfUseStage,
+        ): Promise<HostIdentity> => {
+          const recheck = await revalidateProbePointOfUse({
+            stage,
+            adapters: options.adapters,
+            commands,
+            runtimeProcess,
+            cdp,
+            session: session!,
+            expected: pointOfUseExpected,
+            signal: options.signal,
+          });
+          if (!recheck.ok) {
+            throw Object.assign(new Error(recheck.reason), {
+              code: recheck.reason,
+              stage,
+            });
+          }
+          return recheck.host;
+        };
+
+        // Bridge section — full point-of-use barrier immediately before evaluation.
+        hostSnapshots.preBridge = await barrierOrThrow("preBridge");
         const bridgeEval = await session.evaluate({
           executionContextId: selected.executionContextId,
           executionContextUniqueId: selected.executionContextUniqueId,
@@ -819,19 +762,15 @@ export async function runCompatibilityProbe(
           });
         }
 
-        // SDK bootstrap section (idempotent double inject)
-        const preSdk = await recheckHost(options.adapters, frozenHost);
-        if (!preSdk.ok) {
-          sdkSection = incompleteSdk(preSdk.reason);
-          throw Object.assign(new Error(preSdk.reason), { code: preSdk.reason });
-        }
-        hostSnapshots.preSdk = preSdk.host;
+        // SDK bootstrap section — barrier before each bootstrap evaluation.
+        hostSnapshots.preSdk = await barrierOrThrow("preSdkBootstrap");
         const first = await session.evaluate({
           executionContextId: selected.executionContextId,
           executionContextUniqueId: selected.executionContextUniqueId,
           expression: sdkBootstrapExpression(sdkSource!),
           signal: options.signal,
         });
+        await barrierOrThrow("preSdkBootstrapRepeat");
         const second = await session.evaluate({
           executionContextId: selected.executionContextId,
           executionContextUniqueId: selected.executionContextUniqueId,
@@ -870,13 +809,8 @@ export async function runCompatibilityProbe(
           });
         }
 
-        // Anchor matrix
-        const preAnchor = await recheckHost(options.adapters, frozenHost);
-        if (!preAnchor.ok) {
-          anchorsSection = incompleteAnchors(preAnchor.reason);
-          throw Object.assign(new Error(preAnchor.reason), { code: preAnchor.reason });
-        }
-        hostSnapshots.preAnchor = preAnchor.host;
+        // Anchor matrix — full barrier immediately before evaluation.
+        hostSnapshots.preAnchor = await barrierOrThrow("preAnchor");
         const anchorEval = await session.evaluate({
           executionContextId: selected.executionContextId,
           executionContextUniqueId: selected.executionContextUniqueId,
@@ -886,12 +820,8 @@ export async function runCompatibilityProbe(
         anchorsSection = parseAnchorMatrix(anchorEval.value);
         // Anchors may be pending; do not throw — assemble will mark pending.
 
-        // Pre-persist host recheck
-        const prePersist = await recheckHost(options.adapters, frozenHost);
-        if (!prePersist.ok) {
-          throw Object.assign(new Error(prePersist.reason), { code: prePersist.reason });
-        }
-        hostSnapshots.prePersist = prePersist.host;
+        // Pre-persist full identity barrier (no reconnect/replacement/persistence on drift).
+        hostSnapshots.prePersist = await barrierOrThrow("prePersist");
 
         if (authoringMain !== null) {
           authoringSurvived = await runtimeProcess.isAlive(
@@ -901,15 +831,13 @@ export async function runCompatibilityProbe(
           );
         }
 
+        const nondestructive = conversationNondestructiveFromBridge(bridgeSection);
         const safety: ProbeSafetySection = {
           complete: true,
           role: "development",
           port: 9444,
           hostReadOnly: true,
-          conversationNondestructive:
-            bridgeSection.conversationMutated === false &&
-            bridgeSection.turnStarted === false &&
-            bridgeSection.settingsChanged === false,
+          conversationNondestructive: nondestructive,
           isolated: true,
           devFirst: true,
           hostSnapshots,
@@ -919,16 +847,12 @@ export async function runCompatibilityProbe(
             survived: authoringSurvived,
           },
           credentialsInspected: false,
-          reason: null,
+          reason: nondestructive ? null : "conversation_nondestructive_unproven",
         };
 
         const correlationIdentity: ProbeCorrelationIdentity = {
           operationId: identity.operationId,
-          compatibilityKey: deriveCompatibilityKey({
-            host: frozenHost,
-            sdkRuntime: sdkRuntime!,
-            probe: probeIdentity,
-          }),
+          compatibilityKey,
           frozenHost,
           pid: verified.pid,
           processStartedAt: verified.processStartedAt,
@@ -952,7 +876,11 @@ export async function runCompatibilityProbe(
         });
 
         let committed = false;
+        // Persist only after prePersist barrier already succeeded and only one
+        // complete correlated factual result can authorize proven.
         if (probe.allowsCompatibilityCommit && probe.status === "proven") {
+          // Final barrier immediately before the atomic write.
+          hostSnapshots.prePersist = await barrierOrThrow("prePersist");
           const record = buildCompatibilityRecordFromProbe(probe);
           await saveCompatibilityRecord({
             adapters: options.adapters,
@@ -983,7 +911,8 @@ export async function runCompatibilityProbe(
           role: "development",
           port: 9444,
           hostReadOnly: true,
-          conversationNondestructive: true,
+          // Never fabricate nondestructive on failure; only factual bridge evidence may authorize it.
+          conversationNondestructive: conversationNondestructiveFromBridge(bridgeSection),
           isolated: true,
           devFirst: true,
           hostSnapshots,

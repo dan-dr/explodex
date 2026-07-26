@@ -9,6 +9,8 @@ export * from "./report.ts";
 export * from "./process-adapters.ts";
 export * from "./status.ts";
 export * from "./probe-types.ts";
+export * from "./probe-bridge.ts";
+export * from "./probe-point-of-use.ts";
 export * from "./probe-result.ts";
 export * from "./probe-operation.ts";
 export * from "./sdk-runtime-identity.ts";

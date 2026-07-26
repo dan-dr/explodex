@@ -70,16 +70,34 @@ export type ProbeEndpointSection = {
   reason: string | null;
 };
 
+export type ProbeConversationSurface = {
+  href: string | null;
+  readyState: string | null;
+  conversationIds: string[];
+  messageCount: number | null;
+  composerValue: string | null;
+  nextTurnHints: Array<{ key: string; value: string }>;
+};
+
 export type ProbeBridgeSection = {
   complete: boolean;
   transportAvailable: boolean;
   requiredMethods: readonly RequiredBridgeMethod[];
+  /** Methods factually observed on the exact renderer; never invented from constants. */
   observedMethods: string[];
   benignRequest: string | null;
   benignResponse: unknown;
-  conversationMutated: false;
-  turnStarted: false;
-  settingsChanged: false;
+  /**
+   * Factual mutation flags from before/after exact-renderer observations.
+   * null means evidence was missing/malformed and cannot authorize nondestructive.
+   */
+  conversationMutated: boolean | null;
+  turnStarted: boolean | null;
+  settingsChanged: boolean | null;
+  beforeSurface: ProbeConversationSurface | null;
+  afterSurface: ProbeConversationSurface | null;
+  /** True only when complete before/after surface evidence was observed. */
+  surfaceEvidenceComplete: boolean;
   reason: string | null;
 };
 
