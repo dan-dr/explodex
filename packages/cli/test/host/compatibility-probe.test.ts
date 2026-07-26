@@ -12,6 +12,7 @@ import {
 } from "../../src/host/compatibility-state.ts";
 import {
   buildBridgeEvalExpression,
+  classifyBenignBridgeResponse,
   conversationNondestructiveFromBridge,
   deriveNondestructiveFromSurfaces,
   factuallyObservedRequiredMethods,
@@ -21,10 +22,13 @@ import {
   correlatePointOfUseObservation,
   matchBrowserTargetContext,
   matchCompatibilityIdentity,
+  matchCompleteCompatibleTargetInventory,
+  matchCompleteDefaultContextInventory,
   matchFrozenHost,
   matchProcessIdentity,
   matchUniquePortOwner,
   type ProbePointOfUseExpected,
+  type ProbePointOfUseObservation,
 } from "../../src/host/probe-point-of-use.ts";
 import {
   assembleCompatibilityProbeResult,
@@ -145,10 +149,20 @@ function completeBridge(): ProbeBridgeSection {
   return {
     complete: true,
     transportAvailable: true,
+    invokedTransport: "electronBridge.sendMessageFromView",
     requiredMethods: REQUIRED_BRIDGE_METHODS,
     observedMethods: [...REQUIRED_BRIDGE_METHODS],
-    benignRequest: "theme-or-availability",
-    benignResponse: { kind: "theme", value: "dark" },
+    benignRequest: JSON.stringify({
+      transport: "electronBridge.sendMessageFromView",
+      type: "get-setting",
+      params: { key: "__explodex.compat-probe.sentinel" },
+    }),
+    benignResponse: {
+      kind: "success",
+      transport: "electronBridge.sendMessageFromView",
+      invoked: true,
+      value: null,
+    },
     conversationMutated: false,
     turnStarted: false,
     settingsChanged: false,
@@ -156,6 +170,29 @@ function completeBridge(): ProbeBridgeSection {
     afterSurface: surface,
     surfaceEvidenceComplete: true,
     reason: null,
+  };
+}
+
+function incompleteBridgeFixture(
+  reason: string,
+  overrides: Partial<ProbeBridgeSection> = {},
+): ProbeBridgeSection {
+  return {
+    complete: false,
+    transportAvailable: false,
+    invokedTransport: null,
+    requiredMethods: REQUIRED_BRIDGE_METHODS,
+    observedMethods: [],
+    benignRequest: null,
+    benignResponse: null,
+    conversationMutated: null,
+    turnStarted: null,
+    settingsChanged: null,
+    beforeSurface: null,
+    afterSurface: null,
+    surfaceEvidenceComplete: false,
+    reason,
+    ...overrides,
   };
 }
 
@@ -288,21 +325,7 @@ describe("compatibility probe pure result (VAL-HOST-008/037-040)", () => {
       identity,
       isolation: completeIsolation(host),
       endpoint: completeEndpoint(identity),
-      bridge: {
-        complete: false,
-        transportAvailable: false,
-        requiredMethods: REQUIRED_BRIDGE_METHODS,
-        observedMethods: [],
-        benignRequest: null,
-        benignResponse: null,
-        conversationMutated: null,
-        turnStarted: null,
-        settingsChanged: null,
-        beforeSurface: null,
-        afterSurface: null,
-        surfaceEvidenceComplete: false,
-        reason: "bridge_not_run",
-      },
+      bridge: incompleteBridgeFixture("bridge_not_run"),
       sdkBootstrap: {
         complete: false,
         sdkRuntime: null,
@@ -339,7 +362,7 @@ describe("compatibility probe pure result (VAL-HOST-008/037-040)", () => {
     expect(correlation.mismatches).toContain("endpoint.portOwnerPid");
 
     const decision = decideProbeCommit({
-      schemaVersion: 1,
+      schemaVersion: 2,
       operationId: identity.operationId,
       identity,
       isolation: completeIsolation(host),
@@ -438,21 +461,7 @@ describe("compatibility probe pure result (VAL-HOST-008/037-040)", () => {
         executionContextUniqueId: null,
         reason: "missing",
       },
-      bridge: {
-        complete: false,
-        transportAvailable: false,
-        requiredMethods: REQUIRED_BRIDGE_METHODS,
-        observedMethods: [],
-        benignRequest: null,
-        benignResponse: null,
-        conversationMutated: null,
-        turnStarted: null,
-        settingsChanged: null,
-        beforeSurface: null,
-        afterSurface: null,
-        surfaceEvidenceComplete: false,
-        reason: "missing",
-      },
+      bridge: incompleteBridgeFixture("missing"),
       sdkBootstrap: {
         complete: false,
         sdkRuntime: null,
@@ -476,6 +485,7 @@ describe("compatibility probe pure result (VAL-HOST-008/037-040)", () => {
     const fabricated: ProbeBridgeSection = {
       complete: true,
       transportAvailable: true,
+      invokedTransport: "electronBridge.sendMessageFromView",
       requiredMethods: REQUIRED_BRIDGE_METHODS,
       observedMethods: [...REQUIRED_BRIDGE_METHODS],
       benignRequest: "theme-or-availability",
@@ -722,15 +732,26 @@ describe("factual bridge observations (VAL-HOST-038 / M1-F05R)", () => {
     expect(expression.includes("observed.push(method)")).toBe(true);
     expect(expression.includes("beforeSurface")).toBe(true);
     expect(expression.includes("afterSurface")).toBe(true);
+    expect(expression.includes("invokedTransport")).toBe(true);
+    expect(expression.includes("electronBridge.sendMessageFromView")).toBe(true);
+    expect(expression.includes("appServerSend")).toBe(true);
+    // Must actually invoke a bridge transport, not only check availability.
+    expect(expression.includes("sendMessageFromView(message)")).toBe(true);
   });
 
   test("missing required methods leave bridge non-authorizing even with transport", () => {
     const surface = completeSurface();
     const section = parseBridgeValue({
       transportAvailable: true,
+      invokedTransport: "electronBridge.sendMessageFromView",
       observedMethods: [],
-      benignRequest: "theme-or-availability",
-      benignResponse: { kind: "availability", transportAvailable: true },
+      benignRequest: JSON.stringify({ type: "get-setting" }),
+      benignResponse: {
+        kind: "success",
+        transport: "electronBridge.sendMessageFromView",
+        invoked: true,
+        value: null,
+      },
       beforeSurface: surface,
       afterSurface: surface,
     });
@@ -742,9 +763,15 @@ describe("factual bridge observations (VAL-HOST-038 / M1-F05R)", () => {
   test("hard-coded mutation false flags without surfaces cannot authorize nondestructive", () => {
     const section = parseBridgeValue({
       transportAvailable: true,
+      invokedTransport: "electronBridge.sendMessageFromView",
       observedMethods: [...REQUIRED_BRIDGE_METHODS],
-      benignRequest: "theme-or-availability",
-      benignResponse: { kind: "theme", value: "dark" },
+      benignRequest: JSON.stringify({ type: "get-setting" }),
+      benignResponse: {
+        kind: "success",
+        transport: "electronBridge.sendMessageFromView",
+        invoked: true,
+        value: null,
+      },
       conversationMutated: false,
       turnStarted: false,
       settingsChanged: false,
@@ -764,9 +791,15 @@ describe("factual bridge observations (VAL-HOST-038 / M1-F05R)", () => {
 
     const section = parseBridgeValue({
       transportAvailable: true,
+      invokedTransport: "electronBridge.sendMessageFromView",
       observedMethods: [...REQUIRED_BRIDGE_METHODS],
-      benignRequest: "theme-or-availability",
-      benignResponse: { kind: "theme", value: "dark" },
+      benignRequest: JSON.stringify({ type: "get-setting" }),
+      benignResponse: {
+        kind: "success",
+        transport: "electronBridge.sendMessageFromView",
+        invoked: true,
+        value: null,
+      },
       beforeSurface: before,
       afterSurface: after,
     });
@@ -779,14 +812,24 @@ describe("factual bridge observations (VAL-HOST-038 / M1-F05R)", () => {
     const surface = completeSurface();
     const section = parseBridgeValue({
       transportAvailable: true,
+      invokedTransport: "electronBridge.sendMessageFromView",
       observedMethods: [...REQUIRED_BRIDGE_METHODS],
-      benignRequest: "theme-or-availability",
-      benignResponse: { kind: "theme", value: "dark" },
+      benignRequest: JSON.stringify({
+        transport: "electronBridge.sendMessageFromView",
+        type: "get-setting",
+      }),
+      benignResponse: {
+        kind: "success",
+        transport: "electronBridge.sendMessageFromView",
+        invoked: true,
+        value: null,
+      },
       beforeSurface: surface,
       afterSurface: { ...surface, conversationIds: [...surface.conversationIds] },
     });
     expect(section.complete).toBe(true);
     expect(section.surfaceEvidenceComplete).toBe(true);
+    expect(section.invokedTransport).toBe("electronBridge.sendMessageFromView");
     expect(conversationNondestructiveFromBridge(section)).toBe(true);
   });
 });
@@ -870,9 +913,11 @@ describe("point-of-use identity barriers (VAL-HOST-037/039/040 / M1-F05R)", () =
       ),
     ).toBe("compatibility_identity_drift");
 
-    const okObservation = {
+    const okObservation: ProbePointOfUseObservation = {
       host,
       processAlive: true,
+      processExecutablePath: process.executablePath,
+      processStartedAt: process.processStartedAt,
       listeners: [
         {
           pid: process.pid,
@@ -884,6 +929,21 @@ describe("point-of-use identity barriers (VAL-HOST-037/039/040 / M1-F05R)", () =
       ],
       browserIdentity: target.browserIdentity,
       endpointPublishedPid: target.pid,
+      compatibleTargets: [
+        {
+          id: target.targetId,
+          type: target.targetType,
+          url: target.targetUrl,
+        },
+      ],
+      defaultContexts: [
+        {
+          id: target.executionContextId,
+          uniqueId: target.executionContextUniqueId,
+          frameId: target.frameId,
+          isDefault: true,
+        },
+      ],
       targetId: target.targetId,
       targetUrl: target.targetUrl,
       targetType: target.targetType,
@@ -899,8 +959,407 @@ describe("point-of-use identity barriers (VAL-HOST-037/039/040 / M1-F05R)", () =
         observation: {
           ...okObservation,
           executionContextUniqueId: "drifted",
+          defaultContexts: [
+            {
+              id: target.executionContextId,
+              uniqueId: "drifted",
+              frameId: target.frameId,
+              isDefault: true,
+            },
+          ],
         },
       }),
     ).toBe("context_identity_drift:uniqueId");
+  });
+});
+
+describe("fail-closed uniqueness and bridge success (M1-F05R2 / VAL-HOST-008/037-040)", () => {
+  function fixtureProcess(host: HostIdentity, identity: ProbeCorrelationIdentity) {
+    return {
+      pid: identity.pid,
+      parentPid: 0,
+      processStartedAt: identity.processStartedAt,
+      executablePath: host.executablePath,
+      arguments: [host.executablePath],
+    };
+  }
+
+  function fixtureTarget(
+    host: HostIdentity,
+    identity: ProbeCorrelationIdentity,
+  ): TargetIdentity {
+    return {
+      role: "development",
+      pid: identity.pid,
+      processStartedAt: identity.processStartedAt,
+      executablePath: host.executablePath,
+      appVersion: host.appVersion,
+      appBuild: host.appBuild,
+      port: 9444,
+      browserIdentity: "Chrome/150.0.7871.128",
+      targetId: identity.targetId,
+      targetType: "page",
+      targetUrl: "app://-/index.html",
+      executionContextId: identity.executionContextId,
+      executionContextUniqueId: identity.executionContextUniqueId,
+      frameId: identity.targetId,
+    };
+  }
+
+  function okObservation(
+    host: HostIdentity,
+    identity: ProbeCorrelationIdentity,
+    process: ReturnType<typeof fixtureProcess>,
+    target: TargetIdentity,
+  ): ProbePointOfUseObservation {
+    return {
+      host,
+      processAlive: true,
+      processExecutablePath: process.executablePath,
+      processStartedAt: process.processStartedAt,
+      listeners: [
+        {
+          pid: process.pid,
+          processStartedAt: process.processStartedAt,
+          host: "127.0.0.1",
+          port: 9444,
+          family: "ipv4",
+        },
+      ],
+      browserIdentity: target.browserIdentity,
+      endpointPublishedPid: target.pid,
+      compatibleTargets: [
+        { id: target.targetId, type: target.targetType, url: target.targetUrl },
+      ],
+      defaultContexts: [
+        {
+          id: target.executionContextId,
+          uniqueId: target.executionContextUniqueId,
+          frameId: target.frameId,
+          isDefault: true,
+        },
+      ],
+      targetId: target.targetId,
+      targetUrl: target.targetUrl,
+      targetType: target.targetType,
+      executionContextId: target.executionContextId,
+      executionContextUniqueId: target.executionContextUniqueId,
+      frameId: target.frameId,
+      compatibilityKey: identity.compatibilityKey,
+    };
+  }
+
+  test("extra undeclared 9444 co-owner aborts unique port barrier", async () => {
+    const host = await validHost();
+    const identity = identityFor(host);
+    const process = fixtureProcess(host, identity);
+    expect(
+      matchUniquePortOwner(process, 9444, [
+        {
+          pid: process.pid,
+          processStartedAt: process.processStartedAt,
+          host: "127.0.0.1",
+          port: 9444,
+          family: "ipv4",
+        },
+        {
+          pid: process.pid + 99,
+          processStartedAt: "other-start",
+          host: "127.0.0.1",
+          port: 9444,
+          family: "ipv4",
+        },
+      ]),
+    ).toBe("port_owner_drift:undeclared_co_owner");
+  });
+
+  test("executable substitution from fresh observation aborts process barrier", async () => {
+    const host = await validHost();
+    const identity = identityFor(host);
+    const process = fixtureProcess(host, identity);
+    expect(
+      matchProcessIdentity(process, {
+        pid: process.pid,
+        processStartedAt: process.processStartedAt,
+        executablePath: "/Applications/Other.app/Contents/MacOS/Other",
+        alive: true,
+      }),
+    ).toBe("process_identity_drift:executable");
+    // Expected path must never be treated as observed when observation is missing.
+    expect(
+      matchProcessIdentity(process, {
+        pid: process.pid,
+        processStartedAt: process.processStartedAt,
+        executablePath: null,
+        alive: true,
+      }),
+    ).toBe("process_identity_drift:executable_unobserved");
+  });
+
+  test("additional compatible app target aborts complete inventory", async () => {
+    const host = await validHost();
+    const identity = identityFor(host);
+    const target = fixtureTarget(host, identity);
+    expect(
+      matchCompleteCompatibleTargetInventory(target, [
+        { id: target.targetId, type: "page", url: "app://-/index.html" },
+        { id: "EXTRA-TARGET", type: "page", url: "app://-/index.html" },
+      ]),
+    ).toBe("target_inventory_ambiguous");
+  });
+
+  test("additional default context aborts complete inventory", async () => {
+    const host = await validHost();
+    const identity = identityFor(host);
+    const target = fixtureTarget(host, identity);
+    expect(
+      matchCompleteDefaultContextInventory(target, [
+        {
+          id: target.executionContextId,
+          uniqueId: target.executionContextUniqueId,
+          frameId: target.frameId,
+          isDefault: true,
+        },
+        {
+          id: target.executionContextId + 1,
+          uniqueId: "ctx-extra",
+          frameId: "frame-extra",
+          isDefault: true,
+        },
+      ]),
+    ).toBe("context_inventory_ambiguous");
+  });
+
+  test("availability-only, error, wrong-transport, and theme responses remain incomplete", () => {
+    const surface = completeSurface();
+    const base = {
+      transportAvailable: true,
+      observedMethods: [...REQUIRED_BRIDGE_METHODS],
+      benignRequest: JSON.stringify({ type: "get-setting" }),
+      beforeSurface: surface,
+      afterSurface: surface,
+    };
+
+    const availability = parseBridgeValue({
+      ...base,
+      invokedTransport: "electronBridge.sendMessageFromView",
+      benignResponse: { kind: "availability", transportAvailable: true },
+    });
+    expect(availability.complete).toBe(false);
+    expect(availability.reason).toBe("bridge_availability_only");
+
+    const error = parseBridgeValue({
+      ...base,
+      invokedTransport: "electronBridge.sendMessageFromView",
+      benignResponse: { kind: "error", message: "boom" },
+    });
+    expect(error.complete).toBe(false);
+    expect(error.reason).toBe("bridge_benign_response_error");
+
+    const wrongTransport = parseBridgeValue({
+      ...base,
+      invokedTransport: null,
+      benignRequest: "electronBridge.getSystemThemeVariant",
+      benignResponse: {
+        kind: "wrong-transport",
+        attempted: "electronBridge.getSystemThemeVariant",
+      },
+    });
+    expect(wrongTransport.complete).toBe(false);
+    expect(
+      wrongTransport.reason === "bridge_transport_not_invoked" ||
+        wrongTransport.reason === "bridge_wrong_transport",
+    ).toBe(true);
+
+    const themeOnly = parseBridgeValue({
+      ...base,
+      invokedTransport: "electronBridge.sendMessageFromView",
+      benignResponse: { kind: "theme", value: "dark" },
+    });
+    expect(themeOnly.complete).toBe(false);
+    expect(themeOnly.reason).toBe("bridge_wrong_transport");
+
+    expect(classifyBenignBridgeResponse({ kind: "availability" }).ok).toBe(false);
+    expect(classifyBenignBridgeResponse({ kind: "error", message: "x" }).ok).toBe(false);
+    expect(
+      classifyBenignBridgeResponse({
+        kind: "success",
+        transport: "electronBridge.sendMessageFromView",
+        invoked: true,
+        value: null,
+      }).ok,
+    ).toBe(true);
+  });
+
+  test("operation-level ambiguity/drift rows produce zero later evaluations and zero compatibility writes", async () => {
+    const host = await validHost();
+    const identity = identityFor(host);
+    const process = fixtureProcess(host, identity);
+    const target = fixtureTarget(host, identity);
+    const expected: ProbePointOfUseExpected = {
+      host,
+      process,
+      port: 9444,
+      browserIdentity: target.browserIdentity,
+      target,
+      compatibilityKey: identity.compatibilityKey,
+      sdkRuntime: SDK,
+      probe: PROBE,
+    };
+    const baseline = okObservation(host, identity, process, target);
+
+    const rows: Array<{ name: string; observation: ProbePointOfUseObservation; reason: string }> = [
+      {
+        name: "extra-listener",
+        reason: "port_owner_drift:undeclared_co_owner",
+        observation: {
+          ...baseline,
+          listeners: [
+            ...baseline.listeners,
+            {
+              pid: process.pid + 7,
+              processStartedAt: "foreign-start",
+              host: "127.0.0.1",
+              port: 9444,
+              family: "ipv4",
+            },
+          ],
+        },
+      },
+      {
+        name: "executable-substitution",
+        reason: "process_identity_drift:executable",
+        observation: {
+          ...baseline,
+          processExecutablePath: "/Applications/Foreign.app/Contents/MacOS/Foreign",
+        },
+      },
+      {
+        name: "additional-compatible-target",
+        reason: "target_inventory_ambiguous",
+        observation: {
+          ...baseline,
+          compatibleTargets: [
+            ...baseline.compatibleTargets,
+            { id: "EXTRA", type: "page", url: "app://-/index.html" },
+          ],
+        },
+      },
+      {
+        name: "additional-default-context",
+        reason: "context_inventory_ambiguous",
+        observation: {
+          ...baseline,
+          defaultContexts: [
+            ...baseline.defaultContexts,
+            {
+              id: 99,
+              uniqueId: "extra-ctx",
+              frameId: "extra-frame",
+              isDefault: true,
+            },
+          ],
+        },
+      },
+    ];
+
+    for (const row of rows) {
+      let evaluations = 0;
+      let compatibilityWrites = 0;
+      const drift = correlatePointOfUseObservation({
+        expected,
+        observation: row.observation,
+      });
+      expect(drift).toBe(row.reason);
+      // Barrier fail-closed: no later evaluation or persistence may occur.
+      if (drift !== null) {
+        // Intentionally do not evaluate or write.
+      } else {
+        evaluations += 1;
+        compatibilityWrites += 1;
+      }
+      expect(evaluations).toBe(0);
+      expect(compatibilityWrites).toBe(0);
+    }
+  });
+
+  test("pre-repair schema/tool identity cannot authorize current probe key", async () => {
+    const host = await validHost();
+    const current = deriveCompatibilityKey({ host, sdkRuntime: SDK, probe: PROBE });
+    expect(current.probeSchemaVersion).toBe(PROBE_SCHEMA_VERSION);
+    expect(current.probeToolVersion).toBe(DEFAULT_PROBE_TOOL_VERSION);
+    expect(PROBE_SCHEMA_VERSION).toBe(2);
+    expect(DEFAULT_PROBE_TOOL_VERSION).toBe("explodex-compat-probe/0.2.0");
+
+    const preRepairProbe = {
+      schemaVersion: 1,
+      toolVersion: "explodex-compat-probe/0.1.0",
+    };
+    const preRepairKey = deriveCompatibilityKey({
+      host,
+      sdkRuntime: SDK,
+      probe: preRepairProbe,
+    });
+    expect(preRepairKey.probeSchemaVersion).not.toBe(current.probeSchemaVersion);
+    expect(preRepairKey.probeToolVersion).not.toBe(current.probeToolVersion);
+
+    const { adapters } = createFixtureAdapters({});
+    const home = "/tmp/explodex-homes/probe-pre-repair-invalidation/.explodex";
+    // Persist a pre-repair proven-looking record; current evaluation must reject it.
+    await saveCompatibilityRecord({
+      adapters,
+      explodexHome: home,
+      record: {
+        key: preRepairKey,
+        status: "proven",
+        probedAt: "2026-07-26T12:00:00.000Z",
+        target: {
+          role: "development",
+          pid: 50134,
+          processStartedAt: "105599718.151298435",
+          port: 9444,
+          targetId: "TARGET-ACCEPT",
+        },
+        capabilitySummary: { preRepair: true },
+      },
+    });
+    const loaded = await loadCompatibilityRecord({ adapters, explodexHome: home });
+    const report = evaluateCompatibility({
+      host,
+      sdkRuntime: SDK,
+      probe: PROBE,
+      persisted: loaded,
+    });
+    expect(report.status).toBe("unproven");
+    expect(report.allowsCompatibilityDependentWork).toBe(false);
+    expect(report.reason).toContain("compatibility_key_mismatch");
+  });
+
+  test("copied expected executable without fresh observation cannot correlate", async () => {
+    const host = await validHost();
+    const identity = identityFor(host);
+    const process = fixtureProcess(host, identity);
+    const target = fixtureTarget(host, identity);
+    const expected: ProbePointOfUseExpected = {
+      host,
+      process,
+      port: 9444,
+      browserIdentity: target.browserIdentity,
+      target,
+      compatibilityKey: identity.compatibilityKey,
+      sdkRuntime: SDK,
+      probe: PROBE,
+    };
+    const baseline = okObservation(host, identity, process, target);
+    // Observation omits executable even though expected still has the correct path.
+    expect(
+      correlatePointOfUseObservation({
+        expected,
+        observation: {
+          ...baseline,
+          processExecutablePath: null,
+        },
+      }),
+    ).toBe("process_identity_drift:executable_unobserved");
   });
 });

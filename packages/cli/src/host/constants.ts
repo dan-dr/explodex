@@ -50,12 +50,16 @@ export const COMPATIBILITY_SCHEMA_VERSION = 1 as const;
 
 /**
  * Probe result schema version. Bumping this invalidates prior proofs.
- * Full probe semantics arrive in later M1 features; the version is part of the key now.
+ * v2 requires unique process/listener/target/context inventories and one validated
+ * successful benign request/response through an actually invoked bridge transport.
  */
-export const PROBE_SCHEMA_VERSION = 1 as const;
+export const PROBE_SCHEMA_VERSION = 2 as const;
 
-/** Default probe tool identity until a dedicated probe package ships. */
-export const DEFAULT_PROBE_TOOL_VERSION = "explodex-compat-probe/0.1.0";
+/**
+ * Default probe tool identity until a dedicated probe package ships.
+ * Bumping invalidates pre-repair persisted proofs (M1-F05R2).
+ */
+export const DEFAULT_PROBE_TOOL_VERSION = "explodex-compat-probe/0.2.0";
 
 /**
  * Host files whose SHA-256 values participate in the compatibility key.

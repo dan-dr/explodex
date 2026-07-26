@@ -1,5 +1,7 @@
 import {
+  ALLOWED_BRIDGE_TRANSPORTS,
   REQUIRED_BRIDGE_METHODS,
+  type AllowedBridgeTransport,
   type ProbeBridgeSection,
   type ProbeConversationSurface,
   type RequiredBridgeMethod,
@@ -9,6 +11,7 @@ export type { ProbeConversationSurface };
 
 export type ParsedBridgeObservation = {
   transportAvailable: boolean;
+  invokedTransport: AllowedBridgeTransport | null;
   requiredMethods: readonly RequiredBridgeMethod[];
   /** Methods factually observed on the exact renderer; never invented. */
   observedMethods: string[];
@@ -177,6 +180,56 @@ export function factuallyObservedRequiredMethods(
   return { observedRequired, missingRequired };
 }
 
+export function isAllowedBridgeTransport(
+  value: unknown,
+): value is AllowedBridgeTransport {
+  return (
+    typeof value === "string" &&
+    (ALLOWED_BRIDGE_TRANSPORTS as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * Validate one successful benign bridge response shape.
+ * Availability-only, error, malformed, wrong-transport, and non-success remain incomplete.
+ */
+export function classifyBenignBridgeResponse(value: unknown): {
+  ok: boolean;
+  reason: string | null;
+} {
+  if (value === null || value === undefined) {
+    return { ok: false, reason: "bridge_benign_response_missing" };
+  }
+  if (!isRecord(value)) {
+    return { ok: false, reason: "bridge_benign_response_malformed" };
+  }
+  const kind = value.kind;
+  if (kind === "availability") {
+    return { ok: false, reason: "bridge_availability_only" };
+  }
+  if (kind === "error") {
+    return { ok: false, reason: "bridge_benign_response_error" };
+  }
+  if (kind === "wrong-transport") {
+    return { ok: false, reason: "bridge_wrong_transport" };
+  }
+  if (kind === "theme") {
+    // Theme helpers are not the exact-renderer bridge transport.
+    return { ok: false, reason: "bridge_wrong_transport" };
+  }
+  if (kind !== "success") {
+    return { ok: false, reason: "bridge_benign_response_non_success" };
+  }
+  if (!isAllowedBridgeTransport(value.transport)) {
+    return { ok: false, reason: "bridge_wrong_transport" };
+  }
+  // success requires an explicit invoked flag or presence of value key.
+  if (value.invoked !== true && !("value" in value)) {
+    return { ok: false, reason: "bridge_benign_response_malformed" };
+  }
+  return { ok: true, reason: null };
+}
+
 /**
  * Build the incomplete bridge section when evaluation cannot authorize.
  * observedMethods retain only factual renderer observations.
@@ -187,6 +240,7 @@ export function incompleteBridge(
     Pick<
       ProbeBridgeSection,
       | "transportAvailable"
+      | "invokedTransport"
       | "observedMethods"
       | "benignRequest"
       | "benignResponse"
@@ -202,6 +256,7 @@ export function incompleteBridge(
   return {
     complete: false,
     transportAvailable: partial?.transportAvailable ?? false,
+    invokedTransport: partial?.invokedTransport ?? null,
     requiredMethods: REQUIRED_BRIDGE_METHODS,
     observedMethods: partial?.observedMethods ?? [],
     benignRequest: partial?.benignRequest ?? null,
@@ -228,18 +283,12 @@ export function parseBridgeValue(value: unknown): ProbeBridgeSection {
     return incompleteBridge("bridge_observed_methods_malformed");
   }
 
-  // Reject fabricated full-required dumps that claim observation without evidence
-  // markers: every observed method must be a non-empty string (already validated).
-  // Missing required methods leave proof non-authorizing.
   const { missingRequired } = factuallyObservedRequiredMethods(observedMethods);
 
   const beforeSurface = parseConversationSurface(value.beforeSurface);
   const afterSurface = parseConversationSurface(value.afterSurface);
   const derived = deriveNondestructiveFromSurfaces(beforeSurface, afterSurface);
 
-  // Prefer factual derived flags; ignore hard-coded true-looking booleans that
-  // lack surface evidence. If the renderer reported explicit mutation flags and
-  // surfaces are complete, still re-derive from surfaces only.
   const conversationMutated = derived.conversationMutated;
   const turnStarted = derived.turnStarted;
   const settingsChanged = derived.settingsChanged;
@@ -249,46 +298,41 @@ export function parseBridgeValue(value: unknown): ProbeBridgeSection {
   const benignResponse =
     value.benignResponse === undefined ? null : value.benignResponse;
 
+  const invokedTransport = isAllowedBridgeTransport(value.invokedTransport)
+    ? value.invokedTransport
+    : null;
+
+  const partialBase = {
+    observedMethods,
+    benignRequest,
+    benignResponse,
+    beforeSurface,
+    afterSurface,
+    conversationMutated,
+    turnStarted,
+    settingsChanged,
+    surfaceEvidenceComplete: derived.surfaceEvidenceComplete,
+    invokedTransport,
+  } as const;
+
   if (!transportAvailable) {
     return incompleteBridge("bridge_transport_unavailable", {
-      observedMethods,
-      benignRequest,
-      benignResponse,
-      beforeSurface,
-      afterSurface,
-      conversationMutated,
-      turnStarted,
-      settingsChanged,
-      surfaceEvidenceComplete: derived.surfaceEvidenceComplete,
+      ...partialBase,
+      transportAvailable: false,
     });
   }
 
   if (missingRequired.length > 0) {
     return incompleteBridge(`bridge_methods_missing:${missingRequired.join(",")}`, {
+      ...partialBase,
       transportAvailable: true,
-      observedMethods,
-      benignRequest,
-      benignResponse,
-      beforeSurface,
-      afterSurface,
-      conversationMutated,
-      turnStarted,
-      settingsChanged,
-      surfaceEvidenceComplete: derived.surfaceEvidenceComplete,
     });
   }
 
   if (!derived.surfaceEvidenceComplete) {
     return incompleteBridge("bridge_surface_evidence_incomplete", {
+      ...partialBase,
       transportAvailable: true,
-      observedMethods,
-      benignRequest,
-      benignResponse,
-      beforeSurface,
-      afterSurface,
-      conversationMutated,
-      turnStarted,
-      settingsChanged,
       surfaceEvidenceComplete: false,
     });
   }
@@ -299,29 +343,46 @@ export function parseBridgeValue(value: unknown): ProbeBridgeSection {
     settingsChanged === true
   ) {
     return incompleteBridge("bridge_mutated_conversation", {
+      ...partialBase,
       transportAvailable: true,
-      observedMethods,
-      benignRequest,
-      benignResponse,
-      beforeSurface,
-      afterSurface,
-      conversationMutated,
-      turnStarted,
-      settingsChanged,
       surfaceEvidenceComplete: true,
     });
   }
 
-  if (benignResponse === null) {
-    return incompleteBridge("bridge_benign_response_missing", {
+  if (invokedTransport === null) {
+    return incompleteBridge("bridge_transport_not_invoked", {
+      ...partialBase,
       transportAvailable: true,
-      observedMethods,
-      benignRequest,
-      beforeSurface,
-      afterSurface,
-      conversationMutated,
-      turnStarted,
-      settingsChanged,
+      surfaceEvidenceComplete: true,
+    });
+  }
+
+  if (benignRequest === null || benignRequest.trim().length === 0) {
+    return incompleteBridge("bridge_benign_request_missing", {
+      ...partialBase,
+      transportAvailable: true,
+      surfaceEvidenceComplete: true,
+    });
+  }
+
+  const responseClass = classifyBenignBridgeResponse(benignResponse);
+  if (!responseClass.ok) {
+    return incompleteBridge(responseClass.reason ?? "bridge_benign_response_invalid", {
+      ...partialBase,
+      transportAvailable: true,
+      surfaceEvidenceComplete: true,
+    });
+  }
+
+  // Response transport must match the recorded invoked transport.
+  if (
+    isRecord(benignResponse) &&
+    typeof benignResponse.transport === "string" &&
+    benignResponse.transport !== invokedTransport
+  ) {
+    return incompleteBridge("bridge_response_transport_mismatch", {
+      ...partialBase,
+      transportAvailable: true,
       surfaceEvidenceComplete: true,
     });
   }
@@ -329,9 +390,10 @@ export function parseBridgeValue(value: unknown): ProbeBridgeSection {
   return {
     complete: true,
     transportAvailable: true,
+    invokedTransport,
     requiredMethods: REQUIRED_BRIDGE_METHODS,
     observedMethods,
-    benignRequest: benignRequest ?? "theme-or-availability",
+    benignRequest,
     benignResponse,
     conversationMutated: false,
     turnStarted: false,
@@ -347,12 +409,16 @@ export function parseBridgeValue(value: unknown): ProbeBridgeSection {
  * Exact-renderer bridge evaluation expression.
  * - Required methods are recorded only when factually present in renderer sources.
  * - Nondestructive claims derive from factual before/after surface observations.
- * - Never invents required method names into observedMethods.
+ * - Completes only after one successful benign request/response through an actually
+ *   invoked exact-renderer bridge transport (appServerSend or sendMessageFromView).
+ * - Availability-only, theme-only, error, and wrong-transport shapes never authorize.
  */
 export function buildBridgeEvalExpression(): string {
   const required = JSON.stringify([...REQUIRED_BRIDGE_METHODS]);
-  return `(() => {
+  const allowed = JSON.stringify([...ALLOWED_BRIDGE_TRANSPORTS]);
+  return `(async () => {
   const required = ${required};
+  const allowedTransports = ${allowed};
   const appServer = globalThis.__explodexAppServerSend || globalThis.__bcAppServerSend;
   const electron = globalThis.electronBridge;
   const transportAvailable =
@@ -428,17 +494,58 @@ export function buildBridgeEvalExpression(): string {
   }
 
   const beforeSurface = observeSurface();
+  let invokedTransport = null;
+  let benignRequest = null;
   let benignResponse = null;
-  const benignRequest = "theme-or-availability";
+  const requestType = "get-setting";
+  const requestParams = { key: "__explodex.compat-probe.sentinel" };
   try {
-    if (typeof electron?.getSystemThemeVariant === "function") {
-      benignResponse = { kind: "theme", value: electron.getSystemThemeVariant() };
+    if (typeof appServer === "function") {
+      invokedTransport = "appServerSend";
+      benignRequest = JSON.stringify({
+        transport: invokedTransport,
+        type: requestType,
+        params: requestParams,
+      });
+      const value = await appServer(requestType, { params: requestParams });
+      benignResponse = {
+        kind: "success",
+        transport: invokedTransport,
+        invoked: true,
+        value: value === undefined ? null : value,
+      };
+    } else if (typeof electron?.sendMessageFromView === "function") {
+      invokedTransport = "electronBridge.sendMessageFromView";
+      const message = { type: requestType, params: requestParams };
+      benignRequest = JSON.stringify({
+        transport: invokedTransport,
+        ...message,
+      });
+      const value = await electron.sendMessageFromView(message);
+      benignResponse = {
+        kind: "success",
+        transport: invokedTransport,
+        invoked: true,
+        value: value === undefined ? null : value,
+      };
+    } else if (typeof electron?.getSystemThemeVariant === "function") {
+      // Theme helper is not an exact-renderer bridge transport.
+      benignRequest = "electronBridge.getSystemThemeVariant";
+      benignResponse = {
+        kind: "wrong-transport",
+        attempted: "electronBridge.getSystemThemeVariant",
+        value: electron.getSystemThemeVariant(),
+      };
     } else {
-      benignResponse = { kind: "availability", transportAvailable };
+      benignResponse = {
+        kind: "availability",
+        transportAvailable,
+      };
     }
   } catch (err) {
     benignResponse = {
       kind: "error",
+      transport: invokedTransport,
       message: String(err && err.message ? err.message : err),
     };
   }
@@ -446,6 +553,10 @@ export function buildBridgeEvalExpression(): string {
 
   return {
     transportAvailable,
+    invokedTransport:
+      invokedTransport && allowedTransports.includes(invokedTransport)
+        ? invokedTransport
+        : null,
     requiredMethods: required,
     observedMethods: observed,
     benignRequest,
@@ -472,5 +583,6 @@ export function conversationNondestructiveFromBridge(
   ) {
     return false;
   }
+  if (bridge.invokedTransport === null || !bridge.complete) return false;
   return true;
 }

@@ -631,12 +631,19 @@ export async function runCompatibilityProbe(
           executablePath: options.acceptanceProcess.executablePath,
           arguments: [options.acceptanceProcess.executablePath],
         };
-        // Acceptance process must still uniquely own the role of 9444 ChatGPT owner.
-        // Helper children may co-listen on the shared FD.
+        // Acceptance process must be the sole distinct 9444 owner. Any undeclared
+        // co-owner aborts before evaluation or persistence (fail closed).
+        const distinctListenerPids = [
+          ...new Set(listeners.map((entry) => entry.pid)),
+        ].sort((a, b) => a - b);
         const matching = listeners.filter((entry) => entry.pid === verified.pid);
-        if (matching.length === 0) {
+        if (matching.length === 0 || distinctListenerPids.length !== 1) {
           endpointSection = incompleteEndpoint(
-            listeners.length === 0 ? "port_owner_missing" : "port_owner_foreign",
+            listeners.length === 0
+              ? "port_owner_missing"
+              : distinctListenerPids.length > 1
+                ? "port_owner_undeclared_co_owner"
+                : "port_owner_foreign",
           );
           throw Object.assign(new Error(endpointSection.reason ?? "port_owner"), {
             code: endpointSection.reason ?? "port_owner",

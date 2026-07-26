@@ -1,8 +1,19 @@
 import type { CompatibilityKey, HostIdentity, ProbeIdentity, SdkRuntimeIdentity } from "./types.ts";
 import type { Phase0FrozenHost, Phase0LaunchContract } from "../dev/types.ts";
 
-/** Probe result schema. Bumping invalidates prior persisted proofs via key.probeSchemaVersion. */
-export const COMPATIBILITY_PROBE_RESULT_SCHEMA_VERSION = 1 as const;
+/**
+ * Probe result schema. Bumping invalidates prior persisted proofs via key.probeSchemaVersion.
+ * v2: unique inventories + validated successful invoked bridge transport evidence.
+ */
+export const COMPATIBILITY_PROBE_RESULT_SCHEMA_VERSION = 2 as const;
+
+/** Exact-renderer bridge transports that may authorize a benign probe request. */
+export const ALLOWED_BRIDGE_TRANSPORTS = [
+  "appServerSend",
+  "electronBridge.sendMessageFromView",
+] as const;
+
+export type AllowedBridgeTransport = (typeof ALLOWED_BRIDGE_TRANSPORTS)[number];
 
 /** Required bridge method names that must appear on the exact-current host surface. */
 export const REQUIRED_BRIDGE_METHODS = [
@@ -82,9 +93,15 @@ export type ProbeConversationSurface = {
 export type ProbeBridgeSection = {
   complete: boolean;
   transportAvailable: boolean;
+  /**
+   * Exact bridge transport that was actually invoked for the benign request.
+   * Availability-only checks never set this; wrong transports remain incomplete.
+   */
+  invokedTransport: AllowedBridgeTransport | null;
   requiredMethods: readonly RequiredBridgeMethod[];
   /** Methods factually observed on the exact renderer; never invented from constants. */
   observedMethods: string[];
+  /** Serialized factual request that was invoked through the bridge transport. */
   benignRequest: string | null;
   benignResponse: unknown;
   /**

@@ -260,6 +260,20 @@ export function decideProbeCommit(
       outcome: "unproven",
     };
   }
+  // Successful benign request/response through an actually invoked exact transport.
+  if (
+    result.bridge.invokedTransport === null ||
+    result.bridge.benignRequest === null ||
+    result.bridge.benignResponse === null
+  ) {
+    return {
+      commit: false,
+      status: "unproven",
+      recordReady: false,
+      reason: "bridge_invoked_transport_evidence_incomplete",
+      outcome: "unproven",
+    };
+  }
   if (result.safety.authoringMain.survived === false) {
     return {
       commit: false,
@@ -367,6 +381,7 @@ export function buildCompatibilityRecordFromProbe(
       },
       bridge: {
         transportAvailable: result.bridge.transportAvailable,
+        invokedTransport: result.bridge.invokedTransport,
         requiredMethods: [...result.bridge.requiredMethods],
         observedMethods: result.bridge.observedMethods,
         benignRequest: result.bridge.benignRequest,
