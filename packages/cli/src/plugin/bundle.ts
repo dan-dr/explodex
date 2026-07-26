@@ -1,0 +1,579 @@
+/**
+ * Browser-safe plugin bundling into one classic-script IIFE.
+ * Rejects direct/transitive Node/Bun/Electron/server-only chains and private globals.
+ * Uses esbuild (Node-compatible); does not require Bun at runtime.
+ */
+
+import { createHash } from "node:crypto";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { dirname, join, relative, resolve, sep } from "node:path";
+import { pathToFileURL } from "node:url";
+import * as esbuild from "esbuild";
+
+export type BundleImportDiagnostic = {
+  readonly specifier: string;
+  readonly importer: string;
+  readonly chain: readonly string[];
+  readonly reason: string;
+};
+
+export type BundleSuccess = {
+  ok: true;
+  pluginId: string;
+  entryRelative: string;
+  jsRelative: "index.js";
+  mapRelative: "index.js.map";
+  jsBytes: number;
+  jsSha256: string;
+  mapBytes: number;
+  diagnostics: readonly BundleImportDiagnostic[];
+};
+
+export type BundleFailure = {
+  ok: false;
+  code: string;
+  message: string;
+  diagnostics: readonly BundleImportDiagnostic[];
+  details?: Record<string, unknown>;
+};
+
+export type BundleResult = BundleSuccess | BundleFailure;
+
+const FORBIDDEN_BARE_MODULES = new Set([
+  "fs",
+  "fs/promises",
+  "path",
+  "os",
+  "child_process",
+  "worker_threads",
+  "cluster",
+  "net",
+  "tls",
+  "http",
+  "https",
+  "http2",
+  "dns",
+  "dgram",
+  "readline",
+  "repl",
+  "vm",
+  "v8",
+  "module",
+  "assert",
+  "async_hooks",
+  "perf_hooks",
+  "trace_events",
+  "inspector",
+  "diagnostics_channel",
+  "stream",
+  "stream/promises",
+  "stream/web",
+  "buffer",
+  "crypto",
+  "zlib",
+  "util",
+  "url",
+  "querystring",
+  "punycode",
+  "string_decoder",
+  "timers",
+  "timers/promises",
+  "console",
+  "process",
+  "events",
+  "constants",
+  "domain",
+  "tty",
+  "electron",
+  "bun",
+]);
+
+const FORBIDDEN_PREFIXES = [
+  "node:",
+  "bun:",
+  "fs/",
+  "node-fetch",
+  "electron/",
+] as const;
+
+const PRIVATE_GLOBAL_MARKERS = [
+  "__EXPLODEX_PLUGIN_CATALOG__",
+  "__EXPLODEX_PATHS__",
+  "__EXPLODEX_BRIDGE__",
+  "require(",
+  "module.exports",
+  "process.",
+  "Buffer.",
+  "Bun.",
+] as const;
+
+function sha256Hex(bytes: Uint8Array | string): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function toPosix(path: string): string {
+  return path.split(sep).join("/");
+}
+
+function isForbiddenSpecifier(specifier: string): string | null {
+  if (specifier.startsWith("node:")) {
+    return "Node built-in module";
+  }
+  if (specifier.startsWith("bun:")) {
+    return "Bun built-in module";
+  }
+  if (specifier === "electron" || specifier.startsWith("electron/")) {
+    return "Electron runtime module";
+  }
+  if (FORBIDDEN_BARE_MODULES.has(specifier)) {
+    return "Node/server-only runtime module";
+  }
+  for (const prefix of FORBIDDEN_PREFIXES) {
+    if (specifier.startsWith(prefix)) {
+      return `Forbidden runtime module prefix "${prefix}"`;
+    }
+  }
+  return null;
+}
+
+function buildSdkShim(pluginId: string): string {
+  // Thin browser-safe authoring surface for the plugin graph.
+  // Host registration is performed by the IIFE footer, not here.
+  return `
+export function definePlugin(definition) {
+  if (definition === null || typeof definition !== "object" || Array.isArray(definition)) {
+    throw new TypeError("definePlugin requires a plugin definition object");
+  }
+  if (typeof definition.setup !== "function") {
+    throw new TypeError("definePlugin requires setup(api)");
+  }
+  for (const key of Object.keys(definition)) {
+    if (key !== "setup") {
+      throw new TypeError('definePlugin does not accept unknown field "' + key + '"');
+    }
+  }
+  return Object.freeze({
+    setup: definition.setup,
+    __explodexDefinedPlugin: true,
+  });
+}
+export function isDefinedPlugin(value) {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    value.__explodexDefinedPlugin === true &&
+    typeof value.setup === "function"
+  );
+}
+export function defineConfig() {
+  throw new Error("defineConfig is not available inside a plugin runtime bundle");
+}
+export const SDK_VERSION = ${JSON.stringify("bundled")};
+export function satisfiesSdkRange() { return true; }
+export function evaluateSdkCompatibility() {
+  return { ok: true, reason: "bundled-shim" };
+}
+export function compareSemVer() { return 0; }
+export function parseSemVer() { return null; }
+export function currentSdkSatisfiesRange() { return true; }
+// Keep plugin id available for diagnostics without embedding host APIs.
+export const __EXPLODEX_BUNDLE_PLUGIN_ID__ = ${JSON.stringify(pluginId)};
+`;
+}
+
+function iifeFooter(pluginId: string, globalName: string): string {
+  return `
+;(function (global) {
+  var exported = typeof ${globalName} !== "undefined" ? ${globalName} : undefined;
+  var definition = exported;
+  if (definition && typeof definition === "object" && "default" in definition) {
+    definition = definition.default;
+  }
+  var register = global && global.__EXPLODEX_PRIVATE_REGISTER__;
+  if (typeof register === "function") {
+    register(${JSON.stringify(pluginId)}, definition);
+  }
+})(typeof globalThis !== "undefined" ? globalThis : (typeof window !== "undefined" ? window : this));
+`;
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Bundle a plugin entry into a classic-script IIFE written under stagingDir.
+ * Does not commit dist/; caller performs transactional replacement.
+ */
+export async function bundlePluginIife(options: {
+  workspacePath: string;
+  entryRelative: string;
+  pluginId: string;
+  stagingDir: string;
+  /** When true, write index.js + index.js.map into stagingDir. */
+  writeOutputs?: boolean;
+}): Promise<BundleResult> {
+  const workspacePath = resolve(options.workspacePath);
+  const entryAbsolute = resolve(workspacePath, options.entryRelative);
+  const stagingDir = resolve(options.stagingDir);
+  const diagnostics: BundleImportDiagnostic[] = [];
+  const writeOutputs = options.writeOutputs !== false;
+
+  if (!(await pathExists(entryAbsolute))) {
+    return {
+      ok: false,
+      code: "plugin.source.invalid",
+      message: `Entry file is missing: ${options.entryRelative}`,
+      diagnostics,
+      details: { entry: options.entryRelative },
+    };
+  }
+
+  const globalName = "__ExplodexPluginBundle";
+  const shimSource = buildSdkShim(options.pluginId);
+  const shimPath = join(stagingDir, ".explodex-sdk-shim.js");
+  await mkdir(stagingDir, { recursive: true });
+  await writeFile(shimPath, shimSource, "utf8");
+
+  const importerChain = new Map<string, string[]>();
+
+  try {
+    const outJsPath = join(stagingDir, "index.js");
+    const result = await esbuild.build({
+      absWorkingDir: workspacePath,
+      entryPoints: [entryAbsolute],
+      bundle: true,
+      write: true,
+      outfile: outJsPath,
+      format: "iife",
+      platform: "browser",
+      target: ["es2022"],
+      globalName,
+      sourcemap: "external",
+      logLevel: "silent",
+      // Keep the graph browser-only; fail on Node packages rather than polyfilling.
+      packages: "bundle",
+      // Reject dynamic import() expressions used for unresolved loading.
+      supported: {
+        "dynamic-import": false,
+      },
+      plugins: [
+        {
+          name: "explodex-sdk-shim",
+          setup(build) {
+            build.onResolve({ filter: /^@explodex\/sdk(\/.*)?$/ }, (args) => {
+              if (args.path === "@explodex/sdk" || args.path === "@explodex/sdk/runtime") {
+                return { path: shimPath };
+              }
+              diagnostics.push({
+                specifier: args.path,
+                importer: args.importer || options.entryRelative,
+                chain: [args.importer || options.entryRelative, args.path],
+                reason: "Non-public @explodex/sdk import is not allowed in plugin bundles",
+              });
+              return {
+                errors: [
+                  {
+                    text: `Non-public @explodex/sdk import is not allowed: ${args.path}`,
+                  },
+                ],
+              };
+            });
+
+            build.onResolve({ filter: /.*/ }, (args) => {
+              // Track importer chains for diagnostics.
+              const parentChain = importerChain.get(args.importer) ?? [args.importer || options.entryRelative];
+              const chain = [...parentChain, args.path];
+              importerChain.set(args.path, chain);
+
+              if (args.kind === "dynamic-import") {
+                diagnostics.push({
+                  specifier: args.path,
+                  importer: args.importer || options.entryRelative,
+                  chain,
+                  reason: "Unresolved dynamic loading is not allowed in plugin bundles",
+                });
+                return {
+                  errors: [
+                    {
+                      text: `Dynamic import is not allowed in plugin bundles: ${args.path} (from ${args.importer || options.entryRelative})`,
+                    },
+                  ],
+                };
+              }
+
+              const forbidden = isForbiddenSpecifier(args.path);
+              if (forbidden !== null) {
+                diagnostics.push({
+                  specifier: args.path,
+                  importer: args.importer || options.entryRelative,
+                  chain,
+                  reason: forbidden,
+                });
+                return {
+                  errors: [
+                    {
+                      text: `${forbidden}: ${args.path} imported from ${args.importer || options.entryRelative}`,
+                    },
+                  ],
+                };
+              }
+              return null;
+            });
+          },
+        },
+      ],
+    });
+
+    if (result.errors.length > 0) {
+      const messages = result.errors.map((error) => {
+        const location = error.location
+          ? `${error.location.file}:${error.location.line}:${error.location.column}`
+          : "unknown";
+        return `${error.text} (${location})`;
+      });
+      // Promote esbuild unresolved import messages into diagnostics.
+      for (const error of result.errors) {
+        const match = /Could not resolve "([^"]+)"/.exec(error.text);
+        if (match) {
+          const specifier = match[1]!;
+          diagnostics.push({
+            specifier,
+            importer: error.location?.file
+              ? toPosix(relative(workspacePath, error.location.file))
+              : options.entryRelative,
+            chain: importerChain.get(specifier) ?? [options.entryRelative, specifier],
+            reason: "Unresolved module",
+          });
+        }
+      }
+      return {
+        ok: false,
+        code: "plugin.source.invalid",
+        message: `Plugin bundle failed: ${messages[0] ?? "unknown bundler error"}`,
+        diagnostics,
+        details: {
+          errors: messages,
+          diagnostics,
+        },
+      };
+    }
+
+    if (!(await pathExists(outJsPath))) {
+      return {
+        ok: false,
+        code: "plugin.source.invalid",
+        message: "Plugin bundle did not emit index.js",
+        diagnostics,
+      };
+    }
+
+    let jsText = (await readFile(outJsPath, "utf8")) + iifeFooter(options.pluginId, globalName);
+    const mapPath = join(stagingDir, "index.js.map");
+    const mapRaw = (await pathExists(mapPath)) ? await readFile(mapPath, "utf8") : "";
+
+    // Classic-script scans.
+    if (/^\s*import\s/m.test(jsText) || /^\s*export\s/m.test(jsText)) {
+      return {
+        ok: false,
+        code: "plugin.source.invalid",
+        message: "Plugin bundle retained ESM import/export statements",
+        diagnostics,
+      };
+    }
+    for (const marker of PRIVATE_GLOBAL_MARKERS) {
+      // Allow the private register symbol we inject; reject the rest.
+      if (marker === "require(" || marker === "module.exports" || marker === "process." || marker === "Buffer." || marker === "Bun.") {
+        if (jsText.includes(marker)) {
+          // process.env may appear in some deps; reject free Node process usage.
+          diagnostics.push({
+            specifier: marker,
+            importer: options.entryRelative,
+            chain: [options.entryRelative, marker],
+            reason: "Bundle references a forbidden Node/private runtime primitive",
+          });
+          return {
+            ok: false,
+            code: "plugin.source.invalid",
+            message: `Plugin bundle references forbidden runtime primitive: ${marker}`,
+            diagnostics,
+          };
+        }
+      }
+      if (
+        marker === "__EXPLODEX_PLUGIN_CATALOG__" ||
+        marker === "__EXPLODEX_PATHS__" ||
+        marker === "__EXPLODEX_BRIDGE__"
+      ) {
+        if (jsText.includes(marker)) {
+          diagnostics.push({
+            specifier: marker,
+            importer: options.entryRelative,
+            chain: [options.entryRelative, marker],
+            reason: "Bundle references a private renderer global",
+          });
+          return {
+            ok: false,
+            code: "plugin.source.invalid",
+            message: `Plugin bundle references private renderer global: ${marker}`,
+            diagnostics,
+          };
+        }
+      }
+    }
+
+    // Package-relative source map (no absolute workspace paths).
+    let mapText = "";
+    if (mapRaw.length > 0) {
+      try {
+        const parsed = JSON.parse(mapRaw) as {
+          version?: number;
+          file?: string;
+          sources?: string[];
+          sourcesContent?: Array<string | null>;
+          mappings?: string;
+          names?: string[];
+          sourceRoot?: string;
+        };
+        const sources = Array.isArray(parsed.sources) ? parsed.sources : [];
+        const rewritten = sources.map((source) => {
+          const normalized = source.replace(/\\/g, "/");
+          if (normalized.includes("explodex-sdk-shim")) {
+            return "explodex-sdk-shim.js";
+          }
+          const abs = normalized.startsWith("file://")
+            ? decodeURIComponent(normalized.replace(/^file:\/\//, ""))
+            : normalized;
+          const rel = toPosix(relative(workspacePath, abs.startsWith("/") ? abs : join(workspacePath, abs)));
+          if (rel.startsWith("..") || rel.startsWith("/")) {
+            // Keep package-relative by stripping to src/ when possible.
+            const srcIndex = normalized.lastIndexOf("/src/");
+            if (srcIndex >= 0) return normalized.slice(srcIndex + 1);
+            return normalized.split("/").pop() ?? "source.ts";
+          }
+          return rel;
+        });
+        mapText = `${JSON.stringify({
+          version: parsed.version ?? 3,
+          file: "index.js",
+          sourceRoot: "",
+          sources: rewritten,
+          sourcesContent: parsed.sourcesContent,
+          names: parsed.names ?? [],
+          mappings: parsed.mappings ?? "",
+        })}\n`;
+      } catch {
+        mapText = `${JSON.stringify({
+          version: 3,
+          file: "index.js",
+          sourceRoot: "",
+          sources: [options.entryRelative],
+          mappings: "",
+        })}\n`;
+      }
+    } else {
+      mapText = `${JSON.stringify({
+        version: 3,
+        file: "index.js",
+        sourceRoot: "",
+        sources: [options.entryRelative],
+        mappings: "",
+      })}\n`;
+    }
+
+    if (!jsText.includes("sourceMappingURL=")) {
+      jsText = `${jsText.trimEnd()}\n//# sourceMappingURL=index.js.map\n`;
+    } else {
+      jsText = jsText.replace(/\/\/# sourceMappingURL=.*$/m, "//# sourceMappingURL=index.js.map");
+      if (!jsText.endsWith("\n")) jsText += "\n";
+    }
+
+    if (writeOutputs) {
+      await writeFile(join(stagingDir, "index.js"), jsText, "utf8");
+      await writeFile(join(stagingDir, "index.js.map"), mapText, "utf8");
+    }
+
+    // Cleanup shim from staging if it would pollute outputs.
+    await rm(shimPath, { force: true });
+
+    const jsBytes = Buffer.byteLength(jsText, "utf8");
+    return {
+      ok: true,
+      pluginId: options.pluginId,
+      entryRelative: options.entryRelative,
+      jsRelative: "index.js",
+      mapRelative: "index.js.map",
+      jsBytes,
+      jsSha256: sha256Hex(jsText),
+      mapBytes: Buffer.byteLength(mapText, "utf8"),
+      diagnostics,
+    };
+  } catch (error: unknown) {
+    await rm(shimPath, { force: true }).catch(() => undefined);
+    const message = error instanceof Error ? error.message : "Plugin bundle failed";
+    return {
+      ok: false,
+      code: "plugin.source.invalid",
+      message,
+      diagnostics,
+      details: { diagnostics },
+    };
+  }
+}
+
+/**
+ * Fingerprint a dist directory for prior-dist preservation checks.
+ */
+export async function fingerprintDist(workspacePath: string): Promise<string | null> {
+  const distPath = join(resolve(workspacePath), "dist");
+  if (!(await pathExists(distPath))) return null;
+  const indexPath = join(distPath, "index.js");
+  if (!(await pathExists(indexPath))) {
+    // Dist exists but without index; still hash directory listing lightly.
+    return sha256Hex(`dir:${distPath}`);
+  }
+  const bytes = await readFile(indexPath);
+  return sha256Hex(bytes);
+}
+
+/**
+ * Transactionally replace workspace dist/ with staging contents for bundle outputs.
+ * On failure, caller must not call this. Prior dist remains until this succeeds.
+ */
+export async function commitBundleDist(options: {
+  workspacePath: string;
+  stagingDir: string;
+}): Promise<void> {
+  const workspacePath = resolve(options.workspacePath);
+  const distPath = join(workspacePath, "dist");
+  const stagingDir = resolve(options.stagingDir);
+  const backup = join(workspacePath, `.dist-backup-${process.pid}`);
+
+  const hadDist = await pathExists(distPath);
+  if (hadDist) {
+    await rm(backup, { recursive: true, force: true });
+    await rename(distPath, backup);
+  }
+  try {
+    await mkdir(dirname(distPath), { recursive: true });
+    await rename(stagingDir, distPath);
+    if (hadDist) {
+      await rm(backup, { recursive: true, force: true });
+    }
+  } catch (error) {
+    if (hadDist && !(await pathExists(distPath)) && (await pathExists(backup))) {
+      await rename(backup, distPath);
+    }
+    throw error;
+  }
+}
+
+/** Virtual module URL helper for tests. */
+export function shimModuleUrl(pluginId: string): string {
+  return pathToFileURL(`/explodex-sdk-shim/${pluginId}.js`).href;
+}

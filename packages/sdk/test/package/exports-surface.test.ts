@@ -11,7 +11,7 @@ import {
   withTempDir,
 } from "../helpers/pack.ts";
 
-const PUBLIC_EXPORTS = [".", "./runtime", "./package.json"] as const;
+const PUBLIC_EXPORTS = [".", "./runtime", "./testing", "./package.json"] as const;
 
 async function resolveFromConsumer(
   consumerRoot: string,
@@ -71,6 +71,9 @@ describe("VAL-SDK-001 packed SDK public surface", () => {
     const runtimeExport = packageJson.exports["./runtime"] as Record<string, string>;
     expect(runtimeExport.types).toBe("./dist/runtime/public.d.ts");
     expect(runtimeExport.default).toBe("./dist/runtime/explodex-runtime.iife.js");
+    const testingExport = packageJson.exports["./testing"] as Record<string, string>;
+    expect(testingExport.types).toBe("./dist/testing/index.d.ts");
+    expect(testingExport.import).toBe("./dist/testing/index.js");
 
     // npm pack --json dry-run paths are package-relative (no "package/" prefix).
     // Actual tarball entries use the "package/" root.

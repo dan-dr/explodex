@@ -181,7 +181,7 @@ export const GROUPS: readonly GroupDescriptor[] = [
         path: ["build"],
         operation: "plugin.build",
         summary: "Build browser-safe plugin artifacts into dist/.",
-        availability: "reserved",
+        availability: "available",
         arguments: [
           { name: "workspace", description: "Plugin workspace path (default: cwd).", required: false },
         ],

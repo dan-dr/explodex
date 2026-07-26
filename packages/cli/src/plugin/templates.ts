@@ -76,6 +76,7 @@ export function tsconfigTemplate(): string {
   const body = {
     compilerOptions: {
       target: "ES2022",
+      lib: ["ES2022", "DOM"],
       module: "ESNext",
       moduleResolution: "Bundler",
       strict: true,
@@ -87,6 +88,8 @@ export function tsconfigTemplate(): string {
       outDir: "dist-types",
       declaration: false,
       types: [],
+      // Browser plugin graph: no Node types by default.
+      noEmit: true,
     },
     include: ["src/**/*.ts", "explodex.config.ts"],
     exclude: ["dist", "node_modules", "test"],

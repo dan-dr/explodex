@@ -16,6 +16,10 @@
       "types": "./dist/runtime/public.d.ts",
       "default": "./dist/runtime/explodex-runtime.iife.js"
     },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "import": "./dist/testing/index.js"
+    },
     "./package.json": "./package.json"
   },
   "types": "./dist/index.d.ts",

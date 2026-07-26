@@ -8,9 +8,14 @@ import { runCompatibilityStatus } from "../commands/compatibility-status.ts";
 import { runMainStatus } from "../commands/main-status.ts";
 import { runPluginCreate } from "../commands/plugin-create.ts";
 import { runPluginValidate } from "../commands/plugin-validate.ts";
+import { runPluginBuild } from "../commands/plugin-build.ts";
 
 /** Operations that parse their own positional arguments. */
-const ACCEPTS_POSITIONALS = new Set(["plugin.create", "plugin.validate"]);
+const ACCEPTS_POSITIONALS = new Set([
+  "plugin.create",
+  "plugin.validate",
+  "plugin.build",
+]);
 
 export async function dispatch(options: {
   parsed: ParseSuccess;
@@ -96,6 +101,13 @@ export async function dispatch(options: {
       });
     case "plugin.validate":
       return runPluginValidate({
+        globals: parsed.globals,
+        env,
+        rest,
+        endOfOptions,
+      });
+    case "plugin.build":
+      return runPluginBuild({
         globals: parsed.globals,
         env,
         rest,

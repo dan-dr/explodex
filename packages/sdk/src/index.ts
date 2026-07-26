@@ -30,4 +30,14 @@ export type {
   PluginSetup,
   PluginSetupResult,
   PluginTeardown,
+  PluginTrackedResources,
+  TrackedEventListener,
+  TrackedEventTarget,
+  TrackedMountNode,
+  TrackedObserver,
 } from "./types/index.ts";
+
+export {
+  DEFAULT_SETUP_TIMEOUT_MS,
+  DEFAULT_TEARDOWN_TIMEOUT_MS,
+} from "./lifecycle/constants.ts";
