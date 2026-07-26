@@ -92,6 +92,24 @@ export function parseDevInstanceState(value: unknown): DevInstanceState | null {
   if (!isNullableString(value.startedAt)) return null;
   if (!isNonEmptyString(value.updatedAt)) return null;
 
+  // Reject impossible status/identity combinations.
+  if (value.status === "ready") {
+    if (value.pid === null || value.processStartedAt === null || value.targetId === null) {
+      return null;
+    }
+  }
+  if (value.status === "stopped" && value.targetId !== null) {
+    // Stopped authority cannot claim a live target.
+    return null;
+  }
+  if (
+    (value.status === "failed" || value.status === "starting" || value.status === "stopping") &&
+    value.pid !== null &&
+    value.processStartedAt === null
+  ) {
+    return null;
+  }
+
   const lastError = parseLastError(value.lastError);
   if (value.lastError !== undefined && lastError === undefined) return null;
 

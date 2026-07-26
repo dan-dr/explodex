@@ -80,33 +80,49 @@ export function gateDevelopmentLifecycleMutation(options: {
     };
   }
 
-  if (options.expectedHost !== undefined && options.expectedHost !== null) {
-    if (!frozenHostEquals(contract.frozenHost, options.expectedHost)) {
+  // Rolling-current-host consumers must supply the freshly inspected expected host.
+  // Without it, automatic re-proof is required rather than authorizing mutation.
+  if (options.expectedHost === undefined || options.expectedHost === null) {
+    if (
+      options.expectedBuild !== undefined &&
+      options.expectedBuild !== "" &&
+      contract.appBuild !== options.expectedBuild
+    ) {
       return {
         allowed: false,
         operation,
         contract,
         error: {
-          code: "phase0_host_mismatch",
-          message:
-            "Phase 0 contract frozen host identity does not match the current operation's frozen host; re-run Phase 0 on the current identity.",
+          code: "phase0_build_mismatch",
+          message: `Phase 0 contract build '${contract.appBuild}' does not match expected '${options.expectedBuild}'.`,
           nextAction: PUBLIC_PHASE0_PROOF_HINT,
         },
         blockedBeforeLaunchOrEvaluation: true,
       };
     }
-  } else if (
-    options.expectedBuild !== undefined &&
-    options.expectedBuild !== "" &&
-    contract.appBuild !== options.expectedBuild
-  ) {
     return {
       allowed: false,
       operation,
       contract,
       error: {
-        code: "phase0_build_mismatch",
-        message: `Phase 0 contract build '${contract.appBuild}' does not match expected '${options.expectedBuild}'.`,
+        code: "phase0_host_mismatch",
+        message:
+          "Rolling-current-host consumers must supply the freshly inspected expected host; automatic Phase 0 re-proof is required before lifecycle mutation.",
+        nextAction: PUBLIC_PHASE0_PROOF_HINT,
+      },
+      blockedBeforeLaunchOrEvaluation: true,
+    };
+  }
+
+  if (!frozenHostEquals(contract.frozenHost, options.expectedHost)) {
+    return {
+      allowed: false,
+      operation,
+      contract,
+      error: {
+        code: "phase0_host_mismatch",
+        message:
+          "Phase 0 contract frozen host identity does not match the current operation's frozen host; re-run Phase 0 on the current identity.",
         nextAction: PUBLIC_PHASE0_PROOF_HINT,
       },
       blockedBeforeLaunchOrEvaluation: true,
@@ -116,7 +132,10 @@ export function gateDevelopmentLifecycleMutation(options: {
   if (
     contract.frozenHost === null ||
     contract.launchMarker === null ||
-    contract.retainedKnobs.length === 0
+    contract.retainedKnobs.length === 0 ||
+    contract.readiness === null ||
+    contract.ownership === null ||
+    contract.comparativeExperiments.length === 0
   ) {
     return {
       allowed: false,
@@ -124,7 +143,7 @@ export function gateDevelopmentLifecycleMutation(options: {
       contract,
       error: {
         code: "phase0_incomplete",
-        message: `Phase 0 contract is marked proven but lacks retained marker/isolation knobs for '${operation}'.`,
+        message: `Phase 0 contract is marked proven but lacks retained marker/isolation/readiness/ownership evidence for '${operation}'.`,
         nextAction: PUBLIC_PHASE0_PROOF_HINT,
       },
       blockedBeforeLaunchOrEvaluation: true,

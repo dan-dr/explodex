@@ -28,8 +28,12 @@ export const PHASE0_CONTRACT_FILE_NAME = "phase0-launch-contract.json" as const;
 /** Development state schema version. */
 export const DEV_STATE_SCHEMA_VERSION = 1 as const;
 
-/** Phase 0 launch-contract schema version. */
-export const PHASE0_CONTRACT_SCHEMA_VERSION = 1 as const;
+/**
+ * Phase 0 launch-contract schema version.
+ * Schema 1 (M1-F04) is obsolete and non-authorizing: parsers reject it so
+ * residual one-combined-launch proofs cannot gate lifecycle mutation.
+ */
+export const PHASE0_CONTRACT_SCHEMA_VERSION = 2 as const;
 
 /** Directory mode for private development descendants. */
 export const DEV_DIRECTORY_MODE = 0o700;

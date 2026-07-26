@@ -127,12 +127,82 @@ export type Phase0FrozenHost = {
   hostHashes: Record<string, string>;
 };
 
+/** Factual per-side observation inside a comparative Phase 0 experiment. */
+export type Phase0ExperimentSideObservation = {
+  launched: boolean;
+  privateRoot: string | null;
+  descriptor: SanitizedLaunchDescriptor;
+  pid: number | null;
+  processStartedAt: string | null;
+  portOwnerPid: number | null;
+  browserIdentity: string | null;
+  targetId: string | null;
+  executionContextId: number | null;
+  pathSeparation?: {
+    userDataDistinctFromMain: boolean;
+    codexHomeDistinctFromUserCodex: boolean;
+    explodexStateDistinctFromMainHome: boolean;
+    credentialsInspected: false;
+  };
+  exactMarkerPresent: boolean;
+  ownershipAccepted: boolean;
+};
+
+/**
+ * Factual comparative experiment record for one candidate knob.
+ * Conclusions must be derived from treatment vs control observations, not
+ * caller-supplied synthetic booleans.
+ */
+export type Phase0ComparativeExperiment = {
+  knob: Phase0CandidateKnob;
+  experimentId: string;
+  treatmentLabel: string;
+  controlLabel: string;
+  treatment: Phase0ExperimentSideObservation;
+  control: Phase0ExperimentSideObservation | null;
+  conclusion: Phase0KnobEffect;
+  evidence: string;
+};
+
+/** Complete readiness identity required before a proven Phase 0 contract. */
+export type Phase0ReadinessEvidence = {
+  pid: number;
+  processStartedAt: string;
+  executablePath: string;
+  portOwnerPid: number;
+  cdpHost: typeof DEV_CDP_HOST;
+  cdpPort: typeof DEV_CDP_PORT;
+  browserIdentity: string;
+  targetId: string;
+  targetUrl: "app://-/index.html";
+  executionContextId: number;
+  executionContextUniqueId: string;
+  frameId: string;
+  readiness: "benign";
+};
+
+/** Ownership classifier outcomes retained with a proven or incomplete contract. */
+export type Phase0OwnershipEvidence = {
+  positive: {
+    owned: boolean;
+    code: string;
+    reasons: string[];
+  };
+  negatives: Array<{
+    role: string;
+    owned: false;
+    code: string;
+    reasons: string[];
+  }>;
+};
+
 /**
  * Minimal retained isolation/marker set for development launches.
  * Incomplete contracts keep lifecycle mutation and compatibility probing disabled.
+ * Schema 2 requires factual comparative experiments and complete readiness for proven.
  */
 export type Phase0LaunchContract = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   status: Phase0ContractStatus;
   /**
    * Exact host identity frozen for this operation.
@@ -145,6 +215,8 @@ export type Phase0LaunchContract = {
   appVersion: string | null;
   retainedKnobs: Phase0CandidateKnob[];
   knobMatrix: Phase0KnobVerdict[];
+  /** Factual comparative experiment records (empty only for pre-spawn incomplete). */
+  comparativeExperiments: Phase0ComparativeExperiment[];
   launchMarker: LaunchMarkerContract | null;
   isolation: {
     electronUserDataPath: string | null;
@@ -153,6 +225,8 @@ export type Phase0LaunchContract = {
     cdpHost: typeof DEV_CDP_HOST;
     cdpPort: typeof DEV_CDP_PORT;
   };
+  readiness: Phase0ReadinessEvidence | null;
+  ownership: Phase0OwnershipEvidence | null;
   sanitizedLaunchDescriptor: SanitizedLaunchDescriptor;
   provenAt: string | null;
   reason: string | null;
@@ -207,10 +281,25 @@ export type Phase0EvaluationInput = {
    * frozenHost, Phase 0 aborts as active-operation drift without reconnect.
    */
   recheckedHost?: Phase0FrozenHost | null;
-  observations: Phase0KnobObservation[];
+  /**
+   * @deprecated Prefer comparativeExperiments. Retained only for unit evaluation
+   * of marker/path predicates when experiments are already reduced to observations.
+   */
+  observations?: Phase0KnobObservation[];
+  /** Factual comparative experiment records required for production proof. */
+  comparativeExperiments?: Phase0ComparativeExperiment[];
   proposedMarker: LaunchMarkerContract | null;
   layout: DevLayoutPaths;
   clockIso: string;
+  /** Required for proven contracts; missing readiness keeps status incomplete. */
+  readiness?: Phase0ReadinessEvidence | null;
+  /** Required for proven contracts; positive must be owned with all negatives rejected. */
+  ownership?: Phase0OwnershipEvidence | null;
+  /**
+   * When true, require comparative experiments + readiness + ownership for proof.
+   * Operation-level evaluation always sets this. Pure unit knob tests may omit it.
+   */
+  requireCompleteProof?: boolean;
 };
 
 export type Phase0EvaluationResult = {
@@ -251,6 +340,10 @@ export type Phase0OperationProcessEvidence = {
   portOwnerPid: number | null;
   browserIdentity: string | null;
   targetId: string | null;
+  executionContextId: number | null;
+  executionContextUniqueId: string | null;
+  frameId: string | null;
+  readiness: "benign" | "incomplete";
 };
 
 export type Phase0OperationResult =
