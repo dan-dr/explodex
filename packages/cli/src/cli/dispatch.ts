@@ -6,6 +6,11 @@ import type { RenderedCliResult } from "../output/envelope.ts";
 import { runHostReport } from "../commands/host-report.ts";
 import { runCompatibilityStatus } from "../commands/compatibility-status.ts";
 import { runMainStatus } from "../commands/main-status.ts";
+import { runPluginCreate } from "../commands/plugin-create.ts";
+import { runPluginValidate } from "../commands/plugin-validate.ts";
+
+/** Operations that parse their own positional arguments. */
+const ACCEPTS_POSITIONALS = new Set(["plugin.create", "plugin.validate"]);
 
 export async function dispatch(options: {
   parsed: ParseSuccess;
@@ -58,18 +63,21 @@ export async function dispatch(options: {
     });
   }
 
-  // Available commands reject unexpected leftover options for the M2 surface.
-  const leftovers = [...rest, ...endOfOptions];
-  if (leftovers.length > 0) {
-    const path = publicPathFor(command, group.name);
-    return usageFailure({
-      operation: "cli.parse",
-      code: "usage.unknown-option",
-      message: `Unexpected argument or option '${leftovers[0]}'.`,
-      usageLine: `Usage: explodex ${path}`,
-      helpPath: path,
-      details: { argument: leftovers[0] },
-    });
+  // Available commands without positional arguments reject leftovers.
+  // Commands that accept arguments parse rest themselves.
+  if (!ACCEPTS_POSITIONALS.has(command.operation)) {
+    const leftovers = [...rest, ...endOfOptions];
+    if (leftovers.length > 0) {
+      const path = publicPathFor(command, group.name);
+      return usageFailure({
+        operation: "cli.parse",
+        code: "usage.unknown-option",
+        message: `Unexpected argument or option '${leftovers[0]}'.`,
+        usageLine: `Usage: explodex ${path}`,
+        helpPath: path,
+        details: { argument: leftovers[0] },
+      });
+    }
   }
 
   switch (command.operation) {
@@ -79,6 +87,20 @@ export async function dispatch(options: {
       return runCompatibilityStatus({ globals: parsed.globals, env });
     case "main.status":
       return runMainStatus();
+    case "plugin.create":
+      return runPluginCreate({
+        globals: parsed.globals,
+        env,
+        rest,
+        endOfOptions,
+      });
+    case "plugin.validate":
+      return runPluginValidate({
+        globals: parsed.globals,
+        env,
+        rest,
+        endOfOptions,
+      });
     default:
       return renderFailure({
         operation: command.operation,

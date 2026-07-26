@@ -163,7 +163,7 @@ export const GROUPS: readonly GroupDescriptor[] = [
         path: ["create"],
         operation: "plugin.create",
         summary: "Create a safe generated-only plugin workspace.",
-        availability: "reserved",
+        availability: "available",
         arguments: [
           { name: "directory", description: "Target directory for the new workspace.", required: true },
         ],
@@ -172,7 +172,7 @@ export const GROUPS: readonly GroupDescriptor[] = [
         path: ["validate"],
         operation: "plugin.validate",
         summary: "Validate a plugin workspace source contract.",
-        availability: "reserved",
+        availability: "available",
         arguments: [
           { name: "workspace", description: "Plugin workspace path (default: cwd).", required: false },
         ],
