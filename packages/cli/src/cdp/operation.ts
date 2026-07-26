@@ -15,8 +15,11 @@ import type {
   SessionRegistrationCleanupError,
 } from "./adapters.ts";
 import { inspectCompatibleEndpoint } from "./endpoint.ts";
+import {
+  registerSessionOpeningGuard,
+  type SessionOpeningGuard,
+} from "./session-opening-guard.ts";
 import type { TargetIdentity, TargetingErrorCode } from "./types.ts";
-import type { OperationContext } from "../runtime/operation.ts";
 
 export class TargetingError extends Error {
   readonly code: TargetingErrorCode;
@@ -214,52 +217,104 @@ function isResidualSessionAuthority(value: unknown): value is ResidualSessionAut
     typeof record["dispose"] === "function";
 }
 
-/**
- * Register residual/session authority immediately on open so late settlement
- * fences cannot publish false-clean inventory when close later times out.
- * Returns null when the scope is already disposing.
- */
-function tryRegisterSessionAuthority(
-  ctx: OperationContext,
-  residual: Pick<ResidualSessionAuthority, "targetId" | "isOpen" | "dispose">,
-  label: string,
-): string | null {
-  try {
-    return ctx.scope.register({
-      kind: "session",
-      label,
-      disposition: "command-owned",
-      dispose: () => residual.dispose(),
-    });
-  } catch {
-    return null;
+function secretFreeErrorSummary(value: unknown): { name?: string; message: string; code?: string } {
+  if (value instanceof Error) {
+    const code = "code" in value && typeof (value as { code?: unknown }).code === "string"
+      ? (value as { code: string }).code
+      : undefined;
+    return {
+      name: value.name,
+      message: value.message,
+      ...(code === undefined ? {} : { code }),
+    };
   }
+  return { message: String(value) };
 }
 
 /**
  * Preserve adapter residual authority when registration cleanup fails, then
  * rethrow the specific error so runBoundedOperation does not collapse it.
- * Residual registration into ResourceScope is handled centrally by
- * runBoundedOperation so inventory accounting stays single-entry.
+ * The pre-registered session-opening guard adopts residual authority so
+ * inventory remains single-entry and dispose/retry stays reachable. Residual
+ * is cleared from the thrown error after adoption so runBoundedOperation does
+ * not double-register the same session.
  */
 function preserveSessionRegistrationResidual(
-  _ctx: OperationContext,
+  guard: SessionOpeningGuard,
   error: unknown,
 ): never {
   if (isSessionRegistrationCleanupError(error)) {
-    // Keep stage annotation without losing residual fields or specific code.
+    guard.adoptResidual({
+      targetId: error.residual.targetId,
+      isOpen: () => error.residual.isOpen(),
+      dispose: (options) => error.residual.dispose(options),
+      session: error.residual.session,
+    });
+    // Keep stage annotation and secret-free residual details; strip residual so
+    // the bounded-operation residual registrar does not create a second entry.
     throw Object.assign(error, {
       stage: "cdp-discovery" as const,
+      residual: undefined,
       details: {
         residualSession: {
           targetId: error.residual.targetId,
           isOpen: error.residual.isOpen(),
           boundMs: error.boundMs,
         },
+        residualAuthority: guard.residualHandle(),
+        registrationError: secretFreeErrorSummary(error.registrationError),
+        cleanupError: secretFreeErrorSummary(error.cleanupError),
       },
     });
   }
+  // Settled pre-open / non-residual failures cannot publish a later session.
+  if (!guard.hasAdoptedSession()) {
+    guard.releaseWithoutSession();
+  }
   throw stageFailure("cdp-discovery", error);
+}
+
+function asDetailsRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : value === undefined
+      ? {}
+      : { details: value };
+}
+
+/**
+ * Attach guard residual diagnostics/handle when terminal inventory still holds
+ * session-opening or open residual authority after timeout/interrupt/cleanup.
+ * Synchronous registration-cleanup failures already carry residual details.
+ */
+function attachGuardResidualToResult<T>(
+  result: BoundedOperationResult<T>,
+  guard: SessionOpeningGuard,
+): BoundedOperationResult<T> {
+  if (result.ok || !guard.holdsAuthority()) return result;
+  const diagnostics = guard.diagnostics();
+  const residualAuthority = guard.residualHandle();
+  if (diagnostics === null || residualAuthority === null) return result;
+  const inventory = result.residualInventory.sessions > 0
+    ? result.residualInventory
+    : {
+        ...result.residualInventory,
+        sessions: 1,
+        hasResidentControlPlane: true,
+      };
+  const existingDetails = asDetailsRecord(result.error.details);
+  return {
+    ...result,
+    residualInventory: inventory,
+    error: {
+      ...result.error,
+      details: {
+        ...existingDetails,
+        residualSession: existingDetails["residualSession"] ?? diagnostics,
+        residualAuthority: existingDetails["residualAuthority"] ?? residualAuthority,
+      },
+    },
+  };
 }
 
 export async function runExactTargetOperation(options: {
@@ -275,11 +330,21 @@ export async function runExactTargetOperation(options: {
   revalidate(): Promise<PointOfUseIdentity>;
   evaluate: { expression: string; callbackIdentity?: string };
 }): Promise<BoundedOperationResult<ExactTargetOperationResult>> {
-  return runBoundedOperation({
+  // Captured so timeout/interrupt terminal results can expose residual authority
+  // when a delayed open settles after the finite settlement fence.
+  let sessionGuard: SessionOpeningGuard | null = null;
+  const result = await runBoundedOperation({
     adapters: options.runtime,
     operation: options.operation,
     operationId: options.operationId,
     run: async (ctx) => {
+      // Pre-register opening authority before asynchronous socket creation so a
+      // session created after timeout/SIGINT disposal cannot appear untracked.
+      const guard = registerSessionOpeningGuard(ctx.scope, {
+        label: `cdp-open:${ctx.identity.operationId}`,
+      });
+      sessionGuard = guard;
+
       const discovery = await ctx.runExternalWait("cdp-discovery", async (control) => {
         try {
           const inspected = await inspectCompatibleEndpoint({
@@ -291,28 +356,18 @@ export async function runExactTargetOperation(options: {
             signal: control.signal,
             retainSession: true,
             onSessionOpened(session) {
-              // Register residual authority at open, before any delayed work.
-              const registered = tryRegisterSessionAuthority(
-                ctx,
-                {
-                  targetId: session.targetId,
-                  isOpen: () => session.isOpen(),
-                  dispose: (disposeOptions) => session.close(disposeOptions),
-                },
-                `cdp:${ctx.identity.operationId}:${session.targetId}`,
-              );
-              if (registered === null) {
-                // Scope already disposing: force residual path at the adapter.
-                throw new Error(
-                  "CDP session registration failed because the operation scope is disposing",
-                );
-              }
+              // Adopt into the pre-existing guard; never double-register.
+              // Late adopt after disposal begins immediately bounds close.
+              guard.adopt(session);
             },
           });
           if (inspected.kind !== "available") {
+            // Open was not retained / did not produce a live session.
+            if (!guard.hasAdoptedSession()) guard.releaseWithoutSession();
             throw targetingFailureFromInspection(inspected, "cdp-discovery");
           }
           if (inspected.session === undefined) {
+            if (!guard.hasAdoptedSession()) guard.releaseWithoutSession();
             throw new TargetingError(
               "target_not_found",
               "The selected target session was unavailable",
@@ -320,9 +375,11 @@ export async function runExactTargetOperation(options: {
               "cdp-discovery",
             );
           }
+          // Ensure the retained session is adopted even if onSessionOpened was omitted.
+          guard.adopt(inspected.session);
           return { target: inspected.target, session: inspected.session };
         } catch (error: unknown) {
-          preserveSessionRegistrationResidual(ctx, error);
+          preserveSessionRegistrationResidual(guard, error);
         }
       });
       ctx.markStageComplete("cdp-discovery");
@@ -418,4 +475,5 @@ export async function runExactTargetOperation(options: {
       };
     },
   });
+  return sessionGuard === null ? result : attachGuardResidualToResult(result, sessionGuard);
 }

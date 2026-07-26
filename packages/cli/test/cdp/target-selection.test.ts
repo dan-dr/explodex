@@ -558,6 +558,104 @@ describe("point-of-use identity revalidation", () => {
   test.each([
     {
       mode: "hang" as const,
+      label: "never-CLOSED timeout",
+    },
+    {
+      mode: "reject" as const,
+      label: "close-rejection",
+    },
+  ])(
+    "M1-F03R3: delayed open after settlement fence $label preserves residual without false-clean terminal",
+    async ({ mode }) => {
+      const scenario = fixture();
+      scenario.adapter.registrationCloseMode = mode;
+      const runtime = createFakeRuntimeHarness({
+        self: { pid: 8020, processStartedAt: "operation-start" },
+      });
+      runtime.setProcessAlive(
+        scenario.expectedProcess.pid,
+        scenario.expectedProcess.processStartedAt,
+        true,
+      );
+      // Delay open past discovery timeout (10s) + settlement fence (5s) so the
+      // residual is created only after the finite fence and terminal dispose begin.
+      const originalOpen = scenario.adapter.openTargetSession.bind(scenario.adapter);
+      let openStarted = false;
+      let openCompleted = false;
+      scenario.adapter.openTargetSession = async (input) => {
+        openStarted = true;
+        await new Promise<void>((resolve) => {
+          runtime.adapters.timers.setTimeout(resolve, 16_000);
+        });
+        const session = await originalOpen(input);
+        openCompleted = true;
+        return session;
+      };
+
+      const operation = runExactTargetOperation({
+        runtime: runtime.adapters,
+        operationId: `op-post-fence-${mode}`,
+        operation: "fixture-evaluate",
+        role: scenario.role,
+        homeIdentity: `/tmp/home-post-fence-${mode}`,
+        host: HOST,
+        process: scenario.expectedProcess,
+        endpoint: endpoint(scenario.role),
+        cdp: scenario.adapter,
+        revalidate: scenario.revalidate,
+        evaluate: { expression: `op-post-fence-${mode}:sentinel` },
+      });
+      // Pump timeout + fence + cleanup bound + delayed open + residual dispose attempts.
+      const result = await runWithClockPump(runtime, operation, {
+        stepMs: 500,
+        maxSteps: 80,
+      });
+
+      expect(openStarted).toBe(true);
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("expected post-fence residual failure");
+      // Terminal result must not be false-clean while residual authority remains.
+      expect(result.residualInventory.sessions).toBeGreaterThanOrEqual(1);
+      expect(result.residualInventory.hasResidentControlPlane).toBe(true);
+
+      const details = result.error.details as {
+        residualSession?: { targetId: string; isOpen: boolean; boundMs?: number };
+        residualAuthority?: {
+          targetId: string;
+          isOpen(): boolean;
+          dispose(options?: { timeoutMs?: number }): Promise<void>;
+        };
+        session?: unknown;
+        socket?: unknown;
+      };
+      expect(details.residualSession).toBeDefined();
+      expect(details.residualSession?.isOpen).toBe(true);
+      expect(details).not.toHaveProperty("session");
+      expect(details).not.toHaveProperty("socket");
+      expect(JSON.stringify(details.residualSession)).not.toMatch(/webSocket|WebSocket|socket/i);
+
+      // Reachable idempotent dispose/retry handle; retry until CLOSED.
+      const residual = details.residualAuthority;
+      expect(residual).toBeDefined();
+      if (residual === undefined) throw new Error("expected residualAuthority");
+      expect(residual.isOpen()).toBe(true);
+      // First close may still be the residual fault; retry until clean.
+      for (let attempt = 0; attempt < 4 && residual.isOpen(); attempt += 1) {
+        try {
+          await residual.dispose({ timeoutMs: 100 });
+        } catch {
+          // hang/reject modes surface cleanup failure until a successful close.
+        }
+      }
+      expect(openCompleted).toBe(true);
+      expect(residual.isOpen()).toBe(false);
+      expect(scenario.adapter.closeLog).toEqual(["PAGE-1"]);
+    },
+  );
+
+  test.each([
+    {
+      mode: "hang" as const,
       cleanupMessage: /timed out|cdp_session_close_timeout/i,
       label: "never-CLOSED timeout",
     },

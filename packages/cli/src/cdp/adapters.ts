@@ -431,7 +431,7 @@ class NodeCdpTargetSession implements CdpTargetSession {
 }
 
 /** Declared bound for emergency close when session registration fails. */
-const REGISTRATION_SESSION_CLOSE_BOUND_MS = 250;
+export const REGISTRATION_SESSION_CLOSE_BOUND_MS = 250;
 
 export function createNodeCdpAdapter(): CdpAdapter {
   return {

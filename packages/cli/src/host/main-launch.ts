@@ -7,6 +7,7 @@
  */
 
 import { inspectCompatibleEndpoint } from "../cdp/endpoint.ts";
+import { registerSessionOpeningGuard } from "../cdp/session-opening-guard.ts";
 import type { SpawnedProcess } from "../dev/launch-adapters.ts";
 import { resolveExplodexHome } from "../home/paths.ts";
 import { acquireStageLock } from "../runtime/lock-stage.ts";
@@ -571,6 +572,12 @@ export async function runExplicitMainLaunch(
         }
 
         // ── CDP discovery ────────────────────────────────────────────────
+        // Pre-register session-opening authority before adapter open (same
+        // semantics as runExactTargetOperation) so delayed open after timeout
+        // or SIGINT cannot create an untracked session after a false-clean result.
+        const sessionGuard = registerSessionOpeningGuard(ctx.scope, {
+          label: `cdp-open:main:${ctx.identity.operationId}`,
+        });
         const discovery = await ctx.runExternalWait("cdp-discovery", async (ctl) => {
           try {
             const inspected = await inspectCompatibleEndpoint({
@@ -582,21 +589,12 @@ export async function runExplicitMainLaunch(
               signal: ctl.signal,
               retainSession: true,
               onSessionOpened(session) {
-                try {
-                  ctx.scope.register({
-                    kind: "session",
-                    label: `cdp:main:${ctx.identity.operationId}:${session.targetId}`,
-                    disposition: "command-owned",
-                    dispose: () => session.close(),
-                  });
-                } catch {
-                  throw new Error(
-                    "CDP session registration failed because the operation scope is disposing",
-                  );
-                }
+                // Adopt into the pre-existing guard; never double-register or double-close.
+                sessionGuard.adopt(session);
               },
             });
             if (inspected.kind !== "available") {
+              if (!sessionGuard.hasAdoptedSession()) sessionGuard.releaseWithoutSession();
               const code = inspected.kind === "identity-mismatch"
                 ? "endpoint_identity_mismatch"
                 : mapTargetCode(inspected.code);
@@ -611,6 +609,7 @@ export async function runExplicitMainLaunch(
               });
             }
             if (inspected.session === undefined) {
+              if (!sessionGuard.hasAdoptedSession()) sessionGuard.releaseWithoutSession();
               throw launchFailure({
                 code: "target_not_found",
                 message: "Selected target session was unavailable",
@@ -620,6 +619,7 @@ export async function runExplicitMainLaunch(
                 stalledStage: "cdp-discovery",
               });
             }
+            sessionGuard.adopt(inspected.session);
             if (!ctl.tryCommitEffect()) {
               throw new InterruptError("cdp-discovery");
             }
