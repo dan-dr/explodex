@@ -15,6 +15,7 @@ import {
   savePhase0LaunchContract,
 } from "../../src/dev/index.ts";
 import type {
+  Phase0AcceptanceAuthority,
   Phase0ComparativeExperiment,
   Phase0FrozenHost,
   Phase0KnobObservation,
@@ -113,6 +114,42 @@ function sampleOwnership(): Phase0OwnershipEvidence {
         reasons: ["conflict"],
       },
     ],
+  };
+}
+
+function sampleAcceptanceAuthority(
+  frozenHost: Phase0FrozenHost,
+  readiness: Phase0ReadinessEvidence,
+): Phase0AcceptanceAuthority {
+  return {
+    operationId: "phase0-test-acceptance",
+    readinessPid: readiness.pid,
+    readinessProcessStartedAt: readiness.processStartedAt,
+    protectedMainBefore: [{ pid: 60014, processStartedAt: "main-start" }],
+    protectedMainAfter: [
+      { pid: 60014, processStartedAt: "main-start", survived: true },
+    ],
+    finalHostRecheck: frozenHost,
+    cleanupDisposition: {
+      method: "browser-close",
+      stopped: true,
+      portReleased: true,
+      uncertain: false,
+    },
+    port9444Released: true,
+  };
+}
+
+function sampleAcceptanceDescriptor(layoutRoot: string) {
+  const layout = describeDevLayout(layoutRoot);
+  return {
+    argv: [
+      "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
+      `--user-data-dir=${layout.electronUserDataPath}`,
+      "--remote-debugging-port=9444",
+      MARKER,
+    ],
+    envKeys: ["CODEX_ELECTRON_USER_DATA_PATH", "CODEX_HOME"],
   };
 }
 
@@ -585,20 +622,24 @@ describe("Phase 0 launch-isolation contract (VAL-HOST-007)", () => {
   test("proven contract allows lifecycle mutation only for the matching frozen host", () => {
     const layout = describeDevLayout("/tmp/homes/phase0-g/.explodex/dev/plugin-dev");
     const frozenHost = sampleFrozenHost();
+    const readiness = sampleReadiness(frozenHost);
     const proven = evaluatePhase0LaunchContract({
       frozenHost,
       comparativeExperiments: sampleComparativeExperiments(layout.rootPath),
       proposedMarker: { kind: "exact-argv-token", value: MARKER },
       layout,
       clockIso: CLOCK,
-      readiness: sampleReadiness(frozenHost),
+      readiness,
       ownership: sampleOwnership(),
+      acceptanceLaunchDescriptor: sampleAcceptanceDescriptor(layout.rootPath),
+      acceptanceAuthority: sampleAcceptanceAuthority(frozenHost, readiness),
       requireCompleteProof: true,
     });
     expect(proven.contract.status).toBe("proven");
     expect(proven.contract.schemaVersion).toBe(2);
     expect(proven.contract.readiness?.targetId).toBe("target-1");
     expect(proven.contract.comparativeExperiments).toHaveLength(5);
+    expect(proven.contract.acceptanceAuthority?.port9444Released).toBe(true);
 
     const allowed = gateDevelopmentLifecycleMutation({
       operation: "dev-start",
@@ -686,5 +727,87 @@ describe("Phase 0 launch-isolation contract (VAL-HOST-007)", () => {
     expect(result.contract.status).toBe("incomplete");
     expect(result.allowsLifecycleMutation).toBe(false);
     expect(result.contract.reason).toMatch(/readiness/i);
+  });
+
+  test("complete proof rejects missing acceptance authority and replayed experiment PID/start identities", () => {
+    const layout = describeDevLayout("/tmp/homes/phase0-accept/.explodex/dev/plugin-dev");
+    const frozenHost = sampleFrozenHost();
+    const readiness = sampleReadiness(frozenHost);
+    const withoutAuthority = evaluatePhase0LaunchContract({
+      frozenHost,
+      comparativeExperiments: sampleComparativeExperiments(layout.rootPath),
+      proposedMarker: { kind: "exact-argv-token", value: MARKER },
+      layout,
+      clockIso: CLOCK,
+      readiness,
+      ownership: sampleOwnership(),
+      acceptanceLaunchDescriptor: sampleAcceptanceDescriptor(layout.rootPath),
+      acceptanceAuthority: null,
+      requireCompleteProof: true,
+    });
+    expect(withoutAuthority.contract.status).toBe("incomplete");
+    expect(withoutAuthority.contract.reason).toMatch(/acceptance/i);
+
+    const experiments = sampleComparativeExperiments(layout.rootPath);
+    // Replay the first treatment PID/start onto the second treatment.
+    experiments[1]!.treatment.pid = experiments[0]!.treatment.pid;
+    experiments[1]!.treatment.processStartedAt = experiments[0]!.treatment.processStartedAt;
+    const replayed = evaluatePhase0LaunchContract({
+      frozenHost,
+      comparativeExperiments: experiments,
+      proposedMarker: { kind: "exact-argv-token", value: MARKER },
+      layout,
+      clockIso: CLOCK,
+      readiness,
+      ownership: sampleOwnership(),
+      acceptanceLaunchDescriptor: sampleAcceptanceDescriptor(layout.rootPath),
+      acceptanceAuthority: sampleAcceptanceAuthority(frozenHost, readiness),
+      requireCompleteProof: true,
+    });
+    expect(replayed.contract.status).toBe("incomplete");
+    expect(replayed.contract.reason).toMatch(/repeated experiment PID\/start/i);
+  });
+
+  test("complete proof rejects forged readiness expression and wrong ownership negative codes", () => {
+    const layout = describeDevLayout("/tmp/homes/phase0-forge-ready/.explodex/dev/plugin-dev");
+    const frozenHost = sampleFrozenHost();
+    const readiness = sampleReadiness(frozenHost);
+    readiness.rendererEvaluation = {
+      expression: "forged()",
+      result: { explodexPhase0Readiness: true, readyState: "complete", href: "app://-/index.html" },
+      evaluatedAt: CLOCK,
+    };
+    const forgedExpression = evaluatePhase0LaunchContract({
+      frozenHost,
+      comparativeExperiments: sampleComparativeExperiments(layout.rootPath),
+      proposedMarker: { kind: "exact-argv-token", value: MARKER },
+      layout,
+      clockIso: CLOCK,
+      readiness,
+      ownership: sampleOwnership(),
+      acceptanceLaunchDescriptor: sampleAcceptanceDescriptor(layout.rootPath),
+      acceptanceAuthority: sampleAcceptanceAuthority(frozenHost, readiness),
+      requireCompleteProof: true,
+    });
+    expect(forgedExpression.contract.status).toBe("incomplete");
+    expect(forgedExpression.contract.reason).toMatch(/approved benign renderer/i);
+
+    const goodReadiness = sampleReadiness(frozenHost);
+    const ownership = sampleOwnership();
+    ownership.negatives[0]!.code = "owned";
+    const forgedCodes = evaluatePhase0LaunchContract({
+      frozenHost,
+      comparativeExperiments: sampleComparativeExperiments(layout.rootPath),
+      proposedMarker: { kind: "exact-argv-token", value: MARKER },
+      layout,
+      clockIso: CLOCK,
+      readiness: goodReadiness,
+      ownership,
+      acceptanceLaunchDescriptor: sampleAcceptanceDescriptor(layout.rootPath),
+      acceptanceAuthority: sampleAcceptanceAuthority(frozenHost, goodReadiness),
+      requireCompleteProof: true,
+    });
+    expect(forgedCodes.contract.status).toBe("incomplete");
+    expect(forgedCodes.contract.reason).toMatch(/forged or inconsistent code/i);
   });
 });

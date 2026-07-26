@@ -283,11 +283,25 @@ export function classifyDevelopmentOwnership(
   };
 }
 
+/** Actual protected-main observation used to derive the protected-main negative. */
+export type ProtectedMainObservation = {
+  pid: number;
+  processStartedAt: string;
+  executablePath: string;
+  arguments: readonly string[];
+};
+
 /** Controlled negative fixtures for classifier matrix tests (no live process mutation). */
 export function controlledOwnershipNegatives(options: {
   expected: OwnershipExpected;
   developmentPid: number;
   developmentStartedAt: string;
+  /**
+   * When provided, the protected-main negative is derived from the actual read-only
+   * protected-main inventory rather than a synthetic PID. Remaining controlled
+   * negatives stay pure field fixtures and never mutate protected processes.
+   */
+  protectedMains?: readonly ProtectedMainObservation[];
 }): OwnershipCandidate[] {
   // Field-only classification: general negatives must not inherit the development
   // expectedPid/start identity, or every fixture collapses to pid_reuse.
@@ -303,21 +317,39 @@ export function controlledOwnershipNegatives(options: {
     `--remote-debugging-port=${DEV_CDP_PORT}`,
     options.expected.marker,
   ];
+  const actualMain = options.protectedMains?.[0];
+  const protectedMain: OwnershipCandidate =
+    actualMain === undefined
+      ? {
+          role: "protected-main",
+          pid: 1001,
+          processStartedAt: "main-start",
+          executablePath: options.expected.executablePath,
+          arguments: [options.expected.executablePath],
+          portOwnerPid: null,
+          port: 9333,
+          endpointHost: DEV_CDP_HOST,
+          browserIdentity: null,
+          targetIds: [],
+          defaultExecutionContextCount: 0,
+          expected: fieldExpected,
+        }
+      : {
+          role: "protected-main",
+          pid: actualMain.pid,
+          processStartedAt: actualMain.processStartedAt,
+          executablePath: actualMain.executablePath,
+          arguments: [...actualMain.arguments],
+          portOwnerPid: null,
+          port: 9333,
+          endpointHost: DEV_CDP_HOST,
+          browserIdentity: null,
+          targetIds: [],
+          defaultExecutionContextCount: 0,
+          expected: fieldExpected,
+        };
   return [
-    {
-      role: "protected-main",
-      pid: 1001,
-      processStartedAt: "main-start",
-      executablePath: options.expected.executablePath,
-      arguments: [options.expected.executablePath],
-      portOwnerPid: null,
-      port: 9333,
-      endpointHost: DEV_CDP_HOST,
-      browserIdentity: null,
-      targetIds: [],
-      defaultExecutionContextCount: 0,
-      expected: fieldExpected,
-    },
+    protectedMain,
     {
       role: "unrelated",
       pid: 2002,

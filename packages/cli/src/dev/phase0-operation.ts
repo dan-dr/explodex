@@ -34,6 +34,7 @@ import {
   DEFAULT_DEV_INSTANCE_ID,
   DEV_CDP_HOST,
   DEV_CDP_PORT,
+  PHASE0_BENIGN_RENDERER_EXPRESSION,
   PHASE0_CANDIDATE_KNOBS,
   type Phase0CandidateKnob,
 } from "./constants.ts";
@@ -53,6 +54,7 @@ import {
   classifyDevelopmentOwnership,
   controlledOwnershipNegatives,
   type OwnershipExpected,
+  type ProtectedMainObservation,
 } from "./ownership.ts";
 import {
   createPreSpawnIncompleteContract,
@@ -66,6 +68,7 @@ import { createInitialDevInstanceState, saveDevInstanceState } from "./state.ts"
 import type {
   DevLayoutPaths,
   LaunchMarkerContract,
+  Phase0AcceptanceAuthority,
   Phase0ComparativeExperiment,
   Phase0ExperimentSideObservation,
   Phase0FrozenHost,
@@ -82,6 +85,8 @@ const DEFAULT_READINESS_TIMEOUT_MS = 60_000;
 const DEFAULT_POLL_MS = 250;
 const DEFAULT_STOP_TIMEOUT_MS = 15_000;
 const DEFAULT_LOCK_WAIT_MS = 5_000;
+
+const BENIGN_RENDERER_EXPRESSION = PHASE0_BENIGN_RENDERER_EXPRESSION;
 
 export type Phase0LaunchPlan = {
   useUserData: boolean;
@@ -176,6 +181,7 @@ function disabledResult(
       readiness: null,
       ownership: null,
       sanitizedLaunchDescriptor: { argv: [], envKeys: [] },
+      acceptanceAuthority: null,
       provenAt: null,
       reason: message,
     },
@@ -310,9 +316,6 @@ async function waitForPortOwner(options: {
   return null;
 }
 
-const BENIGN_RENDERER_EXPRESSION =
-  "(() => ({ explodexPhase0Readiness: true, readyState: document.readyState, href: location.href }))()";
-
 async function collectReadiness(options: {
   cdp: CdpAdapter;
   commands: ReadOnlyCommandRunner;
@@ -369,12 +372,11 @@ async function collectReadiness(options: {
             (entry.host === DEV_CDP_HOST || entry.host === "localhost" || entry.host === "::1"),
         );
         const distinctOwners = new Set(loopback.map((entry) => entry.pid));
-        // ChatGPT may spawn private-root helpers that share the listen socket in lsof
-        // output. Ownership for readiness requires the expected PID among listeners;
-        // only a missing expected PID with other listeners is hard co-ownership failure.
+        // Unique-owner contract: any additional 9444 listener is hard co-ownership
+        // ambiguity and rejects readiness authority rather than being tolerated.
         const expectedOwns = distinctOwners.has(options.pid);
-        listenerCoOwned = !expectedOwns && distinctOwners.size > 0;
-        if (listenerCoOwned) {
+        listenerCoOwned = distinctOwners.size !== 1 || !expectedOwns;
+        if (listenerCoOwned && distinctOwners.size > 1) {
           browserIdentity = null;
           targetId = null;
           executionContextId = null;
@@ -383,7 +385,8 @@ async function collectReadiness(options: {
           rendererEvaluation = null;
           break;
         }
-        if (!expectedOwns) {
+        if (!expectedOwns || distinctOwners.size === 0) {
+          listenerCoOwned = false;
           browserIdentity = null;
           await sleep(250, options.signal);
           continue;
@@ -782,14 +785,15 @@ async function revalidateProcessCleanupAuthority(options: {
 
 /**
  * Endpoint/port revalidation required before Browser.close.
- * Listener co-ownership or foreign ownership refuses Browser.close, but exact-PID
- * SIGTERM of a still-verified process remains separately allowed.
+ * Unique-owner contract: any additional 9444 listener refuses Browser.close.
+ * Exact-PID SIGTERM of a still-verified process remains separately allowed.
  */
 async function revalidateEndpointCleanupAuthority(options: {
   commands: ReadOnlyCommandRunner;
   cdp: CdpAdapter;
   pid: number;
   expectedTargetId?: string | null;
+  expectedContextUniqueId?: string | null;
   signal?: AbortSignal;
 }): Promise<{ ok: true } | { ok: false; reason: string }> {
   const ports = createNodePortInventoryAdapter(options.commands);
@@ -800,14 +804,16 @@ async function revalidateEndpointCleanupAuthority(options: {
       (entry.host === DEV_CDP_HOST || entry.host === "localhost" || entry.host === "::1"),
   );
   const owners = new Set(loopback.map((entry) => entry.pid));
-  if (!owners.has(options.pid)) {
-    if (owners.size === 0) {
-      return { ok: false, reason: "Declared development port has no owner before Browser.close." };
-    }
-    return { ok: false, reason: "Port owner drifted before cleanup; refuse foreign Browser.close." };
+  if (owners.size === 0) {
+    return { ok: false, reason: "Declared development port has no owner before Browser.close." };
   }
-  // Additional lsof listeners (private-root helpers sharing the socket) do not by
-  // themselves refuse Browser.close when the exact ChatGPT PID still owns 9444.
+  if (owners.size !== 1 || !owners.has(options.pid)) {
+    return {
+      ok: false,
+      reason:
+        "Listener co-ownership or foreign ownership before cleanup; refuse Browser.close under unique-owner contract.",
+    };
+  }
 
   try {
     const version = await options.cdp.readEndpoint({
@@ -846,6 +852,36 @@ async function revalidateEndpointCleanupAuthority(options: {
           ok: false,
           reason: "Target identity drifted before Browser.close; refuse Browser.close.",
         };
+      }
+      // Re-open and revalidate the exact default execution context unique ID.
+      if (options.expectedContextUniqueId) {
+        const session = await options.cdp.openTargetSession({
+          host: DEV_CDP_HOST,
+          port: DEV_CDP_PORT,
+          target: pages[0]!,
+          signal: options.signal,
+        });
+        try {
+          const contexts = await session.listExecutionContexts({
+            signal: options.signal,
+          });
+          const selection = selectExactPageAndContext({
+            targets,
+            contextsByTarget: { [pages[0]!.id]: contexts },
+          });
+          if (
+            selection.kind !== "selected" ||
+            selection.context.uniqueId !== options.expectedContextUniqueId
+          ) {
+            return {
+              ok: false,
+              reason:
+                "Execution context unique ID drifted before Browser.close; refuse Browser.close.",
+            };
+          }
+        } finally {
+          await session.close({ timeoutMs: 2_000 });
+        }
       }
     }
   } catch {
@@ -973,15 +1009,16 @@ async function stopExactProcess(options: {
       };
     }
 
-    // Browser.close requires exclusive endpoint/target revalidation. Co-ownership or
-    // foreign/mismatched endpoint refuses Browser.close but still permits exact-PID
-    // SIGTERM of the verified process identity below.
+    // Browser.close requires exclusive endpoint/target/context revalidation.
+    // Co-ownership or foreign/mismatched endpoint refuses Browser.close but still
+    // permits exact-PID SIGTERM of the verified process identity below.
     let browserCloseOk = false;
     const closeAuthority = await revalidateEndpointCleanupAuthority({
       commands: options.commands,
       cdp: options.cdp,
       pid: options.pid,
       expectedTargetId: options.expectedTargetId,
+      expectedContextUniqueId: options.expectedContextUniqueId,
       signal: cleanup.signal,
     });
     if (closeAuthority.ok) {
@@ -1418,10 +1455,38 @@ async function runOneExperimentLaunch(options: {
         }
       }
     } else if (spawned !== null) {
+      // Spawned child without independently proven PID/start authority is never clean.
+      const cleanup = createCleanupContext(options.stopTimeoutMs + 2_000);
       try {
-        spawned.kill("SIGTERM");
+        try {
+          spawned.kill("SIGTERM");
+        } catch {
+          residualAuthority = true;
+        }
+        const deadline = Date.now() + options.stopTimeoutMs;
+        let confirmedExit = false;
+        while (Date.now() < deadline) {
+          const identity = await options.runtimeProcess.identify(spawned.pid, {
+            abortSignal: cleanup.signal,
+          });
+          if (identity === null) {
+            confirmedExit = true;
+            break;
+          }
+          await sleep(options.pollMs, cleanup.signal);
+        }
+        const ports = createNodePortInventoryAdapter(options.commands);
+        const listeners = await ports.listenersFor(DEV_CDP_PORT, {
+          signal: cleanup.signal,
+        });
+        const portHeldByChild = listeners.some((entry) => entry.pid === spawned!.pid);
+        if (!confirmedExit || portHeldByChild) {
+          residualAuthority = true;
+        }
       } catch {
-        // ignore
+        residualAuthority = true;
+      } finally {
+        cleanup.dispose();
       }
     }
   }
@@ -1480,11 +1545,13 @@ function buildOwnershipEvidence(options: {
   expected: OwnershipExpected;
   developmentPid: number;
   developmentStartedAt: string;
+  protectedMains?: readonly ProtectedMainObservation[];
 }): Phase0OwnershipEvidence {
   const negatives = controlledOwnershipNegatives({
     expected: options.expected,
     developmentPid: options.developmentPid,
     developmentStartedAt: options.developmentStartedAt,
+    protectedMains: options.protectedMains,
   }).map((candidate) => {
     const verdict = classifyDevelopmentOwnership(candidate);
     return {
@@ -1538,7 +1605,12 @@ export async function runPhase0LaunchIsolation(
       entry.executablePath.endsWith("/ChatGPT.app/Contents/MacOS/ChatGPT") &&
       !entry.arguments.some((token) => token.startsWith("--explodex-dev-instance=")),
   );
-  const protectedMainIdentities: Array<{ pid: number; processStartedAt: string }> = [];
+  const protectedMainIdentities: Array<{
+    pid: number;
+    processStartedAt: string;
+    executablePath: string;
+    arguments: string[];
+  }> = [];
   for (const candidate of protectedMainCandidates) {
     const identity = await runtimeProcess.identify(candidate.pid, {
       abortSignal: options.signal,
@@ -1552,6 +1624,8 @@ export async function runPhase0LaunchIsolation(
     protectedMainIdentities.push({
       pid: identity.pid,
       processStartedAt: identity.processStartedAt,
+      executablePath: candidate.executablePath,
+      arguments: [...candidate.arguments],
     });
   }
 
@@ -1899,9 +1973,20 @@ export async function runPhase0LaunchIsolation(
       let acceptanceSpawned: SpawnedProcess | null = null;
       let acceptanceStartedAt: string | null = null;
       let evaluation: ReturnType<typeof evaluatePhase0LaunchContract> | null = null;
+      let ownershipEvidence: Phase0OwnershipEvidence | null = null;
+      let recheckedHost: Phase0FrozenHost | null = null;
       let protectedMainSurvived = true;
       let cleanupUncertain = false;
       let cleanupReason: string | undefined;
+      let cleanupDisposition: Phase0AcceptanceAuthority["cleanupDisposition"] = {
+        method: "none",
+        stopped: false,
+        portReleased: false,
+        uncertain: true,
+        reason: "Acceptance cleanup not yet performed.",
+      };
+      let finalHostRecheck: Phase0FrozenHost | null = null;
+      const protectedMainAfter: Phase0AcceptanceAuthority["protectedMainAfter"] = [];
 
       try {
         acceptanceSpawned = await spawnAdapter.spawn({
@@ -1959,14 +2044,14 @@ export async function runPhase0LaunchIsolation(
         if (!recheck.ok || recheck.host === null) {
           throw new Error("Host became unavailable during Phase 0");
         }
-        const recheckedHost = freezeHostIdentity(recheck.host);
+        recheckedHost = freezeHostIdentity(recheck.host);
         if (!frozenHostEquals(frozenHost, recheckedHost)) {
           throw new Error(
             "Active-operation host identity drifted from the frozen Phase 0 identity; abort without reconnect or authority transfer.",
           );
         }
 
-        const ownershipEvidence = buildOwnershipEvidence({
+        ownershipEvidence = buildOwnershipEvidence({
           positive: acceptanceOwnership,
           expected: {
             marker: marker.value,
@@ -1978,19 +2063,7 @@ export async function runPhase0LaunchIsolation(
           },
           developmentPid: acceptanceProcess.pid,
           developmentStartedAt: acceptanceProcess.processStartedAt,
-        });
-
-        evaluation = evaluatePhase0LaunchContract({
-          frozenHost,
-          recheckedHost,
-          comparativeExperiments,
-          proposedMarker: marker,
-          layout,
-          clockIso: options.adapters.clock.nowIso(),
-          readiness: acceptanceReadiness,
-          ownership: ownershipEvidence,
-          acceptanceLaunchDescriptor: acceptanceBuilt.descriptor,
-          requireCompleteProof: true,
+          protectedMains: protectedMainIdentities,
         });
       } finally {
         // Acceptance spawn cleanup always uses a fresh finite cleanup context, never the
@@ -2019,6 +2092,13 @@ export async function runPhase0LaunchIsolation(
               layout.explodexStatePath,
             ],
           });
+          cleanupDisposition = {
+            method: stop.stopped && stop.portReleased && !stop.uncertain ? "browser-close" : "exact-signal",
+            stopped: stop.stopped,
+            portReleased: stop.portReleased,
+            uncertain: stop.uncertain,
+            ...(stop.reason !== undefined ? { reason: stop.reason } : {}),
+          };
           if (!stop.stopped || !stop.portReleased || stop.uncertain) {
             cleanupUncertain = true;
             cleanupReason =
@@ -2030,11 +2110,74 @@ export async function runPhase0LaunchIsolation(
           acceptanceSpawned !== null &&
           acceptanceStartedAt === null
         ) {
+          // Unidentified spawned child: never report clean without residual truth.
+          const cleanup = createCleanupContext(stopTimeoutMs + 2_000);
           try {
-            acceptanceSpawned.kill("SIGTERM");
-          } catch {
-            // ignore
+            try {
+              acceptanceSpawned.kill("SIGTERM");
+            } catch {
+              cleanupUncertain = true;
+            }
+            const deadline = Date.now() + stopTimeoutMs;
+            let confirmedExit = false;
+            while (Date.now() < deadline) {
+              const identity = await runtimeProcess.identify(acceptanceSpawned.pid, {
+                abortSignal: cleanup.signal,
+              });
+              if (identity === null) {
+                confirmedExit = true;
+                break;
+              }
+              await sleep(pollMs, cleanup.signal);
+            }
+            const ports = createNodePortInventoryAdapter(commands);
+            const listeners = await ports.listenersFor(DEV_CDP_PORT, {
+              signal: cleanup.signal,
+            });
+            const portHeld = listeners.some((entry) => entry.pid === acceptanceSpawned!.pid);
+            cleanupDisposition = {
+              method: "unidentified-child",
+              stopped: confirmedExit,
+              portReleased: !portHeld,
+              uncertain: !confirmedExit || portHeld,
+              reason:
+                !confirmedExit || portHeld
+                  ? "Unidentified spawned child cleanup could not confirm exact exit and 9444 release; residual authority preserved."
+                  : undefined,
+            };
+            if (!confirmedExit || portHeld) {
+              cleanupUncertain = true;
+              cleanupReason =
+                cleanupDisposition.reason ??
+                "Unidentified spawned child left residual authority.";
+            }
+          } catch (error) {
+            cleanupUncertain = true;
+            cleanupReason =
+              error instanceof Error
+                ? error.message
+                : "Unidentified spawned child cleanup failed; residual authority preserved.";
+            cleanupDisposition = {
+              method: "unidentified-child",
+              stopped: false,
+              portReleased: false,
+              uncertain: true,
+              reason: cleanupReason,
+            };
+          } finally {
+            cleanup.dispose();
           }
+        } else if (options.keepProcessAlive && acceptanceProcess !== null) {
+          cleanupDisposition = {
+            method: "none",
+            stopped: false,
+            portReleased: false,
+            uncertain: false,
+            reason: "Acceptance process intentionally kept alive; no stopped proven authority.",
+          };
+          cleanupUncertain = true;
+          cleanupReason =
+            "keepProcessAlive leaves residual process authority and cannot authorize stopped proven Phase 0.";
         }
 
         for (const protectedMain of protectedMainIdentities) {
@@ -2043,6 +2186,11 @@ export async function runPhase0LaunchIsolation(
             protectedMain.processStartedAt,
             { abortSignal: undefined },
           );
+          protectedMainAfter.push({
+            pid: protectedMain.pid,
+            processStartedAt: protectedMain.processStartedAt,
+            survived: alive,
+          });
           if (!alive) {
             protectedMainSurvived = false;
             cleanupReason =
@@ -2057,12 +2205,67 @@ export async function runPhase0LaunchIsolation(
           cleanupUncertain = true;
           cleanupReason =
             cleanupReason ?? "Final host recheck failed; proof remains non-authorizing.";
-        } else if (!frozenHostEquals(frozenHost, freezeHostIdentity(finalHost.host))) {
-          cleanupUncertain = true;
-          cleanupReason =
-            cleanupReason ??
-            "Final frozen-host recheck drifted; abort without proven authority transfer.";
+        } else {
+          finalHostRecheck = freezeHostIdentity(finalHost.host);
+          if (!frozenHostEquals(frozenHost, finalHostRecheck)) {
+            cleanupUncertain = true;
+            cleanupReason =
+              cleanupReason ??
+              "Final frozen-host recheck drifted; abort without proven authority transfer.";
+          }
         }
+      }
+
+      // Proven evaluation happens only after cleanup/survivors/final host are known.
+      if (
+        !cleanupUncertain &&
+        protectedMainSurvived &&
+        acceptanceProcess !== null &&
+        acceptanceReadiness !== null &&
+        ownershipEvidence !== null &&
+        recheckedHost !== null &&
+        finalHostRecheck !== null
+      ) {
+        const acceptanceAuthority: Phase0AcceptanceAuthority = {
+          operationId: identity.operationId,
+          readinessPid: acceptanceReadiness.pid,
+          readinessProcessStartedAt: acceptanceReadiness.processStartedAt,
+          protectedMainBefore: protectedMainIdentities.map((entry) => ({
+            pid: entry.pid,
+            processStartedAt: entry.processStartedAt,
+          })),
+          protectedMainAfter,
+          finalHostRecheck,
+          cleanupDisposition,
+          port9444Released: cleanupDisposition.portReleased && !cleanupDisposition.uncertain,
+        };
+        evaluation = evaluatePhase0LaunchContract({
+          frozenHost,
+          recheckedHost,
+          comparativeExperiments,
+          proposedMarker: marker,
+          layout,
+          clockIso: options.adapters.clock.nowIso(),
+          readiness: acceptanceReadiness,
+          ownership: ownershipEvidence,
+          acceptanceLaunchDescriptor: acceptanceBuilt.descriptor,
+          acceptanceAuthority,
+          requireCompleteProof: true,
+        });
+      } else {
+        evaluation = evaluatePhase0LaunchContract({
+          frozenHost,
+          recheckedHost: recheckedHost ?? frozenHost,
+          comparativeExperiments,
+          proposedMarker: marker,
+          layout,
+          clockIso: options.adapters.clock.nowIso(),
+          readiness: acceptanceReadiness,
+          ownership: ownershipEvidence,
+          acceptanceLaunchDescriptor: acceptanceBuilt.descriptor,
+          acceptanceAuthority: null,
+          requireCompleteProof: true,
+        });
       }
 
       if (
@@ -2084,6 +2287,7 @@ export async function runPhase0LaunchIsolation(
             })),
           status: "incomplete" as const,
           provenAt: null,
+          acceptanceAuthority: null,
           reason,
           comparativeExperiments,
           readiness: acceptanceReadiness,
@@ -2156,19 +2360,11 @@ export async function runPhase0LaunchIsolation(
         launchMarker: marker.value,
         updatedAt: options.adapters.clock.nowIso(),
       });
-      if (options.keepProcessAlive && acceptanceProcess !== null) {
-        stoppedState.status = "ready";
-        stoppedState.pid = acceptanceProcess.pid;
-        stoppedState.processStartedAt = acceptanceProcess.processStartedAt;
-        stoppedState.targetId = acceptanceProcess.targetId;
-        stoppedState.startedAt = options.adapters.clock.nowIso();
-      } else {
-        stoppedState.status = "stopped";
-        stoppedState.pid = null;
-        stoppedState.processStartedAt = null;
-        stoppedState.targetId = null;
-        stoppedState.startedAt = null;
-      }
+      stoppedState.status = "stopped";
+      stoppedState.pid = null;
+      stoppedState.processStartedAt = null;
+      stoppedState.targetId = null;
+      stoppedState.startedAt = null;
       stoppedState.appVersion = frozenHost.appVersion;
       stoppedState.appBuild = frozenHost.appBuild;
       await saveDevInstanceState({

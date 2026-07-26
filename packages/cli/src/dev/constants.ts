@@ -76,6 +76,16 @@ export type DevelopmentLifecycleMutation =
 export const PUBLIC_PHASE0_PROOF_HINT =
   "Complete the authorized isolated development Phase 0 launch-isolation proof on 127.0.0.1:9444 before development lifecycle mutation or compatibility probing.";
 
+/**
+ * Approved bounded non-mutating renderer evaluation expression for Phase 0 readiness.
+ * Loaded proofs must re-derive this exact expression; forged expressions are rejected.
+ */
+export const PHASE0_BENIGN_RENDERER_EXPRESSION =
+  "(() => ({ explodexPhase0Readiness: true, readyState: document.readyState, href: location.href }))()";
+
+/** Approved renderer evaluation result shape fields. */
+export const PHASE0_APPROVED_READY_HREF = "app://-/index.html" as const;
+
 /** Forbidden keys that must never appear in development state. */
 export const DEV_STATE_FORBIDDEN_KEYS = [
   "credential",

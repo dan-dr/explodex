@@ -208,6 +208,36 @@ export type Phase0OwnershipEvidence = {
 };
 
 /**
+ * Acceptance-correlated authority facts that must be persisted and re-derived with a proven contract.
+ * Comparative experiment records remain separate causal evidence.
+ */
+export type Phase0AcceptanceAuthority = {
+  /** One acceptance operation identity binding readiness, descriptor, ownership, and cleanup. */
+  operationId: string;
+  readinessPid: number;
+  readinessProcessStartedAt: string;
+  /** Every pre-existing exact canonical ChatGPT process identity captured before spawn. */
+  protectedMainBefore: Array<{ pid: number; processStartedAt: string }>;
+  /** Post-cleanup survival of each protected-main identity. */
+  protectedMainAfter: Array<{
+    pid: number;
+    processStartedAt: string;
+    survived: boolean;
+  }>;
+  /** Final frozen-host recheck identity that must equal the operation freeze. */
+  finalHostRecheck: Phase0FrozenHost;
+  cleanupDisposition: {
+    method: "browser-close" | "exact-signal" | "unidentified-child" | "none";
+    stopped: boolean;
+    portReleased: boolean;
+    uncertain: boolean;
+    reason?: string;
+  };
+  /** True only when 9444 is free after acceptance cleanup. */
+  port9444Released: boolean;
+};
+
+/**
  * Minimal retained isolation/marker set for development launches.
  * Incomplete contracts keep lifecycle mutation and compatibility probing disabled.
  * Schema 2 requires factual comparative experiments and complete readiness for proven.
@@ -239,6 +269,11 @@ export type Phase0LaunchContract = {
   readiness: Phase0ReadinessEvidence | null;
   ownership: Phase0OwnershipEvidence | null;
   sanitizedLaunchDescriptor: SanitizedLaunchDescriptor;
+  /**
+   * Acceptance-correlated survivors/cleanup/host recheck. Required non-null for proven.
+   * Null for incomplete/disabled non-authorizing contracts.
+   */
+  acceptanceAuthority: Phase0AcceptanceAuthority | null;
   provenAt: string | null;
   reason: string | null;
 };
@@ -311,6 +346,10 @@ export type Phase0EvaluationInput = {
    * Comparative experiment descriptors remain separate causal evidence.
    */
   acceptanceLaunchDescriptor?: SanitizedLaunchDescriptor;
+  /**
+   * Acceptance-correlated survivors/cleanup/final host recheck required for proven.
+   */
+  acceptanceAuthority?: Phase0AcceptanceAuthority | null;
   /**
    * When true, require comparative experiments + readiness + ownership for proof.
    * Operation-level evaluation always sets this. Pure unit knob tests may omit it.

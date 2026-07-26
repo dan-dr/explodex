@@ -4,13 +4,20 @@ import {
   DEV_CDP_HOST,
   DEV_CDP_PORT,
   DEV_DIRECTORY_MODE,
+  PHASE0_APPROVED_READY_HREF,
+  PHASE0_BENIGN_RENDERER_EXPRESSION,
   PHASE0_CANDIDATE_KNOBS,
   PHASE0_CONTRACT_SCHEMA_VERSION,
   type Phase0CandidateKnob,
 } from "./constants.ts";
+import {
+  classifyDevelopmentOwnership,
+  controlledOwnershipNegatives,
+} from "./ownership.ts";
 import type {
   DevLayoutPaths,
   LaunchMarkerContract,
+  Phase0AcceptanceAuthority,
   Phase0ComparativeExperiment,
   Phase0EvaluationInput,
   Phase0EvaluationResult,
@@ -29,6 +36,66 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
+}
+
+/** Strict ISO-8601 UTC proof timestamp used by provenAt and evaluation times. */
+export function isIsoUtcTimestamp(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(value)) {
+    return false;
+  }
+  return Number.isFinite(Date.parse(value));
+}
+
+/** Validate the approved readiness evaluation expression/result/href shape. */
+export function validateApprovedRendererEvaluation(options: {
+  expression: string;
+  result: unknown;
+  evaluatedAt: string;
+}): { ok: true } | { ok: false; reason: string } {
+  if (options.expression !== PHASE0_BENIGN_RENDERER_EXPRESSION) {
+    return {
+      ok: false,
+      reason:
+        "Phase 0 readiness must record the approved benign renderer evaluation expression.",
+    };
+  }
+  if (!isIsoUtcTimestamp(options.evaluatedAt)) {
+    return {
+      ok: false,
+      reason: "Phase 0 readiness evaluation timestamp must be a valid ISO-8601 UTC value.",
+    };
+  }
+  if (!isRecord(options.result)) {
+    return {
+      ok: false,
+      reason: "Phase 0 readiness evaluation result must be a non-null object.",
+    };
+  }
+  if (options.result.explodexPhase0Readiness !== true) {
+    return {
+      ok: false,
+      reason: "Phase 0 readiness evaluation must report explodexPhase0Readiness: true.",
+    };
+  }
+  if (
+    options.result.href !== PHASE0_APPROVED_READY_HREF &&
+    options.result.href !== "app://-/index.html"
+  ) {
+    return {
+      ok: false,
+      reason: "Phase 0 readiness evaluation href must be app://-/index.html.",
+    };
+  }
+  if (
+    options.result.readyState !== "interactive" &&
+    options.result.readyState !== "complete"
+  ) {
+    return {
+      ok: false,
+      reason: "Phase 0 readiness evaluation readyState must be interactive or complete.",
+    };
+  }
+  return { ok: true };
 }
 
 /** Normalize host identity into the secret-free Phase 0 freeze shape. */
@@ -88,6 +155,7 @@ function incompleteContract(options: {
   comparativeExperiments?: Phase0ComparativeExperiment[];
   readiness?: Phase0ReadinessEvidence | null;
   ownership?: Phase0OwnershipEvidence | null;
+  acceptanceAuthority?: Phase0AcceptanceAuthority | null;
 }): Phase0LaunchContract {
   return {
     schemaVersion: PHASE0_CONTRACT_SCHEMA_VERSION,
@@ -112,6 +180,7 @@ function incompleteContract(options: {
       argv: [],
       envKeys: [],
     },
+    acceptanceAuthority: options.acceptanceAuthority ?? null,
     provenAt: null,
     reason: options.reason,
   };
@@ -193,15 +262,38 @@ export function validatePhase0Readiness(
         "Phase 0 readiness requires a real bounded non-mutating renderer evaluation on the selected default context.",
     };
   }
+  const approved = validateApprovedRendererEvaluation(readiness.rendererEvaluation);
+  if (!approved.ok) {
+    return approved;
+  }
   if (readiness.readiness !== "benign") {
     return { ok: false, reason: "Phase 0 readiness evidence must report benign readiness." };
   }
   return { ok: true, readiness };
 }
 
-/** Validate ownership evidence: positive owned, all controlled negatives rejected. */
+/** Expected field-derived negative codes for controlled ownership roles. */
+const EXPECTED_OWNERSHIP_NEGATIVE_CODES: Record<string, string> = {
+  "protected-main": "protected_main",
+  unrelated: "unrelated_marker",
+  "arbitrary-substring": "arbitrary_substring",
+  "pid-reuse": "pid_reuse",
+  "wrong-endpoint": "wrong_endpoint",
+  "conflicting-source": "conflicting_source",
+};
+
+/**
+ * Validate ownership evidence: positive owned, all controlled negatives rejected,
+ * and codes re-derived from field observations rather than forged role labels.
+ */
 export function validatePhase0Ownership(
   ownership: Phase0OwnershipEvidence | null | undefined,
+  options?: {
+    expectedMarker?: string;
+    expectedExecutablePath?: string;
+    developmentPid?: number;
+    developmentStartedAt?: string;
+  },
 ): { ok: true; ownership: Phase0OwnershipEvidence } | { ok: false; reason: string } {
   if (ownership === null || ownership === undefined) {
     return { ok: false, reason: "Phase 0 ownership classifier evidence is missing." };
@@ -226,14 +318,7 @@ export function validatePhase0Ownership(
       };
     }
   }
-  const requiredRoles = new Set([
-    "protected-main",
-    "unrelated",
-    "arbitrary-substring",
-    "pid-reuse",
-    "wrong-endpoint",
-    "conflicting-source",
-  ]);
+  const requiredRoles = new Set(Object.keys(EXPECTED_OWNERSHIP_NEGATIVE_CODES));
   for (const role of requiredRoles) {
     if (!ownership.negatives.some((entry) => entry.role === role)) {
       return {
@@ -242,7 +327,168 @@ export function validatePhase0Ownership(
       };
     }
   }
+  for (const negative of ownership.negatives) {
+    const expectedCode = EXPECTED_OWNERSHIP_NEGATIVE_CODES[negative.role];
+    if (expectedCode !== undefined && negative.code !== expectedCode) {
+      return {
+        ok: false,
+        reason: `Ownership negative for role '${negative.role}' has forged or inconsistent code '${negative.code}' (expected '${expectedCode}').`,
+      };
+    }
+  }
+
+  // When acceptance identity is available, re-run the pure classifier on controlled
+  // field fixtures and require the same codes. Role labels never authorize the codes.
+  if (
+    options?.expectedMarker !== undefined &&
+    options.expectedExecutablePath !== undefined &&
+    options.developmentPid !== undefined &&
+    options.developmentStartedAt !== undefined
+  ) {
+    const fixtures = controlledOwnershipNegatives({
+      expected: {
+        marker: options.expectedMarker,
+        executablePath: options.expectedExecutablePath,
+        cdpHost: DEV_CDP_HOST,
+        cdpPort: DEV_CDP_PORT,
+      },
+      developmentPid: options.developmentPid,
+      developmentStartedAt: options.developmentStartedAt,
+    });
+    for (const fixture of fixtures) {
+      const rederived = classifyDevelopmentOwnership(fixture);
+      const recorded = ownership.negatives.find((entry) => entry.role === fixture.role);
+      if (recorded === undefined) {
+        return {
+          ok: false,
+          reason: `Ownership negatives omit re-derivable role '${fixture.role}'.`,
+        };
+      }
+      if (rederived.owned !== false || rederived.code !== recorded.code) {
+        return {
+          ok: false,
+          reason: `Ownership negative for role '${fixture.role}' does not survive field-derived classifier re-derivation.`,
+        };
+      }
+    }
+  }
   return { ok: true, ownership };
+}
+
+/** Validate acceptance-correlated survivors, cleanup, and final host recheck. */
+export function validatePhase0AcceptanceAuthority(
+  authority: Phase0AcceptanceAuthority | null | undefined,
+  options: {
+    frozenHost: Phase0FrozenHost;
+    readiness: Phase0ReadinessEvidence;
+    launchMarker: string;
+    isolation: Phase0LaunchContract["isolation"];
+    descriptor: SanitizedLaunchDescriptor;
+  },
+): { ok: true; authority: Phase0AcceptanceAuthority } | { ok: false; reason: string } {
+  if (authority === null || authority === undefined) {
+    return {
+      ok: false,
+      reason:
+        "Phase 0 proven contracts must persist acceptance-correlated authority (survivors, cleanup, final host, port release).",
+    };
+  }
+  if (!isNonEmptyString(authority.operationId)) {
+    return { ok: false, reason: "Acceptance authority requires one exact operation identity." };
+  }
+  if (authority.readinessPid !== options.readiness.pid) {
+    return {
+      ok: false,
+      reason: "Acceptance authority readiness PID must match the one exact readiness identity.",
+    };
+  }
+  if (authority.readinessProcessStartedAt !== options.readiness.processStartedAt) {
+    return {
+      ok: false,
+      reason:
+        "Acceptance authority readiness start identity must match the one exact readiness identity.",
+    };
+  }
+  if (!frozenHostEquals(authority.finalHostRecheck, options.frozenHost)) {
+    return {
+      ok: false,
+      reason: "Acceptance final host recheck must equal the frozen operation host identity.",
+    };
+  }
+  if (authority.cleanupDisposition.uncertain) {
+    return {
+      ok: false,
+      reason: "Acceptance cleanup disposition is uncertain; residual authority remains non-authorizing.",
+    };
+  }
+  if (!authority.cleanupDisposition.stopped || !authority.cleanupDisposition.portReleased) {
+    return {
+      ok: false,
+      reason: "Acceptance cleanup must record exact stop and 9444 release before proven authority.",
+    };
+  }
+  if (!authority.port9444Released) {
+    return {
+      ok: false,
+      reason: "Acceptance authority must confirm 9444 release before lifecycle authorization.",
+    };
+  }
+  if (authority.protectedMainBefore.length !== authority.protectedMainAfter.length) {
+    return {
+      ok: false,
+      reason: "Acceptance authority must revalidate every protected-main before/after survivor.",
+    };
+  }
+  for (const before of authority.protectedMainBefore) {
+    const after = authority.protectedMainAfter.find(
+      (entry) =>
+        entry.pid === before.pid && entry.processStartedAt === before.processStartedAt,
+    );
+    if (after === undefined || after.survived !== true) {
+      return {
+        ok: false,
+        reason: `Protected-main PID ${before.pid} did not survive acceptance cleanup.`,
+      };
+    }
+  }
+  // Bind descriptor/profile/CODEX_HOME/endpoint to the acceptance identity.
+  if (!options.descriptor.argv.includes(options.launchMarker)) {
+    return {
+      ok: false,
+      reason: "Acceptance descriptor must include the exact retained launch marker.",
+    };
+  }
+  if (
+    options.isolation.electronUserDataPath !== null &&
+    !options.descriptor.argv.some((token) =>
+      token.includes(options.isolation.electronUserDataPath!),
+    ) &&
+    !options.descriptor.envKeys.includes("CODEX_ELECTRON_USER_DATA_PATH")
+  ) {
+    return {
+      ok: false,
+      reason:
+        "Acceptance descriptor must bind the retained electron-user-data profile path for the acceptance launch.",
+    };
+  }
+  if (
+    options.isolation.codexHomePath !== null &&
+    !options.descriptor.envKeys.includes("CODEX_HOME")
+  ) {
+    return {
+      ok: false,
+      reason: "Acceptance descriptor must bind retained CODEX_HOME for the acceptance launch.",
+    };
+  }
+  if (
+    !options.descriptor.argv.some((token) => token.includes(`remote-debugging-port=${DEV_CDP_PORT}`))
+  ) {
+    return {
+      ok: false,
+      reason: "Acceptance descriptor must bind the exact 9444 development endpoint.",
+    };
+  }
+  return { ok: true, authority };
 }
 
 /**
@@ -520,6 +766,33 @@ export function validateCompleteComparativeMatrix(
         };
       }
       privateRoots.add(side.privateRoot);
+    }
+  }
+
+  // Reject repeated experiment PID/start identities across launched sides.
+  const launchedIdentities = new Set<string>();
+  for (const experiment of experiments) {
+    for (const side of [experiment.treatment, experiment.control] as const) {
+      if (side === null || !side.launched) continue;
+      if (
+        typeof side.pid !== "number" ||
+        side.pid <= 0 ||
+        !isNonEmptyString(side.processStartedAt)
+      ) {
+        return {
+          ok: false,
+          reason: `Phase 0 launched experiment side for '${experiment.knob}' lacks exact PID/start identity.`,
+        };
+      }
+      const key = `${side.pid}@${side.processStartedAt}`;
+      if (launchedIdentities.has(key)) {
+        return {
+          ok: false,
+          reason:
+            "Phase 0 comparative matrix rejects repeated experiment PID/start identities; each launch must be causally independent.",
+        };
+      }
+      launchedIdentities.add(key);
     }
   }
   for (const knob of PHASE0_CANDIDATE_KNOBS) {
@@ -1073,7 +1346,12 @@ export function evaluatePhase0LaunchContract(
       }
     }
 
-    const ownershipResult = validatePhase0Ownership(input.ownership);
+    const ownershipResult = validatePhase0Ownership(input.ownership, {
+      expectedMarker: markerResult.marker.value,
+      expectedExecutablePath: frozenHost.executablePath,
+      developmentPid: readinessResult.readiness.pid,
+      developmentStartedAt: readinessResult.readiness.processStartedAt,
+    });
     if (!ownershipResult.ok) {
       const contract = incompleteContract({
         frozenHost,
@@ -1096,6 +1374,58 @@ export function evaluatePhase0LaunchContract(
       };
     }
 
+    if (!isIsoUtcTimestamp(input.clockIso)) {
+      const contract = incompleteContract({
+        frozenHost,
+        appBuild: frozenHost.appBuild,
+        appVersion: frozenHost.appVersion,
+        reason: "Phase 0 provenAt must be a non-null ISO-8601 UTC timestamp.",
+        knobMatrix,
+        retainedKnobs,
+        launchMarker: markerResult.marker,
+        isolation,
+        sanitizedLaunchDescriptor: descriptor,
+        comparativeExperiments,
+        readiness: readinessResult.readiness,
+        ownership: ownershipResult.ownership,
+      });
+      return {
+        contract,
+        allowsLifecycleMutation: false,
+        allowsCompatibilityProbe: false,
+      };
+    }
+
+    const acceptanceCheck = validatePhase0AcceptanceAuthority(input.acceptanceAuthority, {
+      frozenHost,
+      readiness: readinessResult.readiness,
+      launchMarker: markerResult.marker.value,
+      isolation,
+      descriptor,
+    });
+    if (!acceptanceCheck.ok) {
+      const contract = incompleteContract({
+        frozenHost,
+        appBuild: frozenHost.appBuild,
+        appVersion: frozenHost.appVersion,
+        reason: acceptanceCheck.reason,
+        knobMatrix,
+        retainedKnobs,
+        launchMarker: markerResult.marker,
+        isolation,
+        sanitizedLaunchDescriptor: descriptor,
+        comparativeExperiments,
+        readiness: readinessResult.readiness,
+        ownership: ownershipResult.ownership,
+        acceptanceAuthority: input.acceptanceAuthority ?? null,
+      });
+      return {
+        contract,
+        allowsLifecycleMutation: false,
+        allowsCompatibilityProbe: false,
+      };
+    }
+
     const contract: Phase0LaunchContract = {
       schemaVersion: PHASE0_CONTRACT_SCHEMA_VERSION,
       status: "proven",
@@ -1110,6 +1440,7 @@ export function evaluatePhase0LaunchContract(
       readiness: readinessResult.readiness,
       ownership: ownershipResult.ownership,
       sanitizedLaunchDescriptor: descriptor,
+      acceptanceAuthority: acceptanceCheck.authority,
       provenAt: input.clockIso,
       reason: null,
     };
@@ -1135,6 +1466,7 @@ export function evaluatePhase0LaunchContract(
     readiness: input.readiness ?? null,
     ownership: input.ownership ?? null,
     sanitizedLaunchDescriptor: descriptor,
+    acceptanceAuthority: null,
     provenAt: input.clockIso,
     reason: null,
   };
@@ -1179,6 +1511,7 @@ export function createDisabledPhase0Contract(options: {
     readiness: null,
     ownership: null,
     sanitizedLaunchDescriptor: { argv: [], envKeys: [] },
+    acceptanceAuthority: null,
     provenAt: null,
     reason: options.reason ?? "Phase 0 launch-isolation proof has not been completed.",
   };
@@ -1472,6 +1805,14 @@ function parseReadiness(
   if (value.readiness !== "benign") return undefined;
   if (value.portOwnerPid !== value.pid) return undefined;
   if (frozenHost !== null && value.executablePath !== frozenHost.executablePath) return undefined;
+  if (status === "proven") {
+    const approved = validateApprovedRendererEvaluation({
+      expression: value.rendererEvaluation.expression,
+      result: value.rendererEvaluation.result,
+      evaluatedAt: value.rendererEvaluation.evaluatedAt,
+    });
+    if (!approved.ok) return undefined;
+  }
   return {
     pid: value.pid,
     processStartedAt: value.processStartedAt,
@@ -1492,6 +1833,80 @@ function parseReadiness(
       evaluatedAt: value.rendererEvaluation.evaluatedAt,
     },
     readiness: "benign",
+  };
+}
+
+function parseAcceptanceAuthority(
+  value: unknown,
+  status: Phase0LaunchContract["status"],
+): Phase0AcceptanceAuthority | null | undefined {
+  if (value === null || value === undefined) {
+    return status === "proven" ? undefined : null;
+  }
+  if (!isRecord(value)) return undefined;
+  if (!isNonEmptyString(value.operationId)) return undefined;
+  if (typeof value.readinessPid !== "number" || !Number.isInteger(value.readinessPid)) {
+    return undefined;
+  }
+  if (!isNonEmptyString(value.readinessProcessStartedAt)) return undefined;
+  if (!Array.isArray(value.protectedMainBefore) || !Array.isArray(value.protectedMainAfter)) {
+    return undefined;
+  }
+  const protectedMainBefore: Phase0AcceptanceAuthority["protectedMainBefore"] = [];
+  for (const entry of value.protectedMainBefore) {
+    if (!isRecord(entry)) return undefined;
+    if (typeof entry.pid !== "number" || !Number.isInteger(entry.pid)) return undefined;
+    if (!isNonEmptyString(entry.processStartedAt)) return undefined;
+    protectedMainBefore.push({
+      pid: entry.pid,
+      processStartedAt: entry.processStartedAt,
+    });
+  }
+  const protectedMainAfter: Phase0AcceptanceAuthority["protectedMainAfter"] = [];
+  for (const entry of value.protectedMainAfter) {
+    if (!isRecord(entry)) return undefined;
+    if (typeof entry.pid !== "number" || !Number.isInteger(entry.pid)) return undefined;
+    if (!isNonEmptyString(entry.processStartedAt)) return undefined;
+    if (typeof entry.survived !== "boolean") return undefined;
+    protectedMainAfter.push({
+      pid: entry.pid,
+      processStartedAt: entry.processStartedAt,
+      survived: entry.survived,
+    });
+  }
+  const finalHostRecheck = parseFrozenHost(value.finalHostRecheck);
+  if (finalHostRecheck === null) return undefined;
+  if (!isRecord(value.cleanupDisposition)) return undefined;
+  const method = value.cleanupDisposition.method;
+  if (
+    method !== "browser-close" &&
+    method !== "exact-signal" &&
+    method !== "unidentified-child" &&
+    method !== "none"
+  ) {
+    return undefined;
+  }
+  if (typeof value.cleanupDisposition.stopped !== "boolean") return undefined;
+  if (typeof value.cleanupDisposition.portReleased !== "boolean") return undefined;
+  if (typeof value.cleanupDisposition.uncertain !== "boolean") return undefined;
+  if (typeof value.port9444Released !== "boolean") return undefined;
+  return {
+    operationId: value.operationId,
+    readinessPid: value.readinessPid,
+    readinessProcessStartedAt: value.readinessProcessStartedAt,
+    protectedMainBefore,
+    protectedMainAfter,
+    finalHostRecheck,
+    cleanupDisposition: {
+      method,
+      stopped: value.cleanupDisposition.stopped,
+      portReleased: value.cleanupDisposition.portReleased,
+      uncertain: value.cleanupDisposition.uncertain,
+      ...(typeof value.cleanupDisposition.reason === "string"
+        ? { reason: value.cleanupDisposition.reason }
+        : {}),
+    },
+    port9444Released: value.port9444Released,
   };
 }
 
@@ -1656,18 +2071,75 @@ export function parsePhase0LaunchContract(value: unknown): Phase0LaunchContract 
   if (readiness === undefined) return null;
   const ownership = parseOwnership(value.ownership, value.status);
   if (ownership === undefined) return null;
+  const acceptanceAuthority = parseAcceptanceAuthority(value.acceptanceAuthority, value.status);
+  if (acceptanceAuthority === undefined) return null;
+
+  const isolation = {
+    electronUserDataPath:
+      value.isolation.electronUserDataPath === null ||
+      typeof value.isolation.electronUserDataPath === "string"
+        ? (value.isolation.electronUserDataPath as string | null)
+        : null,
+    codexHomePath:
+      value.isolation.codexHomePath === null || typeof value.isolation.codexHomePath === "string"
+        ? (value.isolation.codexHomePath as string | null)
+        : null,
+    explodexHomePath:
+      value.isolation.explodexHomePath === null ||
+      typeof value.isolation.explodexHomePath === "string"
+        ? (value.isolation.explodexHomePath as string | null)
+        : null,
+    cdpHost: DEV_CDP_HOST as typeof DEV_CDP_HOST,
+    cdpPort: DEV_CDP_PORT as typeof DEV_CDP_PORT,
+  };
+  if (
+    isolation.electronUserDataPath === null &&
+    value.isolation.electronUserDataPath !== null &&
+    value.isolation.electronUserDataPath !== undefined
+  ) {
+    return null;
+  }
+  if (
+    isolation.codexHomePath === null &&
+    value.isolation.codexHomePath !== null &&
+    value.isolation.codexHomePath !== undefined
+  ) {
+    return null;
+  }
+  if (
+    isolation.explodexHomePath === null &&
+    value.isolation.explodexHomePath !== null &&
+    value.isolation.explodexHomePath !== undefined
+  ) {
+    return null;
+  }
+
+  const sanitizedLaunchDescriptor = {
+    argv: value.sanitizedLaunchDescriptor.argv.filter(
+      (entry): entry is string => typeof entry === "string",
+    ),
+    envKeys: value.sanitizedLaunchDescriptor.envKeys.filter(
+      (entry): entry is string => typeof entry === "string",
+    ),
+  };
 
   // Proven contracts require complete readiness + ownership + semantic re-derivation.
   if (value.status === "proven") {
     if (readiness === null || ownership === null) return null;
     if (comparativeExperiments.length === 0) return null;
-    if (typeof value.provenAt !== "string" || value.provenAt.length === 0) return null;
+    if (typeof value.provenAt !== "string" || !isIsoUtcTimestamp(value.provenAt)) return null;
     if (launchMarker === null) return null;
     if (frozenHost === null) return null;
+    if (acceptanceAuthority === null) return null;
 
     const readinessCheck = validatePhase0Readiness(readiness, frozenHost);
     if (!readinessCheck.ok) return null;
-    const ownershipCheck = validatePhase0Ownership(ownership);
+    const ownershipCheck = validatePhase0Ownership(ownership, {
+      expectedMarker: launchMarker.value,
+      expectedExecutablePath: frozenHost.executablePath,
+      developmentPid: readiness.pid,
+      developmentStartedAt: readiness.processStartedAt,
+    });
     if (!ownershipCheck.ok) return null;
     const matrixCheck = validateCompleteComparativeMatrix(comparativeExperiments, knobMatrix);
     if (!matrixCheck.ok) return null;
@@ -1690,23 +2162,29 @@ export function parsePhase0LaunchContract(value: unknown): Phase0LaunchContract 
       for (const side of [experiment.treatment, experiment.control]) {
         if (side === null || side.privateRoot === null) continue;
         const root = side.privateRoot;
-        const electron = value.isolation.electronUserDataPath;
-        const codex = value.isolation.codexHomePath;
-        const explodex = value.isolation.explodexHomePath;
         if (
-          (typeof electron === "string" && electron.startsWith(`${root}/`)) ||
-          (typeof codex === "string" && codex.startsWith(`${root}/`)) ||
-          (typeof explodex === "string" && explodex.startsWith(`${root}/`))
+          (typeof isolation.electronUserDataPath === "string" &&
+            isolation.electronUserDataPath.startsWith(`${root}/`)) ||
+          (typeof isolation.codexHomePath === "string" &&
+            isolation.codexHomePath.startsWith(`${root}/`)) ||
+          (typeof isolation.explodexHomePath === "string" &&
+            isolation.explodexHomePath.startsWith(`${root}/`))
         ) {
           return null;
         }
       }
     }
 
-    const acceptanceArgv = value.sanitizedLaunchDescriptor.argv.filter(
-      (entry): entry is string => typeof entry === "string",
-    );
-    if (!acceptanceArgv.includes(launchMarker.value)) return null;
+    if (!sanitizedLaunchDescriptor.argv.includes(launchMarker.value)) return null;
+
+    const acceptanceCheck = validatePhase0AcceptanceAuthority(acceptanceAuthority, {
+      frozenHost,
+      readiness,
+      launchMarker: launchMarker.value,
+      isolation,
+      descriptor: sanitizedLaunchDescriptor,
+    });
+    if (!acceptanceCheck.ok) return null;
   }
 
   // Impossible: provenAt set on non-proven, or proven without provenAt.
@@ -1725,34 +2203,11 @@ export function parsePhase0LaunchContract(value: unknown): Phase0LaunchContract 
     knobMatrix,
     comparativeExperiments,
     launchMarker,
-    isolation: {
-      electronUserDataPath:
-        value.isolation.electronUserDataPath === null ||
-        typeof value.isolation.electronUserDataPath === "string"
-          ? (value.isolation.electronUserDataPath as string | null)
-          : null,
-      codexHomePath:
-        value.isolation.codexHomePath === null || typeof value.isolation.codexHomePath === "string"
-          ? (value.isolation.codexHomePath as string | null)
-          : null,
-      explodexHomePath:
-        value.isolation.explodexHomePath === null ||
-        typeof value.isolation.explodexHomePath === "string"
-          ? (value.isolation.explodexHomePath as string | null)
-          : null,
-      cdpHost: DEV_CDP_HOST,
-      cdpPort: DEV_CDP_PORT,
-    },
+    isolation,
     readiness,
     ownership,
-    sanitizedLaunchDescriptor: {
-      argv: value.sanitizedLaunchDescriptor.argv.filter(
-        (entry): entry is string => typeof entry === "string",
-      ),
-      envKeys: value.sanitizedLaunchDescriptor.envKeys.filter(
-        (entry): entry is string => typeof entry === "string",
-      ),
-    },
+    sanitizedLaunchDescriptor,
+    acceptanceAuthority,
     provenAt: typeof value.provenAt === "string" || value.provenAt === null ? value.provenAt : null,
     reason: typeof value.reason === "string" || value.reason === null ? value.reason : null,
   };
