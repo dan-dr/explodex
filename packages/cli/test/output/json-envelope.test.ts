@@ -112,8 +112,8 @@ describe("schemaVersion-1 JSON envelope", () => {
   });
 
   test("reserved commands return usage.command-unavailable without side effects", async () => {
-    // plugin create/validate/build/package are available; use a still-reserved command.
-    const captured = await captureCli(["--json", "plugin", "artifact", "validate", "x"]);
+    // plugin create/validate/build/package/artifact validate are available; use install.
+    const captured = await captureCli(["--json", "plugin", "install", "x"]);
     expect(captured.exitCode).toBe(3);
     const parsed = assertSingleJsonValue(captured.stdout) as {
       ok: boolean;
@@ -121,7 +121,7 @@ describe("schemaVersion-1 JSON envelope", () => {
       error: { code: string };
     };
     expect(parsed.ok).toBe(false);
-    expect(parsed.operation).toBe("plugin.artifact.validate");
+    expect(parsed.operation).toBe("plugin.install");
     expect(parsed.error.code).toBe("usage.command-unavailable");
   });
 

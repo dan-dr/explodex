@@ -10,6 +10,7 @@ import { runPluginCreate } from "../commands/plugin-create.ts";
 import { runPluginValidate } from "../commands/plugin-validate.ts";
 import { runPluginBuild } from "../commands/plugin-build.ts";
 import { runPluginPackage } from "../commands/plugin-package.ts";
+import { runPluginArtifactValidate } from "../commands/plugin-artifact-validate.ts";
 
 /** Operations that parse their own positional arguments. */
 const ACCEPTS_POSITIONALS = new Set([
@@ -17,6 +18,7 @@ const ACCEPTS_POSITIONALS = new Set([
   "plugin.validate",
   "plugin.build",
   "plugin.package",
+  "plugin.artifact.validate",
 ]);
 
 export async function dispatch(options: {
@@ -117,6 +119,13 @@ export async function dispatch(options: {
       });
     case "plugin.package":
       return runPluginPackage({
+        globals: parsed.globals,
+        env,
+        rest,
+        endOfOptions,
+      });
+    case "plugin.artifact.validate":
+      return runPluginArtifactValidate({
         globals: parsed.globals,
         env,
         rest,

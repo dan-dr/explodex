@@ -20,6 +20,22 @@ export {
   encodeOpaqueVersionComponent,
   validateOpaqueVersion,
 } from "./version.ts";
+export {
+  encodeArtifactIdentity,
+  encodeIdentityComponent,
+  shortPayloadSha256,
+} from "./identity-encode.ts";
+export {
+  buildNamedRootArchive,
+  extractNamedRootArchive,
+  computeArchiveSha256,
+} from "./archive.ts";
+export {
+  validateStandaloneArtifact,
+  validateInstallablePayloadDir,
+  computePayloadSha256FromFiles,
+} from "./artifact-validate.ts";
+export { scanBrowserSafeIife } from "./browser-scan.ts";
 export type {
   CreateWorkspaceResult,
   NormalizedSourceReport,
@@ -28,3 +44,6 @@ export type {
 export type { PluginBuildResult } from "./build.ts";
 export type { BundleResult, BundleImportDiagnostic } from "./bundle.ts";
 export type { PluginPackageResult } from "./package.ts";
+export type { StandaloneArtifactResult } from "./artifact-validate.ts";
+export type { BuiltPluginArchive, ExtractedPluginArchive } from "./archive.ts";
+export type { EncodedArtifactIdentity } from "./identity-encode.ts";

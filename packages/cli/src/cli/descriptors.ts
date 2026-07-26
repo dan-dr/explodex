@@ -206,7 +206,7 @@ export const GROUPS: readonly GroupDescriptor[] = [
         path: ["artifact", "validate"],
         operation: "plugin.artifact.validate",
         summary: "Validate a standalone packaged plugin artifact.",
-        availability: "reserved",
+        availability: "available",
         arguments: [
           { name: "path", description: "Path to the packaged artifact.", required: true },
         ],
