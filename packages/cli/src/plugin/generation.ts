@@ -193,6 +193,7 @@ export async function verifyDistGeneration(options: {
   workspacePath: string;
   timeoutMs: number;
   env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
 }): Promise<GenerationVerifyResult> {
   const workspacePath = resolve(options.workspacePath);
   const distPath = join(workspacePath, "dist");

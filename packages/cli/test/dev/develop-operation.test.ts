@@ -60,7 +60,7 @@ type Scenario = {
 
 function harness(options?: {
   preflight?: DevelopRuntimeAdapters["preflight"];
-  apply?: DevelopRuntimeAdapters["applyInitial"];
+  apply?: DevelopRuntimeAdapters["applyGeneration"];
 }): {
   adapters: DevelopRuntimeAdapters;
   calls: string[];
@@ -96,7 +96,11 @@ function harness(options?: {
         },
       };
     },
-    applyInitial: options?.apply ?? (async () => {
+    buildGeneration: async () => ({
+      ok: true,
+      pluginIdentity: PREFLIGHT.pluginIdentity,
+    }),
+    applyGeneration: options?.apply ?? (async () => {
       calls.push("apply");
       return {
         ok: true,
@@ -296,7 +300,7 @@ describe("M4-F04 foreground develop operation", () => {
         expectedReason: "runtime-failed",
         expectedCode: "develop.runtime-failed",
         configure(adapters) {
-          adapters.applyInitial = async () => ({
+          adapters.applyGeneration = async () => ({
             ok: false,
             code: "develop.runtime-failed",
             message: "Initial apply failed.",
@@ -309,7 +313,7 @@ describe("M4-F04 foreground develop operation", () => {
         expectedReason: "blocked",
         expectedCode: "auth.required",
         configure(adapters) {
-          adapters.applyInitial = async () => ({
+          adapters.applyGeneration = async () => ({
             ok: false,
             code: "auth.required",
             message: "Sign-in is required.",

@@ -1,5 +1,5 @@
 import { watch, type FSWatcher } from "node:fs";
-import { relative, sep } from "node:path";
+import { relative, resolve, sep } from "node:path";
 import type { CdpAdapter } from "../cdp/adapters.ts";
 import { createNodeCdpAdapter } from "../cdp/adapters.ts";
 import {
@@ -11,6 +11,8 @@ import {
 } from "../host/process-adapters.ts";
 import type { HostStatusAdapters } from "../host/status.ts";
 import { resolveSdkRuntimeIdentityForCli } from "../host/sdk-runtime-identity.ts";
+import type { RuntimeApplicationResult } from "../plugin/application-operation.ts";
+import { buildPluginWorkspace } from "../plugin/build.ts";
 import { runDevInjectOperation } from "./injection-operation.ts";
 import { prepareOwnedDevTarget } from "./injection-operation.ts";
 import { frozenHostEquals } from "./phase0.ts";
@@ -35,8 +37,26 @@ function closeWatcher(watcher: FSWatcher): Promise<void> {
   });
 }
 
+export function isDevelopWatchChangeIncluded(options: {
+  preflight: Pick<
+    ProductionDevelopPreflightSuccess,
+    "workspacePath" | "excludedPaths"
+  >;
+  fileName: string;
+}): boolean {
+  const changed = resolve(
+    options.preflight.workspacePath,
+    options.fileName,
+  );
+  if (!isWithin(options.preflight.workspacePath, changed)) return false;
+  return !options.preflight.excludedPaths.some((path) =>
+    isWithin(path, changed)
+  );
+}
+
 function createWatcher(options: {
   preflight: ProductionDevelopPreflightSuccess;
+  onChange: () => void;
   onStop: () => void;
 }): DevelopOwnedResource {
   const watcher = watch(
@@ -44,14 +64,11 @@ function createWatcher(options: {
     { recursive: true, persistent: true },
     (_eventType, fileName) => {
       if (fileName === null) return;
-      const changed = `${options.preflight.workspacePath}/${fileName}`;
-      if (
-        options.preflight.excludedPaths.some((path) => isWithin(path, changed))
-      ) {
-        return;
-      }
-      // M4-F05 owns generation coalescing and rebuild. This leaf establishes
-      // the bounded foreground watcher without applying later edits.
+      if (!isDevelopWatchChangeIncluded({
+        preflight: options.preflight,
+        fileName: String(fileName),
+      })) return;
+      options.onChange();
     },
   );
   watcher.once("error", options.onStop);
@@ -119,6 +136,60 @@ function createTargetMonitor(options: {
   };
 }
 
+function identitiesEqual(
+  left: {
+    id: string;
+    version: string;
+    payloadSha256: string;
+  } | null | undefined,
+  right: {
+    id: string;
+    version: string;
+    payloadSha256: string;
+  } | null | undefined,
+): boolean {
+  return left !== null &&
+    left !== undefined &&
+    right !== null &&
+    right !== undefined &&
+    left.id === right.id &&
+    left.version === right.version &&
+    left.payloadSha256 === right.payloadSha256;
+}
+
+function classifyApplicationFailure(options: {
+  application: RuntimeApplicationResult | undefined;
+  requested: {
+    id: string;
+    version: string;
+    payloadSha256: string;
+  };
+  previous: {
+    id: string;
+    version: string;
+    payloadSha256: string;
+  } | null;
+}) {
+  const liveIdentity = options.application?.appliedIdentity ?? null;
+  const liveDisposition = options.application === undefined ||
+      options.application.status === "not-attempted"
+    ? "unknown" as const
+    : identitiesEqual(liveIdentity, options.requested)
+    ? "requested-live" as const
+    : identitiesEqual(liveIdentity, options.previous)
+      ? "previous-preserved" as const
+      : liveIdentity === null
+        ? "plugin-absent" as const
+        : "unknown" as const;
+  return {
+    liveDisposition,
+    liveIdentity,
+    stage: options.application?.stage ?? "none",
+    possiblePartialEffects:
+      options.application?.possiblePartialEffects ?? false,
+  };
+}
+
 export async function createProductionDevelopAdapters(options: {
   workspacePath: string;
   sdkSourcePath?: string | null;
@@ -135,6 +206,7 @@ export async function createProductionDevelopAdapters(options: {
   let preflightValue: ProductionDevelopPreflightSuccess | null = null;
   return {
     nowIso: () => new Date().toISOString(),
+    debounceMs: 75,
     cleanupBoundMs: 5_000,
     writeLine: options.writeLine,
     preflight: async () => {
@@ -153,11 +225,15 @@ export async function createProductionDevelopAdapters(options: {
       if (result.ok) preflightValue = result.value;
       return result;
     },
-    openWatcher: async ({ onStop }) => {
+    openWatcher: async ({ onChange, onStop }) => {
       if (preflightValue === null) {
         throw new Error("Develop watcher opened before successful preflight.");
       }
-      return createWatcher({ preflight: preflightValue, onStop });
+      return createWatcher({
+        preflight: preflightValue,
+        onChange,
+        onStop,
+      });
     },
     openTargetMonitor: async ({ onTargetLost }) => {
       if (preflightValue === null) {
@@ -175,7 +251,38 @@ export async function createProductionDevelopAdapters(options: {
         onTargetLost,
       });
     },
-    applyInitial: async ({ preflight, signal }) => {
+    buildGeneration: async ({ preflight, signal }) => {
+      const built = await buildPluginWorkspace({
+        workspacePath: preflight.workspacePath,
+        timeoutMs: options.timeoutMs,
+        shouldCommit: () => signal?.aborted !== true,
+      });
+      if (!built.ok) {
+        return {
+          ok: false,
+          code: built.code,
+          message: built.message,
+          priorDistFingerprint: built.priorDistFingerprint,
+          distFingerprintAfter: built.distFingerprintAfter,
+          details: built.details,
+        };
+      }
+      return {
+        ok: true,
+        pluginIdentity: {
+          id: built.report.id,
+          version: built.report.version,
+          payloadSha256: built.payloadSha256,
+        },
+      };
+    },
+    applyGeneration: async ({
+      generation,
+      preflight,
+      pluginIdentity,
+      previousLastGood,
+      signal,
+    }) => {
       if (preflightValue === null) {
         return {
           ok: false,
@@ -240,12 +347,22 @@ export async function createProductionDevelopAdapters(options: {
         explicitRoot: options.explicitRoot,
         timeoutMs: options.timeoutMs,
         signal,
-        operationId: `develop-apply-${Date.now()}`,
+        operationId: `develop-apply-${generation}-${Date.now()}`,
         hostAdapters,
         statusAdapters,
         cdp,
       });
+      const requestedApplication = result.applications.find((application) =>
+        application.id === pluginIdentity.id &&
+        application.version === pluginIdentity.version &&
+        application.payloadSha256 === pluginIdentity.payloadSha256
+      );
       if (!result.ok) {
+        const classified = classifyApplicationFailure({
+          application: requestedApplication,
+          requested: pluginIdentity,
+          previous: previousLastGood?.pluginIdentity ?? null,
+        });
         return {
           ok: false,
           code: result.code,
@@ -256,16 +373,48 @@ export async function createProductionDevelopAdapters(options: {
             result.code === "compatibility.unproven" ||
             result.code === "dev.ownership-uncertain" ||
             result.code === "operation.state-changed",
-          details: result.details,
+          details: {
+            cause: result.details,
+            sourceDelivered: result.sourceDelivered,
+            applications: result.applications,
+          },
+          ...classified,
+        };
+      }
+      if (
+        requestedApplication === undefined ||
+        (requestedApplication.status !== "applied" &&
+          requestedApplication.status !== "unchanged") ||
+        !identitiesEqual(
+          requestedApplication.appliedIdentity,
+          pluginIdentity,
+        ) ||
+        requestedApplication.error !== undefined
+      ) {
+        const classified = classifyApplicationFailure({
+          application: requestedApplication,
+          requested: pluginIdentity,
+          previous: previousLastGood?.pluginIdentity ?? null,
+        });
+        return {
+          ok: false,
+          code:
+            requestedApplication?.error?.code ??
+              "plugin.application.incomplete",
+          message:
+            requestedApplication?.error?.message ??
+              "The renderer did not confirm the exact requested plugin identity as fully applied.",
+          blocked: false,
+          details: {
+            sourceDelivered: result.sourceDelivered,
+            applications: result.applications,
+          },
+          ...classified,
         };
       }
       return {
         ok: true,
-        pluginIdentity: {
-          id: result.identity.id,
-          version: result.identity.version,
-          payloadSha256: result.identity.payloadSha256,
-        },
+        pluginIdentity,
         target: result.target,
       };
     },

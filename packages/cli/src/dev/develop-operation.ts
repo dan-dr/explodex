@@ -39,25 +39,69 @@ export type DevelopInitialApplyResult =
       details?: unknown;
     };
 
+export type DevelopBuildResult =
+  | {
+      ok: true;
+      pluginIdentity: DevelopPluginIdentity;
+    }
+  | {
+      ok: false;
+      code: string;
+      message: string;
+      priorDistFingerprint: string | null;
+      distFingerprintAfter: string | null;
+      details?: unknown;
+    };
+
+export type DevelopApplyFailure = {
+  ok: false;
+  code: string;
+  message: string;
+  blocked: boolean;
+  details?: unknown;
+  liveDisposition?:
+    | "previous-preserved"
+    | "requested-live"
+    | "plugin-absent"
+    | "unknown";
+  liveIdentity?: DevelopPluginIdentity | null;
+  stage?: "authorization" | "evaluation" | "setup" | "cleanup" | "none";
+  possiblePartialEffects?: boolean;
+};
+
+export type DevelopApplyResult =
+  | Extract<DevelopInitialApplyResult, { ok: true }>
+  | DevelopApplyFailure;
+
 export type DevelopOwnedResource = {
   close(signal?: AbortSignal): void | Promise<void>;
 };
 
 export type DevelopRuntimeAdapters = {
   nowIso(): string;
+  debounceMs?: number;
   preflight(): Promise<DevelopPreflightResult>;
   openWatcher(options: {
     preflight: DevelopPreflightSuccess;
+    onChange: () => void;
     onStop: () => void;
   }): Promise<DevelopOwnedResource>;
   openTargetMonitor(options: {
     preflight: DevelopPreflightSuccess;
     onTargetLost: () => void;
   }): Promise<DevelopOwnedResource>;
-  applyInitial(options: {
+  buildGeneration(options: {
+    generation: number;
     preflight: DevelopPreflightSuccess;
     signal?: AbortSignal;
-  }): Promise<DevelopInitialApplyResult>;
+  }): Promise<DevelopBuildResult>;
+  applyGeneration(options: {
+    generation: number;
+    preflight: DevelopPreflightSuccess;
+    pluginIdentity: DevelopPluginIdentity;
+    previousLastGood: DevelopProtocolWriter["lastGood"];
+    signal?: AbortSignal;
+  }): Promise<DevelopApplyResult>;
   waitForStop(options: {
     signal?: AbortSignal;
   }): Promise<"completed" | "interrupted">;
@@ -73,7 +117,9 @@ export type ForegroundDevelopResult = DevelopTerminalResult;
 type StopDisposition =
   | { kind: "completed" }
   | { kind: "interrupted" }
-  | { kind: "target-lost" };
+  | { kind: "target-lost" }
+  | { kind: "blocked"; error: DevelopError }
+  | { kind: "runtime-failed"; error: DevelopError };
 
 function errorFromUnknown(error: unknown): DevelopError {
   if (error instanceof Error) {
@@ -124,7 +170,7 @@ function finalEventForFailure(options: {
   protocol: DevelopProtocolWriter;
   generation: number;
   preflight: DevelopPreflightSuccess;
-  failure: Extract<DevelopInitialApplyResult, { ok: false }>;
+  failure: DevelopApplyFailure;
 }): void {
   if (options.failure.blocked) {
     options.protocol.event({
@@ -146,6 +192,18 @@ function finalEventForFailure(options: {
     target: options.preflight.target,
     details: {
       code: options.failure.code,
+      ...(options.failure.liveDisposition === undefined
+        ? {}
+        : { liveDisposition: options.failure.liveDisposition }),
+      ...(options.failure.liveIdentity === undefined
+        ? {}
+        : { liveIdentity: options.failure.liveIdentity }),
+      ...(options.failure.stage === undefined
+        ? {}
+        : { stage: options.failure.stage }),
+      ...(options.failure.possiblePartialEffects === undefined
+        ? {}
+        : { possiblePartialEffects: options.failure.possiblePartialEffects }),
       ...(options.failure.details === undefined
         ? {}
         : { cause: options.failure.details }),
@@ -205,21 +263,267 @@ export async function runForegroundDevelop(options: {
   let terminalReason: DevelopTerminalReason = "runtime-failed";
   let terminalError: DevelopError | undefined;
   let targetLost = false;
+  let closing = false;
   const workAbort = new AbortController();
+  const generationControllers = new Map<number, AbortController>();
+  const generationTasks = new Set<Promise<void>>();
+  let newestGeneration = 1;
+  let nextGeneration = 2;
+  let queuedGeneration: number | null = null;
+  let generationWake: (() => void) | null = null;
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let stopResolve: ((value: StopDisposition) => void) | null = null;
   const stop = new Promise<StopDisposition>((resolve) => {
     stopResolve = resolve;
   });
   const onAbort = (): void => {
     workAbort.abort();
+    for (const controller of generationControllers.values()) {
+      controller.abort();
+    }
     stopResolve?.({ kind: "interrupted" });
   };
   if (options.signal?.aborted) onAbort();
   else options.signal?.addEventListener("abort", onAbort, { once: true });
 
+  const generationIsCurrent = (
+    generation: number,
+    controller: AbortController,
+  ): boolean =>
+    !closing &&
+    !targetLost &&
+    generation === newestGeneration &&
+    !controller.signal.aborted &&
+    !workAbort.signal.aborted;
+
+  const emitBuildFailure = (
+    generation: number,
+    failure: Extract<DevelopBuildResult, { ok: false }>,
+  ): boolean => {
+    const priorDistPreserved =
+      failure.priorDistFingerprint === failure.distFingerprintAfter;
+    protocol.event({
+      generation,
+      type: "build-failed",
+      details: {
+        code: failure.code,
+        priorDistPreserved,
+        priorDistFingerprint: failure.priorDistFingerprint,
+        distFingerprintAfter: failure.distFingerprintAfter,
+        ...(failure.details === undefined ? {} : { cause: failure.details }),
+      },
+    });
+    if (!priorDistPreserved) {
+      closing = true;
+      workAbort.abort();
+      stopResolve?.({
+        kind: "runtime-failed",
+        error: {
+          code: "develop.prior-dist-changed",
+          message:
+            "A failed plugin build changed the prior committed dist output.",
+        },
+      });
+    }
+    return priorDistPreserved;
+  };
+
+  const runGeneration = async (input: {
+    generation: number;
+    pluginIdentity?: DevelopPluginIdentity;
+    initial: boolean;
+  }): Promise<void> => {
+    const controller = new AbortController();
+    generationControllers.set(input.generation, controller);
+    if (workAbort.signal.aborted) controller.abort();
+    const onWorkAbort = (): void => controller.abort();
+    workAbort.signal.addEventListener("abort", onWorkAbort, { once: true });
+    try {
+      protocol.event({
+        generation: input.generation,
+        type: "build-started",
+      });
+      let pluginIdentity = input.pluginIdentity;
+      if (pluginIdentity === undefined) {
+        const built = await options.adapters.buildGeneration({
+          generation: input.generation,
+          preflight,
+          signal: controller.signal,
+        });
+        if (!generationIsCurrent(input.generation, controller)) return;
+        if (!built.ok) {
+          emitBuildFailure(input.generation, built);
+          return;
+        }
+        pluginIdentity = built.pluginIdentity;
+      }
+      if (!generationIsCurrent(input.generation, controller)) return;
+      protocol.event({
+        generation: input.generation,
+        type: "build-succeeded",
+        pluginIdentity,
+        sdkRuntimeIdentity: preflight.sdkRuntimeIdentity,
+      });
+      protocol.event({
+        generation: input.generation,
+        type: "apply-started",
+        pluginIdentity,
+        sdkRuntimeIdentity: preflight.sdkRuntimeIdentity,
+        target: preflight.target,
+      });
+      const applied = await options.adapters.applyGeneration({
+        generation: input.generation,
+        preflight,
+        pluginIdentity,
+        previousLastGood: protocol.lastGood,
+        signal: controller.signal,
+      });
+      if (!generationIsCurrent(input.generation, controller)) return;
+      if (!applied.ok) {
+        finalEventForFailure({
+          protocol,
+          generation: input.generation,
+          preflight,
+          failure: applied,
+        });
+        if (applied.blocked) {
+          closing = true;
+          workAbort.abort();
+          stopResolve?.({
+            kind: "blocked",
+            error: {
+              code: applied.code,
+              message: applied.message,
+              ...(applied.details === undefined
+                ? {}
+                : { details: applied.details }),
+            },
+          });
+        } else if (input.initial) {
+          closing = true;
+          workAbort.abort();
+          stopResolve?.({
+            kind: "runtime-failed",
+            error: {
+              code: applied.code,
+              message: applied.message,
+              ...(applied.details === undefined
+                ? {}
+                : { details: applied.details }),
+            },
+          });
+        }
+        return;
+      }
+      if (
+        applied.pluginIdentity.id !== pluginIdentity.id ||
+        applied.pluginIdentity.version !== pluginIdentity.version ||
+        applied.pluginIdentity.payloadSha256 !==
+          pluginIdentity.payloadSha256 ||
+        applied.target.targetId !== preflight.target.targetId ||
+        applied.target.executionContextUniqueId !==
+          preflight.target.executionContextUniqueId
+      ) {
+        const failure: DevelopApplyFailure = {
+          ok: false,
+          code: "operation.state-changed",
+          message:
+            "Plugin artifact or exact target identity changed during foreground apply.",
+          blocked: false,
+          liveDisposition: "unknown",
+        };
+        finalEventForFailure({
+          protocol,
+          generation: input.generation,
+          preflight,
+          failure,
+        });
+        if (input.initial) {
+          closing = true;
+          workAbort.abort();
+          stopResolve?.({
+            kind: "runtime-failed",
+            error: { code: failure.code, message: failure.message },
+          });
+        }
+        return;
+      }
+      protocol.applySucceeded({
+        generation: input.generation,
+        pluginIdentity: applied.pluginIdentity,
+        sdkRuntimeIdentity: preflight.sdkRuntimeIdentity,
+        target: applied.target,
+        appliedAt: options.adapters.nowIso(),
+      });
+    } catch (error: unknown) {
+      if (!generationIsCurrent(input.generation, controller)) return;
+      const failure = errorFromUnknown(error);
+      protocol.event({
+        generation: input.generation,
+        type: "build-failed",
+        details: { code: failure.code },
+      });
+      if (input.initial) {
+        closing = true;
+        workAbort.abort();
+        stopResolve?.({ kind: "runtime-failed", error: failure });
+      }
+    } finally {
+      workAbort.signal.removeEventListener("abort", onWorkAbort);
+      generationControllers.delete(input.generation);
+    }
+  };
+
+  const startGeneration = (input: {
+    generation: number;
+    pluginIdentity?: DevelopPluginIdentity;
+    initial: boolean;
+  }): Promise<void> => {
+    newestGeneration = input.generation;
+    for (const [generation, controller] of generationControllers) {
+      if (generation < input.generation) controller.abort();
+    }
+    const task = runGeneration(input);
+    generationTasks.add(task);
+    void task.finally(() => generationTasks.delete(task));
+    return task;
+  };
+
+  const queueGeneration = (): void => {
+    if (closing || targetLost || workAbort.signal.aborted) return;
+    for (const controller of generationControllers.values()) controller.abort();
+    if (debounceTimer !== null) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      debounceTimer = null;
+      if (closing || targetLost || workAbort.signal.aborted) return;
+      queuedGeneration = nextGeneration;
+      nextGeneration += 1;
+      generationWake?.();
+      generationWake = null;
+    }, options.adapters.debounceMs ?? 75);
+  };
+
+  const takeQueuedGeneration = async (): Promise<number> => {
+    if (queuedGeneration !== null) {
+      const generation = queuedGeneration;
+      queuedGeneration = null;
+      return generation;
+    }
+    await new Promise<void>((resolve) => {
+      generationWake = resolve;
+    });
+    const generation = queuedGeneration;
+    queuedGeneration = null;
+    if (generation === null) {
+      throw new Error("Generation wake completed without queued work.");
+    }
+    return generation;
+  };
+
   try {
     watcher = await options.adapters.openWatcher({
       preflight,
+      onChange: queueGeneration,
       onStop: () => stopResolve?.({ kind: "completed" }),
     });
     monitor = await options.adapters.openTargetMonitor({
@@ -228,6 +532,9 @@ export async function runForegroundDevelop(options: {
         if (targetLost) return;
         targetLost = true;
         workAbort.abort();
+        for (const controller of generationControllers.values()) {
+          controller.abort();
+        }
         stopResolve?.({ kind: "target-lost" });
       },
     });
@@ -244,28 +551,47 @@ export async function runForegroundDevelop(options: {
       },
     });
 
-    const generation = 1;
-    protocol.event({ generation, type: "build-started" });
-    protocol.event({
-      generation,
-      type: "build-succeeded",
+    await startGeneration({
+      generation: 1,
       pluginIdentity: preflight.pluginIdentity,
-      sdkRuntimeIdentity: preflight.sdkRuntimeIdentity,
+      initial: true,
     });
-    protocol.event({
-      generation,
-      type: "apply-started",
-      pluginIdentity: preflight.pluginIdentity,
-      sdkRuntimeIdentity: preflight.sdkRuntimeIdentity,
-      target: preflight.target,
-    });
-    const applied = await options.adapters.applyInitial({
-      preflight,
-      signal: workAbort.signal,
-    });
-    if (targetLost) {
+
+    const waitAbort = new AbortController();
+    const externalStop = options.adapters.waitForStop({
+      signal: waitAbort.signal,
+    }).then((reason): StopDisposition => ({ kind: reason }));
+    let disposition: StopDisposition | null = null;
+    while (disposition === null) {
+      const outcome = await Promise.race([
+        stop.then((value) => ({ kind: "stop" as const, value })),
+        externalStop.then((value) => ({ kind: "stop" as const, value })),
+        takeQueuedGeneration().then((generation) => ({
+          kind: "generation" as const,
+          generation,
+        })),
+      ]);
+      if (outcome.kind === "stop") {
+        disposition = outcome.value;
+        continue;
+      }
+      if (closing || targetLost || workAbort.signal.aborted) continue;
+      void startGeneration({
+        generation: outcome.generation,
+        initial: false,
+      });
+    }
+    waitAbort.abort();
+    closing = true;
+    if (debounceTimer !== null) {
+      clearTimeout(debounceTimer);
+      debounceTimer = null;
+    }
+    generationWake = null;
+    for (const controller of generationControllers.values()) controller.abort();
+    if (disposition.kind === "target-lost") {
       protocol.event({
-        generation,
+        generation: newestGeneration + 1,
         type: "target-lost",
         target: preflight.target,
         details: { code: "cdp.target-lost" },
@@ -275,82 +601,23 @@ export async function runForegroundDevelop(options: {
         code: "cdp.target-lost",
         message: "The exact development target was lost.",
       };
-    } else if (!applied.ok) {
-      finalEventForFailure({
-        protocol,
-        generation,
-        preflight,
-        failure: applied,
-      });
-      terminalReason =
-        applied.code === "operation.interrupted" || options.signal?.aborted
-          ? "interrupted"
-          : applied.blocked
-            ? "blocked"
-            : "runtime-failed";
-      terminalError = {
-        code: applied.code,
-        message: applied.message,
-        ...(applied.details === undefined ? {} : { details: applied.details }),
-      };
     } else if (
-      applied.pluginIdentity.id !== preflight.pluginIdentity.id ||
-      applied.pluginIdentity.version !== preflight.pluginIdentity.version ||
-      applied.pluginIdentity.payloadSha256 !==
-        preflight.pluginIdentity.payloadSha256
+      disposition.kind === "interrupted" ||
+      options.signal?.aborted
     ) {
-      protocol.event({
-        generation,
-        type: "apply-failed",
-        target: preflight.target,
-        details: { code: "operation.state-changed" },
-      });
-      terminalReason = "runtime-failed";
+      terminalReason = "interrupted";
       terminalError = {
-        code: "operation.state-changed",
-        message: "Plugin artifact identity changed after foreground preflight.",
+        code: "operation.interrupted",
+        message: "Foreground development was interrupted.",
       };
+    } else if (disposition.kind === "blocked") {
+      terminalReason = "blocked";
+      terminalError = disposition.error;
+    } else if (disposition.kind === "runtime-failed") {
+      terminalReason = "runtime-failed";
+      terminalError = disposition.error;
     } else {
-      protocol.applySucceeded({
-        generation,
-        pluginIdentity: applied.pluginIdentity,
-        sdkRuntimeIdentity: preflight.sdkRuntimeIdentity,
-        target: applied.target,
-        appliedAt: options.adapters.nowIso(),
-      });
-
-      const waitAbort = new AbortController();
-      const disposition = await Promise.race([
-        stop,
-        options.adapters.waitForStop({ signal: waitAbort.signal }).then(
-          (reason): StopDisposition => ({ kind: reason }),
-        ),
-      ]);
-      waitAbort.abort();
-      if (disposition.kind === "target-lost") {
-        protocol.event({
-          generation: generation + 1,
-          type: "target-lost",
-          target: preflight.target,
-          details: { code: "cdp.target-lost" },
-        });
-        terminalReason = "blocked";
-        terminalError = {
-          code: "cdp.target-lost",
-          message: "The exact development target was lost.",
-        };
-      } else if (
-        disposition.kind === "interrupted" ||
-        options.signal?.aborted
-      ) {
-        terminalReason = "interrupted";
-        terminalError = {
-          code: "operation.interrupted",
-          message: "Foreground development was interrupted.",
-        };
-      } else {
-        terminalReason = "completed";
-      }
+      terminalReason = "completed";
     }
   } catch (error: unknown) {
     terminalReason = options.signal?.aborted ? "interrupted" : "runtime-failed";
@@ -367,6 +634,25 @@ export async function runForegroundDevelop(options: {
   const residuals: string[] = [];
   const cleanupBoundMs = options.adapters.cleanupBoundMs ?? 5_000;
   const cleanupDeadline = Date.now() + cleanupBoundMs;
+  if (generationTasks.size > 0) {
+    const remainingMs = Math.max(0, cleanupDeadline - Date.now());
+    let generationTimer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      await Promise.race([
+        Promise.allSettled([...generationTasks]),
+        new Promise<never>((_resolve, reject) => {
+          generationTimer = setTimeout(
+            () => reject(new Error("Generation cleanup timed out.")),
+            remainingMs,
+          );
+        }),
+      ]);
+    } catch {
+      residuals.push("generation-work");
+    } finally {
+      if (generationTimer !== null) clearTimeout(generationTimer);
+    }
+  }
   await Promise.all([
     closeResource(monitor, residuals, "target-monitor", cleanupDeadline),
     closeResource(watcher, residuals, "watcher", cleanupDeadline),

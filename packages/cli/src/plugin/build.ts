@@ -187,6 +187,7 @@ export async function buildPluginWorkspace(options: {
   workspacePath: string;
   timeoutMs: number;
   env?: NodeJS.ProcessEnv;
+  shouldCommit?: () => boolean;
 }): Promise<PluginBuildResult> {
   const workspacePath = resolve(options.workspacePath);
   const priorDistFingerprint = await fingerprintDistTree(workspacePath);
@@ -264,7 +265,10 @@ export async function buildPluginWorkspace(options: {
   }
 
   // Stage on the same filesystem as the workspace so rename is atomic.
-  const stagingDir = join(workspacePath, `.explodex-dist-staging-${process.pid}`);
+  const stagingDir = join(
+    workspacePath,
+    `.explodex-dist-staging-${process.pid}-${Math.random().toString(36).slice(2, 10)}`,
+  );
   await rm(stagingDir, { recursive: true, force: true });
   await mkdir(stagingDir, { recursive: true });
   try {
@@ -377,7 +381,11 @@ export async function buildPluginWorkspace(options: {
     await writeGenerationRecord(stagingDir, generation);
 
     // Final staging inventory: installable set + generation record only.
-    await commitBundleDist({ workspacePath, stagingDir });
+    await commitBundleDist({
+      workspacePath,
+      stagingDir,
+      shouldCommit: options.shouldCommit,
+    });
 
     const after = await fingerprintDistTree(workspacePath);
     if (after === null) {
@@ -406,9 +414,15 @@ export async function buildPluginWorkspace(options: {
   } catch (error: unknown) {
     await rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
     const after = await fingerprintDistTree(workspacePath);
+    const coded = error as { code?: unknown };
+    const interrupted = coded.code === "operation.interrupted";
     return failResult({
-      code: "plugin.source.invalid",
-      message: error instanceof Error ? error.message : "Plugin build failed",
+      code: interrupted ? "operation.interrupted" : "plugin.source.invalid",
+      message: interrupted
+        ? "Plugin build was interrupted."
+        : error instanceof Error
+          ? error.message
+          : "Plugin build failed",
       priorDistFingerprint,
       distFingerprintAfter: after,
     });

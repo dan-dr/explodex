@@ -576,11 +576,28 @@ export async function fingerprintDist(workspacePath: string): Promise<string | n
 export async function commitBundleDist(options: {
   workspacePath: string;
   stagingDir: string;
+  signal?: AbortSignal;
+  shouldCommit?: () => boolean;
 }): Promise<void> {
   const workspacePath = resolve(options.workspacePath);
   const distPath = join(workspacePath, "dist");
   const stagingDir = resolve(options.stagingDir);
-  const backup = join(workspacePath, `.dist-backup-${process.pid}`);
+  const backup = join(
+    workspacePath,
+    `.dist-backup-${process.pid}-${Math.random().toString(36).slice(2, 10)}`,
+  );
+  const rejected = join(
+    workspacePath,
+    `.dist-rejected-${process.pid}-${Math.random().toString(36).slice(2, 10)}`,
+  );
+  const commitAllowed = (): boolean =>
+    !options.signal?.aborted && (options.shouldCommit?.() ?? true);
+  if (!commitAllowed()) {
+    throw Object.assign(
+      new Error("Plugin build was superseded before dist commit."),
+      { code: "operation.interrupted" },
+    );
+  }
 
   const hadDist = await pathExists(distPath);
   if (hadDist) {
@@ -588,8 +605,25 @@ export async function commitBundleDist(options: {
     await rename(distPath, backup);
   }
   try {
+    if (!commitAllowed()) {
+      throw Object.assign(
+        new Error("Plugin build was superseded before dist commit."),
+        { code: "operation.interrupted" },
+      );
+    }
     await mkdir(dirname(distPath), { recursive: true });
     await rename(stagingDir, distPath);
+    if (!commitAllowed()) {
+      await rename(distPath, rejected);
+      if (hadDist && (await pathExists(backup))) {
+        await rename(backup, distPath);
+      }
+      await rm(rejected, { recursive: true, force: true });
+      throw Object.assign(
+        new Error("Plugin build was superseded during dist commit."),
+        { code: "operation.interrupted" },
+      );
+    }
     if (hadDist) {
       await rm(backup, { recursive: true, force: true });
     }
