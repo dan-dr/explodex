@@ -466,7 +466,9 @@ async function validateExtractedArchive(
   extracted: ExtractedPluginArchive,
 ): Promise<StandaloneArtifactResult> {
   const tempRoot = await mkdtemp(join(tmpdir(), "explodex-artifact-"));
-  const payloadDir = join(tempRoot, extracted.archiveRootName);
+  // Never place an attacker-controlled archive root into a filesystem path.
+  // The root name remains metadata and is validated against the payload identity.
+  const payloadDir = join(tempRoot, "payload");
   try {
     // Materialize files for shared directory validation.
     const { mkdir } = await import("node:fs/promises");

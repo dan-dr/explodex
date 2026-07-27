@@ -31,6 +31,14 @@ export {
   computeArchiveSha256,
 } from "./archive.ts";
 export {
+  ARTIFACT_SCHEMA_V1_LIMITS,
+  validateArchiveExpansionMetrics,
+} from "./artifact-schema.ts";
+export {
+  ingestLocalPluginArchive,
+  ingestRemotePluginArchive,
+} from "./installer.ts";
+export {
   validateStandaloneArtifact,
   validateInstallablePayloadDir,
   computePayloadSha256FromFiles,
@@ -46,4 +54,15 @@ export type { BundleResult, BundleImportDiagnostic } from "./bundle.ts";
 export type { PluginPackageResult } from "./package.ts";
 export type { StandaloneArtifactResult } from "./artifact-validate.ts";
 export type { BuiltPluginArchive, ExtractedPluginArchive } from "./archive.ts";
+export type {
+  ArtifactSchemaV1LimitName,
+  ArchiveExpansionMetrics,
+  ArchiveExpansionResult,
+} from "./artifact-schema.ts";
+export type {
+  ExpectedPluginIdentity,
+  PluginIngestionAdapters,
+  PluginIngestionResult,
+  PluginIngestionSuccess,
+} from "./installer.ts";
 export type { EncodedArtifactIdentity } from "./identity-encode.ts";

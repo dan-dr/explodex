@@ -214,9 +214,19 @@ export const GROUPS: readonly GroupDescriptor[] = [
       {
         path: ["install"],
         operation: "plugin.install",
-        summary: "Install a plugin archive or registry identity as disabled.",
-        availability: "reserved",
+        summary: "Validate a prebuilt plugin archive before disabled installation.",
+        availability: "available",
         aliases: ["add"],
+        arguments: [
+          { name: "archive", description: "Prebuilt .tar.gz or .tgz plugin archive.", required: true },
+        ],
+        options: [
+          {
+            long: "target",
+            description: "Review target role (M3-F01 supports none only).",
+            valueName: "role",
+          },
+        ],
       },
       {
         path: ["status"],
