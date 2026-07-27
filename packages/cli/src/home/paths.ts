@@ -33,3 +33,11 @@ export function stateDirectory(explodexHome: string): string {
 export function locksDirectory(explodexHome: string): string {
   return join(explodexHome, "locks");
 }
+
+export function pluginsStatePath(explodexHome: string): string {
+  return join(explodexHome, "state", "plugins.json");
+}
+
+export function pluginsDirectory(explodexHome: string): string {
+  return join(explodexHome, "plugins");
+}

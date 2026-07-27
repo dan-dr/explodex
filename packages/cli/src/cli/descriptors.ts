@@ -214,7 +214,7 @@ export const GROUPS: readonly GroupDescriptor[] = [
       {
         path: ["install"],
         operation: "plugin.install",
-        summary: "Validate a prebuilt plugin archive before disabled installation.",
+        summary: "Atomically install a prebuilt plugin archive disabled and pending review.",
         availability: "available",
         aliases: ["add"],
         arguments: [
@@ -223,7 +223,7 @@ export const GROUPS: readonly GroupDescriptor[] = [
         options: [
           {
             long: "target",
-            description: "Review target role (M3-F01 supports none only).",
+            description: "Review target role (immutable local installation supports none only).",
             valueName: "role",
           },
         ],

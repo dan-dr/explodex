@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { buildPluginWorkspace } from "../../src/plugin/build.ts";
 import {
@@ -21,10 +21,18 @@ async function archiveDist(options: {
   archivePath: string;
 }): Promise<void> {
   const entries = [];
-  for (const relativePath of await listInstallableFiles(join(options.workspace, "dist"))) {
+  const dist = join(options.workspace, "dist");
+  const relativePaths = await listInstallableFiles(dist);
+  try {
+    await access(join(dist, ".explodex-hidden"));
+    relativePaths.push(".explodex-hidden");
+  } catch {
+    // Fixture has no private sidecar.
+  }
+  for (const relativePath of relativePaths) {
     entries.push({
       relativePath,
-      bytes: await readFile(join(options.workspace, "dist", relativePath)),
+      bytes: await readFile(join(dist, relativePath)),
     });
   }
   const archive = buildNamedRootArchive({
@@ -108,6 +116,14 @@ describe("VAL-SDK-038 standalone validation failure matrix before commit", () =>
             join(dist, "index.js"),
             `(function(){})();\n//# sourceMappingURL=index.js.map\n`,
           );
+          await writeChecksums(dist, await buildChecksumsFromDir(dist));
+        },
+      },
+      {
+        name: "private-sidecar",
+        expected: /Unexpected non-installable file/i,
+        async mutate(dist) {
+          await writeFile(join(dist, ".explodex-hidden"), "unchecked");
           await writeChecksums(dist, await buildChecksumsFromDir(dist));
         },
       },

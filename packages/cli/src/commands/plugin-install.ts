@@ -8,7 +8,7 @@ import {
   type RenderedCliResult,
 } from "../output/envelope.ts";
 import { resolveExplodexHome } from "../home/paths.ts";
-import { ingestLocalPluginArchive } from "../plugin/installer.ts";
+import { installLocalPluginArchive } from "../plugin/install.ts";
 
 const OPERATION = "plugin.install";
 
@@ -71,7 +71,7 @@ export async function runPluginInstall(options: {
     return renderFailure({
       operation: OPERATION,
       code: "plugin.install.target-unavailable",
-      message: "M3-F01 validates archives only; renderer review targets are introduced by later plugin-activation features.",
+      message: "Local installation is disabled and pending review; renderer review targets are introduced by later plugin-activation features.",
       details: { target },
       exitCode: 1,
       humanStderr:
@@ -118,48 +118,65 @@ export async function runPluginInstall(options: {
       message: error instanceof Error ? error.message : "Unable to resolve Explodex home.",
     });
   }
-  const stagingParent = resolve(explodexHome, "plugins", ".staging");
-  const result = await ingestLocalPluginArchive({ archivePath, stagingParent });
+  const result = await installLocalPluginArchive({
+    archivePath,
+    explodexHome,
+  });
   if (!result.ok) {
     return renderFailure({
       operation: OPERATION,
       code: result.code,
       message: result.message,
-      details: result.details,
+      details: {
+        ...result.details,
+        artifactCommitted: result.artifactCommitted,
+        ...(result.artifactPath === undefined ? {} : { artifactPath: result.artifactPath }),
+      },
       exitCode: exitCodeForError(result.code),
       humanStderr: `${result.message}\nerror.code: ${result.code}\n`,
     });
   }
 
-  try {
-    const payload = {
-      id: result.id,
-      version: result.version,
-      payloadSha256: result.payloadSha256,
-      archiveSha256: result.archiveSha256,
-      archiveRootName: result.archiveRootName,
-      lifecycle: result.lifecycle,
-      sdkRange: result.sdkRange,
-      files: result.files,
-      installed: false,
-      committed: false,
-      target: "none" as const,
-      validation: "precommit-complete" as const,
-    };
-    const human = [
-      `Validated plugin archive for installation: ${result.id}@${result.version}`,
-      `  payloadSha256: ${result.payloadSha256}`,
-      `  archiveSha256: ${result.archiveSha256}`,
-      "  committed: no (immutable installation/state authority is introduced by M3-F02)",
-      "",
-    ].join("\n");
-    return {
-      envelope: successEnvelope(OPERATION, payload),
-      exitCode: EXIT_SUCCESS,
-      humanStdout: human,
-      humanStderr: "",
-    };
-  } finally {
-    await result.cleanup();
-  }
+  const payload = {
+    id: result.id,
+    version: result.version,
+    payloadSha256: result.payloadSha256,
+    archiveSha256: result.archiveSha256,
+    archiveRootName: result.archiveRootName,
+    lifecycle: result.lifecycle,
+    sdkRange: result.sdkRange,
+    files: result.files,
+    artifactPath: result.artifactPath,
+    relativePath: result.relativePath,
+    source: result.source,
+    sourceLabel: result.sourceLabel,
+    outcome: result.outcome,
+    installed: true,
+    artifactCommitted: result.artifactCommitted,
+    stateCommitted: result.stateCommitted,
+    activationChanged: result.activationChanged,
+    enabled: result.enabled,
+    pendingReview: result.pendingReview,
+    target: "none" as const,
+    transportTrust: "computed-local-archive-not-publisher-authenticated" as const,
+  };
+  const human = [
+    `${result.outcome === "already-installed" ? "Already installed" : result.outcome === "rediscovered" ? "Rediscovered" : "Installed"} plugin: ${result.id}@${result.version}`,
+    `  payloadSha256: ${result.payloadSha256}`,
+    `  archiveSha256: ${result.archiveSha256} (computed from the local archive; not publisher-authenticated)`,
+    `  artifact: ${result.artifactPath}`,
+    `  source: ${result.sourceLabel}`,
+    result.enabled
+      ? "  authority: unchanged (this exact identity was already enabled before reinstall)"
+      : result.pendingReview
+        ? "  enabled: no (pending separate review)"
+        : "  authority: unchanged",
+    "",
+  ].join("\n");
+  return {
+    envelope: successEnvelope(OPERATION, payload),
+    exitCode: EXIT_SUCCESS,
+    humanStdout: human,
+    humanStderr: "",
+  };
 }

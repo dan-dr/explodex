@@ -149,8 +149,7 @@ export async function validateInstallablePayloadDir(
         path: relative.slice("__special__:".length),
       });
     }
-    if (relative === GENERATION_FILE) continue;
-    if (relative.startsWith(".explodex-")) continue;
+    if (relative === GENERATION_FILE && options?.source === "directory") continue;
     if (!isInstallableRelativePath(relative)) {
       return fail("plugin.artifact.invalid", `Unexpected non-installable file: ${relative}`, {
         path: relative,

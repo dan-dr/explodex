@@ -38,6 +38,21 @@ export {
   ingestLocalPluginArchive,
   ingestRemotePluginArchive,
 } from "./installer.ts";
+export { installLocalPluginArchive } from "./install.ts";
+export {
+  artifactProvenancePath,
+  loadArtifactProvenance,
+  parseArtifactProvenance,
+  saveArtifactProvenanceOnce,
+} from "./install-provenance.ts";
+export {
+  createEmptyPluginsState,
+  loadPluginsState,
+  parsePluginsState,
+  safeLocalArtifactSource,
+  savePluginsStateAtomic,
+  sourceLabel,
+} from "./install-state.ts";
 export {
   validateStandaloneArtifact,
   validateInstallablePayloadDir,
@@ -65,4 +80,20 @@ export type {
   PluginIngestionResult,
   PluginIngestionSuccess,
 } from "./installer.ts";
+export type {
+  PluginInstallAdapters,
+  PluginInstallFailure,
+  PluginInstallOutcome,
+  PluginInstallResult,
+  PluginInstallSuccess,
+} from "./install.ts";
+export type { ArtifactProvenanceRecord } from "./install-provenance.ts";
+export type {
+  ArtifactSource,
+  InstalledArtifact,
+  LocalArtifactSource,
+  PluginStateRecord,
+  PluginsState,
+  PluginsStateLoadResult,
+} from "./install-state.ts";
 export type { EncodedArtifactIdentity } from "./identity-encode.ts";

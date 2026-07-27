@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, stat } from "node:fs/promises";
+import { basename, join } from "node:path";
 import { buildPluginWorkspace } from "../../src/plugin/build.ts";
 import { packagePluginWorkspace } from "../../src/plugin/package.ts";
 import { captureCli, assertSingleJsonValue } from "../helpers/run-cli.ts";
@@ -33,11 +33,12 @@ export default definePlugin({ setup() {} });
   return { fixture, packaged };
 }
 
-describe("plugin install precommit command", () => {
-  test("plugin install and add accept only prebuilt archives and leave no committed state", async () => {
+describe("plugin install immutable command", () => {
+  test("plugin install and add use the stable envelope and converge on one disabled identity", async () => {
     const { fixture, packaged } = await buildArchive();
     try {
       const home = join(fixture.root, "home");
+      const outcomes: string[] = [];
       for (const command of ["install", "add"] as const) {
         const captured = await captureCli(
           ["--json", "--home", home, "plugin", command, packaged.outputPath],
@@ -46,24 +47,47 @@ describe("plugin install precommit command", () => {
         expect(captured.exitCode).toBe(0);
         expect(captured.stderr).toBe("");
         const envelope = assertSingleJsonValue(captured.stdout) as {
+          schemaVersion: number;
           ok: boolean;
           operation: string;
           result: {
             payloadSha256: string;
             archiveSha256: string;
-            committed: boolean;
             installed: boolean;
-            validation: string;
+            artifactCommitted: boolean;
+            stateCommitted: boolean;
+            enabled: boolean;
+            pendingReview: boolean;
+            outcome: string;
+            artifactPath: string;
+            source: { kind: string; archiveName: string };
+            sourceLabel: string;
+            transportTrust: string;
           };
+          warnings: unknown[];
         };
+        expect(envelope.schemaVersion).toBe(1);
         expect(envelope.ok).toBe(true);
         expect(envelope.operation).toBe("plugin.install");
+        expect(envelope.warnings).toEqual([]);
         expect(envelope.result.payloadSha256).toBe(packaged.payloadSha256);
         expect(envelope.result.archiveSha256).toBe(packaged.archiveSha256);
-        expect(envelope.result.committed).toBe(false);
-        expect(envelope.result.installed).toBe(false);
-        expect(envelope.result.validation).toBe("precommit-complete");
+        expect(envelope.result.installed).toBe(true);
+        expect(envelope.result.artifactCommitted).toBe(true);
+        expect(envelope.result.enabled).toBe(false);
+        expect(envelope.result.pendingReview).toBe(true);
+        expect(envelope.result.source).toEqual({
+          kind: "local",
+          archiveName: basename(packaged.outputPath),
+        });
+        expect(envelope.result.sourceLabel).toStartWith("Local archive: ");
+        expect(envelope.result.transportTrust).toBe(
+          "computed-local-archive-not-publisher-authenticated",
+        );
+        expect((await stat(envelope.result.artifactPath)).isDirectory()).toBe(true);
+        outcomes.push(envelope.result.outcome);
       }
+      expect(outcomes).toEqual(["installed", "already-installed"]);
       expect(await readFile(packaged.outputPath)).toBeInstanceOf(Buffer);
     } finally {
       await fixture.cleanup();
