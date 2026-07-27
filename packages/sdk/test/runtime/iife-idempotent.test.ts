@@ -21,6 +21,7 @@ describe("VAL-SDK-004 renderer IIFE is self-contained and idempotent", () => {
     expect(source.includes("module.exports")).toBe(false);
     expect(source.includes("process.")).toBe(false);
     expect(source.includes("Buffer.")).toBe(false);
+    expect(source.includes("__explodexApplyApprovedPayload")).toBe(true);
 
     const realm = createBrowserRealm();
     // Forbidden globals must be absent.
@@ -44,5 +45,31 @@ describe("VAL-SDK-004 renderer IIFE is self-contained and idempotent", () => {
     // Only one version sentinel remains.
     const versions = [realm.global.Explodex?.version];
     expect(versions).toEqual([first?.version]);
+
+    let legacyDestroyed = 0;
+    const legacyRealm = createBrowserRealm();
+    const legacy = {
+      version: first?.version,
+      destroy() {
+        legacyDestroyed += 1;
+      },
+      review: {
+        open() {
+          return Promise.resolve({ status: "cancelled", reason: "legacy" });
+        },
+        cancel() {},
+      },
+      __explodexSdkRuntimeMark: first?.version,
+    };
+    legacyRealm.global.Explodex = legacy as never;
+    legacyRealm.global["__explodexSdkRuntimeInstance"] = legacy;
+    legacyRealm.evaluate(source);
+    expect(legacyRealm.global.Explodex).not.toBe(legacy);
+    expect(legacyDestroyed).toBe(1);
+    expect(
+      typeof (legacyRealm.global.Explodex as unknown as Record<string, unknown>)[
+        "__explodexApplyApprovedPayload"
+      ],
+    ).toBe("function");
   }, 120_000);
 });

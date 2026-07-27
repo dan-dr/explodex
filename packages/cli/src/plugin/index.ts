@@ -51,10 +51,18 @@ export {
 export { loadPendingReviewMetadata } from "./review-metadata.ts";
 export { runPluginReviewOperation } from "./review-operation.ts";
 export {
+  approveSelectedPluginArtifacts,
+} from "./approval-transaction.ts";
+export {
+  buildApprovedApplicationExpression,
+  runApprovedPluginApplicationOperation,
+} from "./application-operation.ts";
+export {
   buildMetadataReviewExpression,
   createReviewProtocolContext,
   createReviewSelectionAcceptor,
   selectPendingReviewArtifacts,
+  targetIdentitiesEqual,
 } from "./review-protocol.ts";
 export {
   DEFAULT_PLUGIN_STATE_LOCK_WAIT_MS,
@@ -118,6 +126,18 @@ export type {
 } from "./discovery.ts";
 export type { PendingReviewMetadataResult } from "./review-metadata.ts";
 export type { PluginReviewOperationResult } from "./review-operation.ts";
+export type {
+  PluginApprovalAdapters,
+  PluginApprovalFailure,
+  PluginApprovalResult,
+  PluginApprovalSuccess,
+  PluginPayloadIdentity,
+  PluginPayloadSnapshot,
+} from "./approval-transaction.ts";
+export type {
+  PluginApplicationOperationResult,
+  RuntimeApplicationResult,
+} from "./application-operation.ts";
 export type {
   ReviewArtifact,
   ReviewArtifactSelection,

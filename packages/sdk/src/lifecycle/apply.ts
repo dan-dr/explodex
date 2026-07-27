@@ -12,6 +12,7 @@ import {
   DEFAULT_SETUP_TIMEOUT_MS,
   DEFAULT_TEARDOWN_TIMEOUT_MS,
 } from "./constants.ts";
+import type { PluginAssetStore } from "./plugin-assets.ts";
 import { createPluginApi } from "./plugin-api.ts";
 import {
   createTrackedResourceRegistry,
@@ -87,6 +88,7 @@ export type PluginLifecycleHost = {
   apply(options: {
     pluginId: string;
     definition: PluginDefinition;
+    assets?: PluginAssetStore;
     setupTimeoutMs?: number;
     teardownTimeoutMs?: number;
   }): Promise<ApplyPluginResult>;
@@ -309,6 +311,7 @@ export function createPluginLifecycleHost(): PluginLifecycleHost {
   async function apply(options: {
     pluginId: string;
     definition: PluginDefinition;
+    assets?: PluginAssetStore;
     setupTimeoutMs?: number;
     teardownTimeoutMs?: number;
   }): Promise<ApplyPluginResult> {
@@ -349,11 +352,15 @@ export function createPluginLifecycleHost(): PluginLifecycleHost {
     };
     slots.set(pluginId, slot);
 
+    if (options.assets !== undefined) {
+      resources.track.asset(options.assets);
+    }
     const api = createPluginApi({
       pluginId,
       generation,
       token,
       resources,
+      assets: options.assets,
     });
 
     let setupTask: Promise<void | PluginTeardown> | null = null;

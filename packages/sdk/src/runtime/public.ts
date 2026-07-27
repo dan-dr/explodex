@@ -15,6 +15,11 @@ export type ExplodexRuntime = {
   readonly review: {
     open(request: PluginReviewRequest): Promise<ReviewOutcome>;
     cancel(reason?: string): void;
+    cancelExact(
+      operationId: string,
+      callbackName: string,
+      reason?: string,
+    ): boolean;
   };
   destroy(options?: { reason?: string }): void;
 };

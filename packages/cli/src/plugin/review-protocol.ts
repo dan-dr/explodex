@@ -155,7 +155,10 @@ export function createReviewProtocolContext(options: {
   };
 }
 
-function targetEquals(left: TargetIdentity, right: TargetIdentity): boolean {
+export function targetIdentitiesEqual(
+  left: TargetIdentity,
+  right: TargetIdentity,
+): boolean {
   return left.role === right.role &&
     left.pid === right.pid &&
     left.processStartedAt === right.processStartedAt &&
@@ -226,7 +229,7 @@ export function createReviewSelectionAcceptor(
         };
       }
       consumed = true;
-      if (!targetEquals(context.target, observation.target)) {
+      if (!targetIdentitiesEqual(context.target, observation.target)) {
         return {
           ok: false,
           code: "plugin.review.context-mismatch",
@@ -364,6 +367,8 @@ export function selectPendingReviewArtifacts(options: {
 export function buildMetadataReviewExpression(options: {
   sdkRuntimeSource: string;
   context: ReviewProtocolContext;
+  activationCommitment: string;
+  applicationTtlMs: number;
 }): string {
   const request = {
     schemaVersion: REVIEW_SCHEMA_VERSION,
@@ -371,6 +376,8 @@ export function buildMetadataReviewExpression(options: {
     nonce: options.context.nonce,
     callbackName: options.context.callbackName,
     expiresAtMs: options.context.expiresAtMs,
+    activationCommitment: options.activationCommitment,
+    applicationTtlMs: options.applicationTtlMs,
     warning:
       "Enabled plugins are trusted unsandboxed renderer code that can read or modify UI and authenticated renderer state. Confirmation and checksums do not provide sandboxing or publisher authentication.",
     artifacts: options.context.artifacts,

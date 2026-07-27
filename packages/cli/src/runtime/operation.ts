@@ -92,6 +92,8 @@ export type RunBoundedOperationOptions<T> = {
   operation: string;
   /** Optional fixed operation id (tests). */
   operationId?: string;
+  /** Optional caller-owned cooperative interruption signal. */
+  abortSignal?: AbortSignal;
   stageBounds?: Partial<Record<ExternalWaitStage, number>>;
   /**
    * Body of the one-shot command. Must not leave resident control plane resources.
@@ -239,6 +241,13 @@ export async function runBoundedOperation<T>(
 
   const unsubInt = adapters.signals.on("SIGINT", onInterrupt);
   const unsubTerm = adapters.signals.on("SIGTERM", onInterrupt);
+  const onExternalAbort = (): void => onInterrupt();
+  if (options.abortSignal?.aborted) onExternalAbort();
+  else {
+    options.abortSignal?.addEventListener("abort", onExternalAbort, {
+      once: true,
+    });
+  }
 
   const throwIfInterrupted = (): void => {
     if (scope.isInterrupted() || abort.signal.aborted) {
@@ -570,6 +579,7 @@ export async function runBoundedOperation<T>(
       details,
     });
   } finally {
+    options.abortSignal?.removeEventListener("abort", onExternalAbort);
     unsubInt();
     unsubTerm();
   }

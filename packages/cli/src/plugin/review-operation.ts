@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type { HostIdentity } from "../host/types.ts";
 import type {
   DeclaredRoleEndpoint,
@@ -30,6 +30,7 @@ export type PluginReviewOperationResult =
       protocol: {
         callbackName: string;
         nonce: string;
+        activationSecret: string;
         expiresAtMs: number;
         target: ReviewProtocolContext["target"];
       };
@@ -47,6 +48,10 @@ export type PluginReviewOperationResult =
       code: string;
       message: string;
       details?: Record<string, unknown>;
+      cleanupProtocol?: {
+        nonce: string;
+        target: ReviewProtocolContext["target"];
+      };
       sourceDelivered: false;
       authorityChanged: false;
     };
@@ -99,6 +104,7 @@ export async function runPluginReviewOperation(options: {
   sdkRuntimeSource: string;
   artifacts: readonly ReviewArtifact[];
   timeoutMs: number;
+  signal?: AbortSignal;
   nowMs?: () => number;
   randomBytes?: (length: number) => Uint8Array;
 }): Promise<PluginReviewOperationResult> {
@@ -115,6 +121,8 @@ export async function runPluginReviewOperation(options: {
   const contextHolder: { value: ReviewProtocolContext | null } = {
     value: null,
   };
+  let activationSecret = "";
+  let activationCommitment = "";
   const nowMs = options.nowMs ?? (() => Date.now());
   const entropy = options.randomBytes ?? ((length: number) => randomBytes(length));
   const operation = await runExactTargetOperation({
@@ -127,6 +135,7 @@ export async function runPluginReviewOperation(options: {
     process: options.process,
     endpoint: options.endpoint,
     cdp: options.cdp,
+    signal: options.signal,
     revalidate: options.revalidate,
     evaluate: {
       callbackIdentity(input) {
@@ -147,6 +156,12 @@ export async function runPluginReviewOperation(options: {
           ttlMs: options.timeoutMs,
           randomBytes: entropy,
         });
+        activationSecret = [...entropy(32)]
+          .map((value) => value.toString(16).padStart(2, "0"))
+          .join("");
+        activationCommitment = createHash("sha256")
+          .update(activationSecret, "utf8")
+          .digest("hex");
         return contextHolder.value.callbackName;
       },
       expression() {
@@ -156,6 +171,8 @@ export async function runPluginReviewOperation(options: {
         return buildMetadataReviewExpression({
           sdkRuntimeSource: options.sdkRuntimeSource,
           context: contextHolder.value,
+          activationCommitment,
+          applicationTtlMs: options.timeoutMs,
         });
       },
     },
@@ -249,6 +266,10 @@ export async function runPluginReviewOperation(options: {
       operationId: operation.operationId,
       code: accepted.code,
       message: accepted.message,
+      cleanupProtocol: {
+        nonce: context.nonce,
+        target: context.target,
+      },
       sourceDelivered: false,
       authorityChanged: false,
     };
@@ -262,6 +283,7 @@ export async function runPluginReviewOperation(options: {
     protocol: {
       callbackName: context.callbackName,
       nonce: context.nonce,
+      activationSecret,
       expiresAtMs: context.expiresAtMs,
       target: context.target,
     },

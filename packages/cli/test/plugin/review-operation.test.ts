@@ -71,9 +71,15 @@ class ReviewCdpAdapter implements CdpAdapter {
   outcome: unknown;
   evaluationMode: "resolve" | "hang" | "target-lost" = "resolve";
   closed = false;
+  cleanupEvaluations = 0;
+  readonly evaluationStarted: Promise<void>;
+  private markEvaluationStarted: () => void = () => {};
 
   constructor(outcome: unknown) {
     this.outcome = outcome;
+    this.evaluationStarted = new Promise((resolve) => {
+      this.markEvaluationStarted = resolve;
+    });
   }
 
   async readEndpoint() {
@@ -97,7 +103,12 @@ class ReviewCdpAdapter implements CdpAdapter {
       targetId: TARGET.id,
       isOpen: () => !this.closed,
       listExecutionContexts: async () => [{ ...CONTEXT }],
-      evaluate: async () => {
+      evaluate: async (request) => {
+        if (request.expression.includes("review.cancelExact(")) {
+          this.cleanupEvaluations += 1;
+          return { value: true };
+        }
+        this.markEvaluationStarted();
         if (this.evaluationMode === "hang") {
           return new Promise(() => undefined);
         }
@@ -120,6 +131,8 @@ class ReviewCdpAdapter implements CdpAdapter {
 function run(options: {
   adapter: ReviewCdpAdapter;
   timeoutMs?: number;
+  signal?: AbortSignal;
+  nowMs?: () => number;
 }) {
   const runtime = createFakeRuntimeHarness({
     startMs: 1_000,
@@ -154,7 +167,8 @@ function run(options: {
       sourceLabel: "Local archive: alpha.tgz",
     }],
     timeoutMs: options.timeoutMs ?? 1_000,
-    nowMs: runtime.nowMs,
+    signal: options.signal,
+    nowMs: options.nowMs ?? runtime.nowMs,
     randomBytes: (length) => new Uint8Array(length).fill(1),
   });
   return { runtime, operation };
@@ -193,6 +207,7 @@ describe("M3-F04 bounded exact-target review operation", () => {
       },
     });
     expect(adapter.closed).toBe(true);
+    expect(adapter.cleanupEvaluations).toBe(1);
   });
 
   test("cancel, malformed response, and target loss never authorize", async () => {
@@ -236,7 +251,41 @@ describe("M3-F04 bounded exact-target review operation", () => {
         authorityChanged: false,
       });
       expect(fixture.adapter.closed).toBe(true);
+      expect(fixture.adapter.cleanupEvaluations).toBe(1);
     }
+  });
+
+  test("late submitted response identifies pending capability cleanup", async () => {
+    const adapter = new ReviewCdpAdapter({
+      status: "submitted",
+      payload: {
+        schemaVersion: 1,
+        nonce: NONCE,
+        selected: [{
+          id: "alpha",
+          version: "opaque-A",
+          payloadSha256: DIGEST,
+        }],
+      },
+    });
+    let read = 0;
+    const fixture = run({
+      adapter,
+      timeoutMs: 1_000,
+      nowMs: () => read++ === 0 ? 1_000 : 2_000,
+    });
+    const result = await runWithClockPump(fixture.runtime, fixture.operation);
+    expect(result).toMatchObject({
+      ok: false,
+      code: "plugin.review.expired",
+      cleanupProtocol: {
+        nonce: NONCE,
+        target: {
+          targetId: TARGET.id,
+          executionContextUniqueId: CONTEXT.uniqueId,
+        },
+      },
+    });
   });
 
   test("timeout interrupts the wait, closes the session, and returns no authority", async () => {
@@ -258,6 +307,7 @@ describe("M3-F04 bounded exact-target review operation", () => {
       authorityChanged: false,
     });
     expect(adapter.closed).toBe(true);
+    expect(adapter.cleanupEvaluations).toBe(1);
   });
 
   test("SIGINT abandons the renderer wait and closes the exact session without authority", async () => {
@@ -277,6 +327,37 @@ describe("M3-F04 bounded exact-target review operation", () => {
       sourceDelivered: false,
       authorityChanged: false,
     });
+    expect(adapter.closed).toBe(true);
+    expect(adapter.cleanupEvaluations).toBe(0);
+  });
+
+  test("caller interruption after callback install actively cancels renderer review", async () => {
+    const adapter = new ReviewCdpAdapter(null);
+    adapter.evaluationMode = "hang";
+    const abort = new AbortController();
+    const fixture = run({
+      adapter,
+      timeoutMs: 1_000,
+      signal: abort.signal,
+    });
+    await adapter.evaluationStarted;
+    abort.abort();
+    const result = await runWithClockPump(fixture.runtime, fixture.operation, {
+      stepMs: 10,
+      maxSteps: 1_000,
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      code: "operation_interrupted",
+      details: {
+        residualInventory: {
+          callbacks: 0,
+          sessions: 0,
+          hasResidentControlPlane: false,
+        },
+      },
+    });
+    expect(adapter.cleanupEvaluations).toBe(1);
     expect(adapter.closed).toBe(true);
   });
 });

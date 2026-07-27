@@ -209,8 +209,12 @@ export async function runPluginInstall(options: {
       exitCode: EXIT_SUCCESS,
       humanStdout: [
         `Installed plugin: ${result.id}@${result.version}`,
-        `Review submitted: ${review.selected.length} selected`,
-        "Executable source remains absent until the approval transaction commits authority.",
+        review.status === "approved"
+          ? `Approval committed: ${review.selected.length} selected`
+          : "Review submitted with an empty selection",
+        review.status === "approved"
+          ? `Application results: ${review.applications.length}`
+          : "Activation authority was unchanged.",
         "",
       ].join("\n"),
       humanStderr: "",

@@ -967,18 +967,37 @@ describe("cross-operation target isolation", () => {
       executionContextId: 202,
       executionContextUniqueId: "unique-DEV-PAGE-202",
     });
-    expect(mainAdapter.evaluations).toEqual([{
+    expect(mainAdapter.evaluations[0]).toEqual({
       targetId: "MAIN-PAGE",
       contextId: 101,
       contextUniqueId: "unique-MAIN-PAGE-101",
       expression: "main-op:sentinel",
-    }]);
-    expect(devAdapter.evaluations).toEqual([{
+    });
+    expect(devAdapter.evaluations[0]).toEqual({
       targetId: "DEV-PAGE",
       contextId: 202,
       contextUniqueId: "unique-DEV-PAGE-202",
       expression: "dev-op:sentinel",
-    }]);
+    });
+    expect(mainAdapter.evaluations).toHaveLength(2);
+    expect(devAdapter.evaluations).toHaveLength(2);
+    expect(mainAdapter.evaluations[1]).toMatchObject({
+      targetId: "MAIN-PAGE",
+      contextId: 101,
+      contextUniqueId: "unique-MAIN-PAGE-101",
+    });
+    expect(devAdapter.evaluations[1]).toMatchObject({
+      targetId: "DEV-PAGE",
+      contextId: 202,
+      contextUniqueId: "unique-DEV-PAGE-202",
+    });
+    expect(mainAdapter.evaluations[1]?.expression).toContain(
+      'review.cancelExact(operationId, callbackName, "operation-terminal")',
+    );
+    expect(mainAdapter.evaluations[1]?.expression).toContain('"main-op"');
+    expect(mainAdapter.evaluations[1]?.expression).toContain('"callback-main"');
+    expect(devAdapter.evaluations[1]?.expression).toContain('"dev-op"');
+    expect(devAdapter.evaluations[1]?.expression).toContain('"callback-dev"');
     expect(mainAdapter.operationSentinels.get("main-op")).toEqual(["MAIN-PAGE"]);
     expect(devAdapter.operationSentinels.get("dev-op")).toEqual(["DEV-PAGE"]);
   });

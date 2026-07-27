@@ -17,6 +17,8 @@ export type PluginReviewRequest = {
   nonce: string;
   callbackName: string;
   expiresAtMs: number;
+  activationCommitment: string;
+  applicationTtlMs: number;
   warning?: string;
   artifacts: ReviewArtifact[];
 };
@@ -73,6 +75,11 @@ export type PluginReviewHost = {
 export type PluginReviewController = {
   open(request: PluginReviewRequest): Promise<ReviewOutcome>;
   cancel(reason?: string): void;
+  cancelExact(
+    operationId: string,
+    callbackName: string,
+    reason?: string,
+  ): boolean;
   destroy(): void;
 };
 
@@ -148,6 +155,8 @@ function parseRequest(value: unknown): PluginReviewRequest | null {
     "nonce",
     "callbackName",
     "expiresAtMs",
+    "activationCommitment",
+    "applicationTtlMs",
     "artifacts",
   ] as const;
   if (
@@ -163,6 +172,11 @@ function parseRequest(value: unknown): PluginReviewRequest | null {
     !/^__explodexReview_[A-Za-z0-9_]+$/.test(value.callbackName) ||
     typeof value.expiresAtMs !== "number" ||
     !Number.isFinite(value.expiresAtMs) ||
+    typeof value.activationCommitment !== "string" ||
+    !/^[a-f0-9]{64}$/.test(value.activationCommitment) ||
+    typeof value.applicationTtlMs !== "number" ||
+    !Number.isFinite(value.applicationTtlMs) ||
+    value.applicationTtlMs <= 0 ||
     (value.warning !== undefined && value.warning !== REVIEW_SECURITY_WARNING) ||
     !Array.isArray(value.artifacts)
   ) {
@@ -184,6 +198,8 @@ function parseRequest(value: unknown): PluginReviewRequest | null {
     nonce: value.nonce,
     callbackName: value.callbackName,
     expiresAtMs: value.expiresAtMs,
+    activationCommitment: value.activationCommitment,
+    applicationTtlMs: value.applicationTtlMs,
     warning: REVIEW_SECURITY_WARNING,
     artifacts,
   };
@@ -208,9 +224,58 @@ function submission(
   };
 }
 
+function parseSubmission(
+  value: unknown,
+  request: PluginReviewRequest,
+): ReviewSubmission | null {
+  if (
+    !isRecord(value) ||
+    !exactKeys(value, ["schemaVersion", "nonce", "selected"]) ||
+    value.schemaVersion !== 1 ||
+    value.nonce !== request.nonce ||
+    !Array.isArray(value.selected)
+  ) {
+    return null;
+  }
+  const reviewed = new Set(request.artifacts.map(tupleKey));
+  const selected: ReviewSelectionTuple[] = [];
+  const keys = new Set<string>();
+  const ids = new Set<string>();
+  for (const candidate of value.selected) {
+    if (
+      !isRecord(candidate) ||
+      !exactKeys(candidate, ["id", "version", "payloadSha256"]) ||
+      typeof candidate.id !== "string" ||
+      typeof candidate.version !== "string" ||
+      typeof candidate.payloadSha256 !== "string"
+    ) {
+      return null;
+    }
+    const tuple = {
+      id: candidate.id,
+      version: candidate.version,
+      payloadSha256: candidate.payloadSha256,
+    };
+    const key = tupleKey(tuple);
+    if (keys.has(key) || ids.has(tuple.id) || !reviewed.has(key)) return null;
+    keys.add(key);
+    ids.add(tuple.id);
+    selected.push(tuple);
+  }
+  return {
+    schemaVersion: 1,
+    nonce: request.nonce,
+    selected,
+  };
+}
+
 export function createPluginReviewController(options: {
   host: PluginReviewHost;
   render(model: ReviewRenderModel): ReviewRenderHandle;
+  onSubmitted?(
+    request: PluginReviewRequest,
+    submission: ReviewSubmission,
+  ): void;
 }): PluginReviewController {
   let active: ActiveReview | null = null;
   let destroyed = false;
@@ -302,9 +367,18 @@ export function createPluginReviewController(options: {
         };
         const handle = options.render(model);
         options.host.callbacks[request.callbackName] = (payload: unknown) => {
+          const parsed = parseSubmission(payload, request);
+          if (parsed === null) {
+            finish({
+              status: "rejected",
+              reason: "invalid-submission",
+            }, "invalid-submission");
+            return;
+          }
+          options.onSubmitted?.(request, parsed);
           finish({
             status: "submitted",
-            payload: payload as ReviewSubmission,
+            payload: parsed,
           }, "submitted");
         };
         const delayMs = Math.max(1, request.expiresAtMs - options.host.now());
@@ -325,6 +399,17 @@ export function createPluginReviewController(options: {
     },
     cancel(reason = "cancelled") {
       finish({ status: "cancelled", reason }, reason);
+    },
+    cancelExact(operationId, callbackName, reason = "cancelled") {
+      if (
+        active === null ||
+        active.request.operationId !== operationId ||
+        active.request.callbackName !== callbackName
+      ) {
+        return false;
+      }
+      finish({ status: "cancelled", reason }, reason);
+      return true;
     },
     destroy() {
       if (destroyed) return;

@@ -33,3 +33,8 @@ export {
   type TrackedResourceSnapshot,
 } from "./tracked-resources.ts";
 export { createPluginApi } from "./plugin-api.ts";
+export {
+  createPluginAssetStore,
+  type PluginAssetStore,
+  type RevocablePluginAssetHandle,
+} from "./plugin-assets.ts";

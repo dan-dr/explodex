@@ -16,6 +16,8 @@ function request() {
     nonce: "review-nonce",
     callbackName: "__explodexReview_callback",
     expiresAtMs: 2_000,
+    activationCommitment: "b".repeat(64),
+    applicationTtlMs: 1_000,
     artifacts: [{
       id: "alpha",
       displayName: "Alpha",
@@ -169,5 +171,30 @@ describe("M3-F04 renderer metadata-only plugin review", () => {
     });
     duplicateFixture.controller.cancel("cancelled");
     await first;
+  });
+
+  test("terminal cleanup cancels only its exact operation and callback", async () => {
+    const fixture = harness();
+    const pending = fixture.controller.open(request());
+    expect(fixture.controller.cancelExact(
+      "other-operation",
+      request().callbackName,
+      "operation-terminal",
+    )).toBe(false);
+    expect(fixture.controller.cancelExact(
+      request().operationId,
+      "__explodexReview_other",
+      "operation-terminal",
+    )).toBe(false);
+    expect(typeof fixture.host.callbacks[request().callbackName]).toBe("function");
+    expect(fixture.controller.cancelExact(
+      request().operationId,
+      request().callbackName,
+      "operation-terminal",
+    )).toBe(true);
+    expect(await pending).toEqual({
+      status: "cancelled",
+      reason: "operation-terminal",
+    });
   });
 });

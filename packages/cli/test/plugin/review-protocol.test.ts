@@ -86,6 +86,8 @@ describe("M3-F04 exact metadata review protocol", () => {
     const expression = buildMetadataReviewExpression({
       sdkRuntimeSource: "globalThis.Explodex = globalThis.Explodex;",
       context: first,
+      activationCommitment: "b".repeat(64),
+      applicationTtlMs: 1_000,
     });
     expect(expression).toContain("trusted unsandboxed");
     expect(expression).toContain(first.callbackName);

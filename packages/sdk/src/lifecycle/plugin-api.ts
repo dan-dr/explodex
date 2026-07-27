@@ -3,7 +3,8 @@
  */
 
 import { SDK_VERSION } from "../version.ts";
-import type { PluginApi, PluginAssets, PluginLogger } from "../types/index.ts";
+import type { PluginApi, PluginLogger } from "../types/index.ts";
+import type { PluginAssetStore } from "./plugin-assets.ts";
 import type { TrackedResourceRegistry } from "./tracked-resources.ts";
 
 export function createPluginApi(options: {
@@ -11,7 +12,7 @@ export function createPluginApi(options: {
   generation: number;
   token: string;
   resources: TrackedResourceRegistry;
-  assets?: PluginAssets;
+  assets?: PluginAssetStore;
   log?: PluginLogger;
   version?: string;
 }): PluginApi {
@@ -33,15 +34,28 @@ export function createPluginApi(options: {
       else console.error(`[explodex:${options.pluginId}]`, message);
     },
   };
-  const assets: PluginAssets = options.assets ?? {
-    open(path) {
-      return Promise.reject(
-        new Error(
-          `Asset delivery is unavailable in this lifecycle host: ${path}`,
-        ),
-      );
-    },
-  };
+  const assets = options.assets === undefined
+    ? {
+        open(path: string) {
+          return Promise.reject(
+            new Error(
+              `Asset delivery is unavailable in this lifecycle host: ${path}`,
+            ),
+          );
+        },
+      }
+    : {
+        async open(path: string) {
+          const handle = await options.assets!.open(path);
+          try {
+            options.resources.track.asset(handle);
+          } catch (error: unknown) {
+            handle.revoke();
+            throw error;
+          }
+          return handle;
+        },
+      };
 
   return {
     version: options.version ?? SDK_VERSION,

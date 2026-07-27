@@ -1,5 +1,11 @@
 import { createLogger, type RuntimeLogEntry } from "./logger.ts";
 import {
+  createPluginApplicationController,
+  PRIVATE_APPLY_APPROVED,
+  PRIVATE_FINALIZE_APPROVED,
+  type ApprovedPluginApplicationResult,
+} from "./plugin-application.ts";
+import {
   createPluginReviewController,
   renderPluginReviewDom,
   type PluginReviewRequest,
@@ -13,6 +19,15 @@ const RUNTIME_INSTANCE = "__explodexSdkRuntimeInstance";
 
 type InternalExplodexRuntime = ExplodexRuntime & {
   readonly [RUNTIME_MARK]: string;
+  readonly [PRIVATE_APPLY_APPROVED]: (
+    input: unknown,
+    evaluate: unknown,
+    secret: unknown,
+  ) => Promise<ApprovedPluginApplicationResult>;
+  readonly [PRIVATE_FINALIZE_APPROVED]: (
+    operationId: string,
+    nonce: string,
+  ) => void;
 };
 
 type RuntimeHost = {
@@ -31,6 +46,8 @@ function isExplodexRuntime(value: unknown): value is InternalExplodexRuntime {
     typeof record.version === "string" &&
     typeof record.destroy === "function" &&
     typeof record.review === "object" &&
+    typeof record[PRIVATE_APPLY_APPROVED] === "function" &&
+    typeof record[PRIVATE_FINALIZE_APPROVED] === "function" &&
     record[RUNTIME_MARK] === RUNTIME_VERSION
   );
 }
@@ -56,6 +73,9 @@ export function installRuntime(global: RuntimeHost): InternalExplodexRuntime {
   const entries: RuntimeLogEntry[] = [];
   const log = createLogger("runtime", entries);
   let destroyed = false;
+  const application = createPluginApplicationController({
+    host: global as unknown as Record<string, unknown>,
+  });
   const review = createPluginReviewController({
     host: {
       callbacks: global as unknown as Record<string, unknown>,
@@ -69,6 +89,9 @@ export function installRuntime(global: RuntimeHost): InternalExplodexRuntime {
       }
       return renderPluginReviewDom(global.document, model);
     },
+    onSubmitted(request, submission) {
+      application.authorizeReview(request, submission);
+    },
   });
 
   const runtime: InternalExplodexRuntime = {
@@ -77,11 +100,18 @@ export function installRuntime(global: RuntimeHost): InternalExplodexRuntime {
     review: {
       open: (request) => review.open(request),
       cancel: (reason) => review.cancel(reason),
+      cancelExact: (operationId, callbackName, reason) =>
+        review.cancelExact(operationId, callbackName, reason),
     },
+    [PRIVATE_APPLY_APPROVED]: (input, evaluate, secret) =>
+      application.applyApproved(input, evaluate, secret),
+    [PRIVATE_FINALIZE_APPROVED]: (operationId, nonce) =>
+      application.finalizeApproved(operationId, nonce),
     destroy(options) {
       if (destroyed) return;
       destroyed = true;
       review.destroy();
+      void application.destroy();
       log.info("destroy", { reason: options?.reason ?? "explicit" });
       if (global.Explodex === runtime) {
         delete global.Explodex;

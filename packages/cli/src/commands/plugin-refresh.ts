@@ -153,8 +153,12 @@ export async function runPluginRefresh(options: {
       exitCode: 0,
       humanStdout: [
         `Plugin refresh: ${result.pending.length} pending, ${result.invalid.length} invalid`,
-        `Review submitted: ${review.selected.length} selected`,
-        "Executable source remains absent until the approval transaction commits authority.",
+        review.status === "approved"
+          ? `Approval committed: ${review.selected.length} selected`
+          : "Review submitted with an empty selection",
+        review.status === "approved"
+          ? `Application results: ${review.applications.length}`
+          : "Activation authority was unchanged.",
         "",
       ].join("\n"),
       humanStderr: "",

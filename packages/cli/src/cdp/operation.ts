@@ -327,6 +327,7 @@ export async function runExactTargetOperation(options: {
   process: VerifiedProcess;
   endpoint: DeclaredRoleEndpoint;
   cdp: CdpAdapter;
+  signal?: AbortSignal;
   revalidate(): Promise<PointOfUseIdentity>;
   evaluate: {
     expression:
@@ -339,6 +340,16 @@ export async function runExactTargetOperation(options: {
       target: TargetIdentity;
       operationId: string;
     }) => string);
+    terminalCleanupExpression?:
+      | string
+      | ((input: {
+          target: TargetIdentity;
+          operationId: string;
+        }) => string);
+    onBeforeEvaluation?: (input: {
+      target: TargetIdentity;
+      operationId: string;
+    }) => void;
   };
   stageBounds?: {
     cdpDiscoveryMs?: number;
@@ -352,6 +363,7 @@ export async function runExactTargetOperation(options: {
     adapters: options.runtime,
     operation: options.operation,
     operationId: options.operationId,
+    abortSignal: options.signal,
     run: async (ctx) => {
       // Pre-register opening authority before asynchronous socket creation so a
       // session created after timeout/SIGINT disposal cannot appear untracked.
@@ -408,12 +420,60 @@ export async function runExactTargetOperation(options: {
       const expression = typeof options.evaluate.expression === "function"
         ? options.evaluate.expression(expressionInput)
         : options.evaluate.expression;
+      const terminalCleanupExpression =
+        typeof options.evaluate.terminalCleanupExpression === "function"
+          ? options.evaluate.terminalCleanupExpression(expressionInput)
+          : options.evaluate.terminalCleanupExpression;
+      if (terminalCleanupExpression !== undefined) {
+        ctx.scope.register({
+          kind: "approval-listener",
+          label: `approval-capability:${ctx.identity.operationId}`,
+          disposition: "command-owned",
+          async dispose(control) {
+            if (!control.tryCommitEffect()) return;
+            await discovery.session.evaluate({
+              executionContextId: discovery.target.executionContextId,
+              executionContextUniqueId:
+                discovery.target.executionContextUniqueId,
+              expression: terminalCleanupExpression,
+              signal: control.signal,
+            });
+          },
+        });
+      }
       if (callbackIdentity !== undefined) {
         ctx.scope.register({
           kind: "callback",
           label: `callback:${ctx.identity.operationId}:${callbackIdentity}`,
           disposition: "command-owned",
-          dispose: () => undefined,
+          async dispose(control) {
+            if (!control.tryCommitEffect()) {
+              return;
+            }
+            const callbackLiteral = JSON.stringify(callbackIdentity);
+            const operationLiteral = JSON.stringify(ctx.identity.operationId);
+            const cleanupExpression = `(() => {
+  const callbackName = ${callbackLiteral};
+  const operationId = ${operationLiteral};
+  const runtime = globalThis.Explodex;
+  if (runtime && runtime.review && typeof runtime.review.cancelExact === "function") {
+    runtime.review.cancelExact(operationId, callbackName, "operation-terminal");
+  }
+  try {
+    delete globalThis[callbackName];
+  } catch {
+    globalThis[callbackName] = undefined;
+  }
+  return true;
+})()`;
+            await discovery.session.evaluate({
+              executionContextId: discovery.target.executionContextId,
+              executionContextUniqueId:
+                discovery.target.executionContextUniqueId,
+              expression: cleanupExpression,
+              signal: control.signal,
+            });
+          },
         });
       }
 
@@ -475,6 +535,7 @@ export async function runExactTargetOperation(options: {
               stage: "cdp-evaluation" as const,
             });
           }
+          options.evaluate.onBeforeEvaluation?.(expressionInput);
           return await discovery.session.evaluate({
             executionContextId: discovery.target.executionContextId,
             executionContextUniqueId: discovery.target.executionContextUniqueId,

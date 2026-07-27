@@ -21,7 +21,7 @@ const OPERATION = "plugin.review";
 export type ReviewEntryResult =
   | {
       ok: true;
-      status: "not-required" | "submitted";
+      status: "not-required" | "submitted" | "approved";
       reviewed: ReviewArtifact[];
       selected: Array<{
         id: string;
@@ -29,8 +29,10 @@ export type ReviewEntryResult =
         payloadSha256: string;
       }>;
       target: "main" | "development";
-      sourceDelivered: false;
-      authorityChanged: false;
+      sourceDelivered: boolean;
+      authorityChanged: boolean;
+      stateCommitted: boolean;
+      applications: unknown[];
       protocol?: {
         operationId: string;
         callbackName: string;
@@ -45,8 +47,10 @@ export type ReviewEntryResult =
       message: string;
       details?: Record<string, unknown>;
       exitCode?: CliExitCode;
-      sourceDelivered: false;
-      authorityChanged: false;
+      sourceDelivered: boolean;
+      authorityChanged: boolean;
+      stateCommitted: boolean;
+      applications: unknown[];
     };
 
 function parseReviewArgs(tokens: readonly string[]):
@@ -158,6 +162,8 @@ export async function performPendingPluginReview(options: {
         : 3,
       sourceDelivered: false,
       authorityChanged: false,
+      stateCommitted: false,
+      applications: [],
     };
   }
   if (selected.artifacts.length === 0) {
@@ -169,6 +175,8 @@ export async function performPendingPluginReview(options: {
       target: options.target,
       sourceDelivered: false,
       authorityChanged: false,
+      stateCommitted: false,
+      applications: [],
     };
   }
   if (
@@ -189,6 +197,8 @@ export async function performPendingPluginReview(options: {
       exitCode: 3,
       sourceDelivered: false,
       authorityChanged: false,
+      stateCommitted: false,
+      applications: [],
     };
   }
   const operation = await runReviewOnDeclaredTarget({
@@ -217,18 +227,22 @@ export async function performPendingPluginReview(options: {
         operationId: operation.operationId,
       },
       exitCode: exitCodeForError(code),
-      sourceDelivered: false,
-      authorityChanged: false,
+      sourceDelivered: operation.sourceDelivered,
+      authorityChanged: operation.authorityChanged,
+      stateCommitted: operation.stateCommitted,
+      applications: operation.applications,
     };
   }
   return {
     ok: true,
-    status: "submitted",
+    status: operation.status,
     reviewed: operation.reviewed,
     selected: operation.selected,
     target: options.target,
-    sourceDelivered: false,
-    authorityChanged: false,
+    sourceDelivered: operation.sourceDelivered,
+    authorityChanged: operation.authorityChanged,
+    stateCommitted: operation.stateCommitted,
+    applications: operation.applications,
     protocol: {
       operationId: operation.operationId,
       callbackName: operation.protocol.callbackName,
@@ -312,6 +326,8 @@ export async function runPluginReview(options: {
         invalid: metadata.invalid,
         sourceDelivered: result.sourceDelivered,
         authorityChanged: result.authorityChanged,
+        stateCommitted: result.stateCommitted,
+        applications: result.applications,
       },
       exitCode: result.exitCode ?? exitCodeForError(result.code),
       humanStderr: `${result.message}\nerror.code: ${result.code}\n`,
@@ -325,6 +341,8 @@ export async function runPluginReview(options: {
     invalid: metadata.invalid,
     sourceDelivered: result.sourceDelivered,
     authorityChanged: result.authorityChanged,
+    stateCommitted: result.stateCommitted,
+    applications: result.applications,
     ...(result.protocol === undefined ? {} : { protocol: result.protocol }),
   };
   return {
@@ -332,11 +350,17 @@ export async function runPluginReview(options: {
     exitCode: 0,
     humanStdout: result.status === "not-required"
       ? "No pending plugin identities require review.\n"
-      : [
-          `Plugin review submitted: ${result.selected.length} selected`,
-          "Selection was validated for this operation; executable source remains absent until the approval transaction commits authority.",
-          "",
-        ].join("\n"),
+      : result.status === "approved"
+        ? [
+            `Plugin approval committed: ${result.selected.length} selected`,
+            `Application results: ${result.applications.length}`,
+            "",
+          ].join("\n")
+        : [
+            "Plugin review submitted with an empty selection.",
+            "No activation authority changed.",
+            "",
+          ].join("\n"),
     humanStderr: "",
   };
 }
