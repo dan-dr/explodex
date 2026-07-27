@@ -11,6 +11,7 @@ import { renderFailure } from "./errors.ts";
 const SIGNAL_AWARE_OPERATIONS = new Set([
   "plugin.install",
   "plugin.refresh",
+  "plugin.review",
   "plugin.update.check",
 ]);
 
@@ -66,6 +67,7 @@ export async function runCli(options: RunCliOptions = {}): Promise<RenderedCliRe
     const rendered = await dispatch({
       parsed,
       env,
+      io,
       signal: operationAbort.signal,
     });
     if (

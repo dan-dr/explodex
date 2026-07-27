@@ -254,7 +254,27 @@ export const GROUPS: readonly GroupDescriptor[] = [
         path: ["review"],
         operation: "plugin.review",
         summary: "Present metadata-only review for pending plugins.",
-        availability: "reserved",
+        availability: "available",
+        arguments: [
+          { name: "id", description: "Optional exact plugin ID.", required: false },
+        ],
+        options: [
+          {
+            long: "artifact-version",
+            description: "Exact opaque artifact version when one ID has multiple identities.",
+            valueName: "opaque-version",
+          },
+          {
+            long: "payload-sha256",
+            description: "Exact lowercase payload SHA-256.",
+            valueName: "hex",
+          },
+          {
+            long: "target",
+            description: "Review target role (main or development).",
+            valueName: "role",
+          },
+        ],
       },
       {
         path: ["update", "check"],

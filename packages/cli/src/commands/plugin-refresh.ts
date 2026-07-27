@@ -8,6 +8,8 @@ import {
   type RenderedCliResult,
 } from "../output/envelope.ts";
 import { discoverInstalledPlugins } from "../plugin/discovery.ts";
+import { performPendingPluginReview } from "./plugin-review.ts";
+import type { CliIo } from "../output/write.ts";
 
 const OPERATION = "plugin.refresh";
 
@@ -39,6 +41,7 @@ function parseTarget(tokens: readonly string[]): {
 export async function runPluginRefresh(options: {
   globals: GlobalOptions;
   env: NodeJS.ProcessEnv;
+  io: CliIo;
   rest: readonly string[];
   endOfOptions: readonly string[];
   signal?: AbortSignal;
@@ -117,17 +120,45 @@ export async function runPluginRefresh(options: {
     },
   };
   if (result.pending.length > 0 && parsed.target !== "none") {
-    return renderFailure({
-      operation: OPERATION,
-      code: "plugin.review.unavailable",
-      message:
-        "Pending exact plugin identities remain disabled and source-absent because renderer review is unavailable.",
-      details: payload,
-      exitCode: 3,
-      humanStderr:
-        "Pending plugins remain disabled; renderer review is unavailable.\n" +
-        "error.code: plugin.review.unavailable\n",
+    const review = await performPendingPluginReview({
+      globals: options.globals,
+      env: options.env,
+      io: options.io,
+      explodexHome: home,
+      pending: result.pending,
+      request: {},
+      target: parsed.target,
+      signal: options.signal,
     });
+    if (!review.ok) {
+      return renderFailure({
+        operation: OPERATION,
+        code: review.code,
+        message: review.message,
+        details: {
+          ...payload,
+          ...review.details,
+          sourceDelivered: review.sourceDelivered,
+          authorityChanged: review.authorityChanged,
+        },
+        exitCode: review.exitCode ?? exitCodeForError(review.code),
+        humanStderr: `${review.message}\nerror.code: ${review.code}\n`,
+      });
+    }
+    return {
+      envelope: successEnvelope(OPERATION, {
+        ...payload,
+        review,
+      }),
+      exitCode: 0,
+      humanStdout: [
+        `Plugin refresh: ${result.pending.length} pending, ${result.invalid.length} invalid`,
+        `Review submitted: ${review.selected.length} selected`,
+        "Executable source remains absent until the approval transaction commits authority.",
+        "",
+      ].join("\n"),
+      humanStderr: "",
+    };
   }
   return {
     envelope: successEnvelope(OPERATION, payload),

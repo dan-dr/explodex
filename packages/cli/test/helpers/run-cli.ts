@@ -37,6 +37,7 @@ export async function captureCli(
     stdout: stdout as unknown as NodeJS.WritableStream,
     stderr: stderr as unknown as NodeJS.WritableStream,
     stdin: stdin as unknown as NodeJS.ReadableStream,
+    stdinIsTty: false,
     stdoutIsTty: false,
     stderrIsTty: false,
   };

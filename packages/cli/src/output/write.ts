@@ -5,6 +5,7 @@ export type CliIo = {
   stdout: NodeJS.WritableStream;
   stderr: NodeJS.WritableStream;
   stdin: NodeJS.ReadableStream;
+  stdinIsTty: boolean;
   stdoutIsTty: boolean;
   stderrIsTty: boolean;
 };
@@ -14,6 +15,7 @@ export function createProcessIo(): CliIo {
     stdout: process.stdout,
     stderr: process.stderr,
     stdin: process.stdin,
+    stdinIsTty: Boolean(process.stdin.isTTY),
     stdoutIsTty: Boolean(process.stdout.isTTY),
     stderrIsTty: Boolean(process.stderr.isTTY),
   };

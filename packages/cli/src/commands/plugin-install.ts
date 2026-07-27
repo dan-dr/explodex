@@ -9,6 +9,8 @@ import {
 } from "../output/envelope.ts";
 import { resolveExplodexHome } from "../home/paths.ts";
 import { installLocalPluginArchive } from "../plugin/install.ts";
+import { performPendingPluginReview } from "./plugin-review.ts";
+import type { CliIo } from "../output/write.ts";
 
 const OPERATION = "plugin.install";
 
@@ -42,6 +44,7 @@ function takeTarget(tokens: readonly string[]): {
 export async function runPluginInstall(options: {
   globals: GlobalOptions;
   env: NodeJS.ProcessEnv;
+  io: CliIo;
   rest: readonly string[];
   endOfOptions: readonly string[];
   signal?: AbortSignal;
@@ -156,20 +159,62 @@ export async function runPluginInstall(options: {
     transportTrust: "computed-local-archive-not-publisher-authenticated" as const,
   };
   if (result.pendingReview && target !== "none") {
-    return renderFailure({
-      operation: OPERATION,
-      code: "plugin.review.unavailable",
-      message:
-        "The plugin is installed, disabled, pending review, and source-absent because renderer review is unavailable.",
-      details: payload,
-      exitCode: 3,
-      humanStderr: [
-        "Plugin installation completed disabled and pending review.",
-        "Renderer review is unavailable; no plugin source was delivered.",
-        "error.code: plugin.review.unavailable",
+    const review = await performPendingPluginReview({
+      globals: options.globals,
+      env: options.env,
+      io: options.io,
+      explodexHome,
+      pending: [{
+        id: result.id,
+        displayName: result.displayName,
+        description: result.description,
+        version: result.version,
+        payloadSha256: result.payloadSha256,
+        sdkRange: result.sdkRange,
+        sourceLabel: result.sourceLabel,
+      }],
+      request: {
+        id: result.id,
+        version: result.version,
+        payloadSha256: result.payloadSha256,
+      },
+      target,
+      signal: options.signal,
+    });
+    if (!review.ok) {
+      return renderFailure({
+        operation: OPERATION,
+        code: review.code,
+        message: review.message,
+        details: {
+          ...payload,
+          ...review.details,
+          sourceDelivered: review.sourceDelivered,
+          authorityChanged: review.authorityChanged,
+        },
+        exitCode: review.exitCode ?? exitCodeForError(review.code),
+        humanStderr: [
+          "Plugin installation completed disabled and pending review.",
+          review.message,
+          `error.code: ${review.code}`,
+          "",
+        ].join("\n"),
+      });
+    }
+    return {
+      envelope: successEnvelope(OPERATION, {
+        ...payload,
+        review,
+      }),
+      exitCode: EXIT_SUCCESS,
+      humanStdout: [
+        `Installed plugin: ${result.id}@${result.version}`,
+        `Review submitted: ${review.selected.length} selected`,
+        "Executable source remains absent until the approval transaction commits authority.",
         "",
       ].join("\n"),
-    });
+      humanStderr: "",
+    };
   }
   const human = [
     `${result.outcome === "already-installed" ? "Already installed" : result.outcome === "rediscovered" ? "Rediscovered" : "Installed"} plugin: ${result.id}@${result.version}`,

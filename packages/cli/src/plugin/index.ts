@@ -43,6 +43,14 @@ export {
   discoverInstalledPlugins,
   reconcileInstalledPluginsUnlocked,
 } from "./discovery.ts";
+export { loadPendingReviewMetadata } from "./review-metadata.ts";
+export { runPluginReviewOperation } from "./review-operation.ts";
+export {
+  buildMetadataReviewExpression,
+  createReviewProtocolContext,
+  createReviewSelectionAcceptor,
+  selectPendingReviewArtifacts,
+} from "./review-protocol.ts";
 export {
   DEFAULT_PLUGIN_STATE_LOCK_WAIT_MS,
   withPluginStateLock,
@@ -103,6 +111,16 @@ export type {
   PluginDiscoverySuccess,
   PluginDiscoveryTrigger,
 } from "./discovery.ts";
+export type { PendingReviewMetadataResult } from "./review-metadata.ts";
+export type { PluginReviewOperationResult } from "./review-operation.ts";
+export type {
+  ReviewArtifact,
+  ReviewArtifactSelection,
+  ReviewProtocolContext,
+  ReviewSelection,
+  ReviewSelectionResult,
+  ReviewSelectionTuple,
+} from "./review-protocol.ts";
 export type {
   PluginStateLockFailure,
   PluginStateLockResult,

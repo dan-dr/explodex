@@ -276,6 +276,42 @@ async function bundleRuntimeIife(): Promise<void> {
     warn(message: string, detail?: unknown): void;
     error(message: string, detail?: unknown): void;
   };
+  readonly review: {
+    open(request: {
+      schemaVersion: 1;
+      operationId: string;
+      nonce: string;
+      callbackName: string;
+      expiresAtMs: number;
+      warning?: string;
+      artifacts: Array<{
+        id: string;
+        displayName: string;
+        description: string;
+        version: string;
+        payloadSha256: string;
+        sdkRange: string;
+        sourceLabel: string;
+      }>;
+    }): Promise<
+      | {
+          status: "submitted";
+          payload: {
+            schemaVersion: 1;
+            nonce: string;
+            selected: Array<{
+              id: string;
+              version: string;
+              payloadSha256: string;
+            }>;
+          };
+        }
+      | { status: "cancelled"; reason: string }
+      | { status: "expired"; reason: string }
+      | { status: "rejected"; reason: string }
+    >;
+    cancel(reason?: string): void;
+  };
   destroy(options?: { reason?: string }): void;
 };
 `;

@@ -15,6 +15,8 @@ import { runPluginInstall } from "../commands/plugin-install.ts";
 import { runPluginRefresh } from "../commands/plugin-refresh.ts";
 import { runPluginStatus } from "../commands/plugin-status.ts";
 import { runPluginUpdateCheck } from "../commands/plugin-update-check.ts";
+import { runPluginReview } from "../commands/plugin-review.ts";
+import type { CliIo } from "../output/write.ts";
 
 /** Operations that parse their own positional arguments. */
 const ACCEPTS_POSITIONALS = new Set([
@@ -26,15 +28,17 @@ const ACCEPTS_POSITIONALS = new Set([
   "plugin.install",
   "plugin.status",
   "plugin.refresh",
+  "plugin.review",
   "plugin.update.check",
 ]);
 
 export async function dispatch(options: {
   parsed: ParseSuccess;
   env: NodeJS.ProcessEnv;
+  io: CliIo;
   signal?: AbortSignal;
 }): Promise<RenderedCliResult> {
-  const { parsed, env, signal } = options;
+  const { parsed, env, io, signal } = options;
 
   // --help > --version > command execution
   if (parsed.globals.help) {
@@ -144,6 +148,7 @@ export async function dispatch(options: {
       return runPluginInstall({
         globals: parsed.globals,
         env,
+        io,
         rest,
         endOfOptions,
         signal,
@@ -159,6 +164,16 @@ export async function dispatch(options: {
       return runPluginRefresh({
         globals: parsed.globals,
         env,
+        io,
+        rest,
+        endOfOptions,
+        signal,
+      });
+    case "plugin.review":
+      return runPluginReview({
+        globals: parsed.globals,
+        env,
+        io,
         rest,
         endOfOptions,
         signal,

@@ -228,6 +228,40 @@ describe("plugin install immutable command", () => {
       expect(unavailableEnvelope.error.details.pending).toHaveLength(1);
       expect(await readFile(statePath)).toEqual(before);
 
+      const review = await captureCli(
+        ["--json", "--home", home, "plugin", "review", packaged.report.id],
+        { ...process.env, HOME: home, PWD: fixture.root },
+      );
+      expect(review.exitCode).toBe(3);
+      const reviewEnvelope = assertSingleJsonValue(review.stdout) as {
+        operation: string;
+        error: {
+          code: string;
+          details: {
+            reason: string;
+            pending: Array<Record<string, unknown>>;
+            sourceDelivered: boolean;
+            authorityChanged: boolean;
+          };
+        };
+      };
+      expect(reviewEnvelope.operation).toBe("plugin.review");
+      expect(reviewEnvelope.error.code).toBe("plugin.review.unavailable");
+      expect(reviewEnvelope.error.details.reason).toBe("json-mode");
+      expect(reviewEnvelope.error.details.pending).toHaveLength(1);
+      expect(Object.keys(reviewEnvelope.error.details.pending[0]!).sort()).toEqual([
+        "description",
+        "displayName",
+        "id",
+        "payloadSha256",
+        "sdkRange",
+        "sourceLabel",
+        "version",
+      ]);
+      expect(reviewEnvelope.error.details.sourceDelivered).toBe(false);
+      expect(reviewEnvelope.error.details.authorityChanged).toBe(false);
+      expect(await readFile(statePath)).toEqual(before);
+
       const updateCheck = await captureCli(
         ["--json", "--home", home, "plugin", "update", "check"],
         { ...process.env, HOME: home, PWD: fixture.root },

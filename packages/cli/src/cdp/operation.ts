@@ -328,7 +328,22 @@ export async function runExactTargetOperation(options: {
   endpoint: DeclaredRoleEndpoint;
   cdp: CdpAdapter;
   revalidate(): Promise<PointOfUseIdentity>;
-  evaluate: { expression: string; callbackIdentity?: string };
+  evaluate: {
+    expression:
+      | string
+      | ((input: {
+          target: TargetIdentity;
+          operationId: string;
+        }) => string);
+    callbackIdentity?: string | ((input: {
+      target: TargetIdentity;
+      operationId: string;
+    }) => string);
+  };
+  stageBounds?: {
+    cdpDiscoveryMs?: number;
+    cdpEvaluationMs?: number;
+  };
 }): Promise<BoundedOperationResult<ExactTargetOperationResult>> {
   // Captured so timeout/interrupt terminal results can expose residual authority
   // when a delayed open settles after the finite settlement fence.
@@ -383,10 +398,20 @@ export async function runExactTargetOperation(options: {
         }
       });
       ctx.markStageComplete("cdp-discovery");
-      if (options.evaluate.callbackIdentity !== undefined) {
+      const expressionInput = {
+        target: discovery.target,
+        operationId: ctx.identity.operationId,
+      };
+      const callbackIdentity = typeof options.evaluate.callbackIdentity === "function"
+        ? options.evaluate.callbackIdentity(expressionInput)
+        : options.evaluate.callbackIdentity;
+      const expression = typeof options.evaluate.expression === "function"
+        ? options.evaluate.expression(expressionInput)
+        : options.evaluate.expression;
+      if (callbackIdentity !== undefined) {
         ctx.scope.register({
           kind: "callback",
-          label: `callback:${ctx.identity.operationId}:${options.evaluate.callbackIdentity}`,
+          label: `callback:${ctx.identity.operationId}:${callbackIdentity}`,
           disposition: "command-owned",
           dispose: () => undefined,
         });
@@ -453,7 +478,7 @@ export async function runExactTargetOperation(options: {
           return await discovery.session.evaluate({
             executionContextId: discovery.target.executionContextId,
             executionContextUniqueId: discovery.target.executionContextUniqueId,
-            expression: options.evaluate.expression,
+            expression,
             signal: control.signal,
           });
         } catch (error: unknown) {
@@ -470,9 +495,17 @@ export async function runExactTargetOperation(options: {
           homeIdentity: options.homeIdentity,
           role: options.role,
           port: options.endpoint.port,
-          callbackIdentity: options.evaluate.callbackIdentity ?? null,
+          callbackIdentity: callbackIdentity ?? null,
         },
       };
+    },
+    stageBounds: {
+      ...(options.stageBounds?.cdpDiscoveryMs === undefined
+        ? {}
+        : { "cdp-discovery": options.stageBounds.cdpDiscoveryMs }),
+      ...(options.stageBounds?.cdpEvaluationMs === undefined
+        ? {}
+        : { "cdp-evaluation": options.stageBounds.cdpEvaluationMs }),
     },
   });
   return sessionGuard === null ? result : attachGuardResidualToResult(result, sessionGuard);
