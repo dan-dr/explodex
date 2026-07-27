@@ -18,6 +18,8 @@ import { runPluginUpdateCheck } from "../commands/plugin-update-check.ts";
 import { runPluginReview } from "../commands/plugin-review.ts";
 import { runPluginDisable } from "../commands/plugin-disable.ts";
 import { runPluginRemove } from "../commands/plugin-remove.ts";
+import { runDevStatus } from "../commands/dev-status.ts";
+import { runDevRecover } from "../commands/dev-recover.ts";
 import type { CliIo } from "../output/write.ts";
 
 /** Operations that parse their own positional arguments. */
@@ -39,6 +41,8 @@ const ACCEPTS_POSITIONALS = new Set([
 const IMPLEMENTED_RESERVED_OPERATIONS = new Set([
   "plugin.disable",
   "plugin.remove",
+  "dev.status",
+  "dev.recover",
 ]);
 
 export async function dispatch(options: {
@@ -212,6 +216,18 @@ export async function dispatch(options: {
         env,
         rest,
         endOfOptions,
+        signal,
+      });
+    case "dev.status":
+      return runDevStatus({
+        globals: parsed.globals,
+        env,
+        signal,
+      });
+    case "dev.recover":
+      return runDevRecover({
+        globals: parsed.globals,
+        env,
         signal,
       });
     default:

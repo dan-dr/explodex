@@ -8,7 +8,13 @@ import {
   DEV_STATE_FORBIDDEN_KEYS,
   DEV_STATE_SCHEMA_VERSION,
 } from "./constants.ts";
-import type { DevInstanceError, DevInstanceState, DevLayoutPaths } from "./types.ts";
+import type {
+  DevInstanceError,
+  DevInstanceState,
+  DevLayoutPaths,
+  DevRecoveryDiagnostic,
+  Phase0FrozenHost,
+} from "./types.ts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -24,6 +30,86 @@ function isNullableString(value: unknown): value is string | null {
 
 function isNullableInteger(value: unknown): value is number | null {
   return value === null || (typeof value === "number" && Number.isInteger(value));
+}
+
+function parseFrozenHost(value: unknown): Phase0FrozenHost | null | undefined {
+  if (value === null) return null;
+  if (!isRecord(value)) return undefined;
+  if (
+    !isNonEmptyString(value.bundlePath) ||
+    !isNonEmptyString(value.executablePath) ||
+    !isNonEmptyString(value.bundleId) ||
+    !isNonEmptyString(value.executableName) ||
+    !isNonEmptyString(value.signingTeam) ||
+    !isNonEmptyString(value.appVersion) ||
+    !isNonEmptyString(value.appBuild) ||
+    !isRecord(value.hostHashes)
+  ) {
+    return undefined;
+  }
+  const hostHashes: Record<string, string> = {};
+  for (const [path, digest] of Object.entries(value.hostHashes)) {
+    if (!isNonEmptyString(path) || !/^[a-f0-9]{64}$/i.test(String(digest))) {
+      return undefined;
+    }
+    hostHashes[path] = String(digest).toLowerCase();
+  }
+  return {
+    bundlePath: value.bundlePath,
+    executablePath: value.executablePath,
+    bundleId: value.bundleId,
+    executableName: value.executableName,
+    signingTeam: value.signingTeam,
+    appVersion: value.appVersion,
+    appBuild: value.appBuild,
+    hostHashes,
+  };
+}
+
+function parseRecoveryDiagnostic(value: unknown): DevRecoveryDiagnostic | null {
+  if (!isRecord(value)) return null;
+  if (!isNonEmptyString(value.recoveredAt)) return null;
+  if (
+    value.priorStatus !== "starting" &&
+    value.priorStatus !== "ready" &&
+    value.priorStatus !== "stopping" &&
+    value.priorStatus !== "stale" &&
+    value.priorStatus !== "failed"
+  ) {
+    return null;
+  }
+  if (!isNullableInteger(value.priorPid)) return null;
+  if (!isNullableString(value.priorProcessStartedAt)) return null;
+  if (!isNullableString(value.priorTargetId)) return null;
+  const priorError = value.priorError === null
+    ? null
+    : parseLastError(value.priorError);
+  if (value.priorError !== null && priorError === undefined) return null;
+  if (
+    value.disposition !== "independently-dead" &&
+    value.disposition !== "start-mismatched" &&
+    value.disposition !== "owned-process-terminated"
+  ) {
+    return null;
+  }
+  if (
+    value.terminationMethod !== null &&
+    value.terminationMethod !== "browser-close-only" &&
+    value.terminationMethod !== "exact-signal-only" &&
+    value.terminationMethod !== "browser-close-then-signal"
+  ) {
+    return null;
+  }
+  return {
+    recoveredAt: value.recoveredAt,
+    priorStatus: value.priorStatus,
+    priorPid: value.priorPid,
+    priorProcessStartedAt: value.priorProcessStartedAt,
+    priorTargetId: value.priorTargetId,
+    priorError: priorError ?? null,
+    disposition: value.disposition,
+    terminationMethod: value.terminationMethod,
+  };
 }
 
 function containsForbiddenKey(record: Record<string, unknown>): string | null {
@@ -87,14 +173,33 @@ export function parseDevInstanceState(value: unknown): DevInstanceState | null {
   if (value.cdpHost !== DEV_CDP_HOST) return null;
   if (value.cdpPort !== DEV_CDP_PORT) return null;
   if (!isNullableString(value.targetId)) return null;
+  if (!isNullableString(value.browserIdentity)) return null;
+  if (!isNullableInteger(value.executionContextId)) return null;
+  if (!isNullableString(value.executionContextUniqueId)) return null;
+  if (!isNullableString(value.frameId)) return null;
   if (!isNullableString(value.appVersion)) return null;
   if (!isNullableString(value.appBuild)) return null;
+  const frozenHost = parseFrozenHost(value.frozenHost);
+  if (frozenHost === undefined) return null;
+  if (!Array.isArray(value.recoveryDiagnostics)) return null;
+  const recoveryDiagnostics = value.recoveryDiagnostics.map(parseRecoveryDiagnostic);
+  if (recoveryDiagnostics.some((entry) => entry === null)) return null;
+  if (recoveryDiagnostics.length > 8) return null;
   if (!isNullableString(value.startedAt)) return null;
   if (!isNonEmptyString(value.updatedAt)) return null;
 
   // Reject impossible status/identity combinations.
   if (value.status === "ready") {
-    if (value.pid === null || value.processStartedAt === null || value.targetId === null) {
+    if (
+      value.pid === null ||
+      value.processStartedAt === null ||
+      value.targetId === null ||
+      value.browserIdentity === null ||
+      value.executionContextId === null ||
+      value.executionContextUniqueId === null ||
+      value.frameId === null ||
+      frozenHost === null
+    ) {
       return null;
     }
   }
@@ -104,6 +209,10 @@ export function parseDevInstanceState(value: unknown): DevInstanceState | null {
       value.pid !== null ||
       value.processStartedAt !== null ||
       value.targetId !== null ||
+      value.browserIdentity !== null ||
+      value.executionContextId !== null ||
+      value.executionContextUniqueId !== null ||
+      value.frameId !== null ||
       value.startedAt !== null
     ) {
       return null;
@@ -138,8 +247,14 @@ export function parseDevInstanceState(value: unknown): DevInstanceState | null {
     cdpHost: DEV_CDP_HOST,
     cdpPort: DEV_CDP_PORT,
     targetId: value.targetId,
+    browserIdentity: value.browserIdentity,
+    executionContextId: value.executionContextId,
+    executionContextUniqueId: value.executionContextUniqueId,
+    frameId: value.frameId,
     appVersion: value.appVersion,
     appBuild: value.appBuild,
+    frozenHost,
+    recoveryDiagnostics: recoveryDiagnostics as DevRecoveryDiagnostic[],
     startedAt: value.startedAt,
     updatedAt: value.updatedAt,
   };
@@ -155,6 +270,7 @@ export function createInitialDevInstanceState(options: {
   appPath: string;
   executablePath: string;
   launchMarker?: string;
+  frozenHost?: Phase0FrozenHost | null;
   updatedAt: string;
   instanceId?: string;
 }): DevInstanceState {
@@ -176,8 +292,14 @@ export function createInitialDevInstanceState(options: {
     cdpHost: DEV_CDP_HOST,
     cdpPort: DEV_CDP_PORT,
     targetId: null,
+    browserIdentity: null,
+    executionContextId: null,
+    executionContextUniqueId: null,
+    frameId: null,
     appVersion: null,
     appBuild: null,
+    frozenHost: options.frozenHost ?? null,
+    recoveryDiagnostics: [],
     startedAt: null,
     updatedAt: options.updatedAt,
   };
@@ -187,8 +309,21 @@ export async function loadDevInstanceState(options: {
   adapters: HostAdapters;
   statePath: string;
 }): Promise<DevInstanceState | null> {
+  const result = await loadDevInstanceStateResult(options);
+  return result.status === "valid" ? result.state : null;
+}
+
+export type DevInstanceStateLoadResult =
+  | { status: "absent"; state: null }
+  | { status: "malformed"; state: null }
+  | { status: "valid"; state: DevInstanceState };
+
+export async function loadDevInstanceStateResult(options: {
+  adapters: HostAdapters;
+  statePath: string;
+}): Promise<DevInstanceStateLoadResult> {
   const exists = await options.adapters.fs.exists(options.statePath);
-  if (!exists) return null;
+  if (!exists) return { status: "absent", state: null };
 
   let text: string;
   try {
@@ -199,16 +334,19 @@ export async function loadDevInstanceState(options: {
       text = new TextDecoder().decode(bytes);
     }
   } catch {
-    return null;
+    return { status: "malformed", state: null };
   }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(text) as unknown;
   } catch {
-    return null;
+    return { status: "malformed", state: null };
   }
-  return parseDevInstanceState(parsed);
+  const state = parseDevInstanceState(parsed);
+  return state === null
+    ? { status: "malformed", state: null }
+    : { status: "valid", state };
 }
 
 /**
@@ -279,9 +417,15 @@ export function publicDevStateKeySet(): readonly string[] {
     "cdpHost",
     "cdpPort",
     "targetId",
+    "browserIdentity",
+    "executionContextId",
+    "executionContextUniqueId",
+    "frameId",
     "appVersion",
     "appBuild",
+    "frozenHost",
     "lastError",
+    "recoveryDiagnostics",
     "startedAt",
     "updatedAt",
   ] as const;

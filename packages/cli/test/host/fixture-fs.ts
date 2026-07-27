@@ -229,6 +229,23 @@ export class MemoryFileSystem implements HostFileSystem {
     const bytes = await this.readFile(path);
     return new TextDecoder().decode(bytes);
   }
+
+  async readDirectory(path: string): Promise<string[]> {
+    const root = norm(path);
+    const entry = this.entries.get(root);
+    if (entry?.kind !== "directory") {
+      throw new Error(`ENOTDIR: ${path}`);
+    }
+    const prefix = root === sep ? sep : `${root}${sep}`;
+    const names = new Set<string>();
+    for (const candidate of this.entries.keys()) {
+      if (!candidate.startsWith(prefix) || candidate === root) continue;
+      const relative = candidate.slice(prefix.length);
+      const first = relative.split(sep)[0];
+      if (first) names.add(first);
+    }
+    return [...names].sort();
+  }
 }
 
 export class VirtualProcess implements HostProcess {

@@ -19,6 +19,17 @@ export type DevInstanceError = {
   phase: string;
 };
 
+export type DevRecoveryDiagnostic = {
+  recoveredAt: string;
+  priorStatus: Exclude<DevInstanceStatus, "stopped">;
+  priorPid: number | null;
+  priorProcessStartedAt: string | null;
+  priorTargetId: string | null;
+  priorError: DevInstanceError | null;
+  disposition: "independently-dead" | "start-mismatched" | "owned-process-terminated";
+  terminationMethod: "browser-close-only" | "exact-signal-only" | "browser-close-then-signal" | null;
+};
+
 /**
  * Private, secret-free development instance state.
  * Path presence never implies process ownership.
@@ -41,9 +52,16 @@ export type DevInstanceState = {
   cdpHost: typeof DEV_CDP_HOST;
   cdpPort: typeof DEV_CDP_PORT;
   targetId: string | null;
+  browserIdentity: string | null;
+  executionContextId: number | null;
+  executionContextUniqueId: string | null;
+  frameId: string | null;
   appVersion: string | null;
   appBuild: string | null;
+  /** Full exact current canonical host identity frozen for the owning operation. */
+  frozenHost: Phase0FrozenHost | null;
   lastError?: DevInstanceError;
+  recoveryDiagnostics: DevRecoveryDiagnostic[];
   startedAt: string | null;
   updatedAt: string;
 };

@@ -801,7 +801,9 @@ async function revalidateProcessCleanupAuthority(options: {
 /**
  * Endpoint/port revalidation required before Browser.close.
  * Unique-owner contract: any additional 9444 listener refuses Browser.close.
- * Exact-PID SIGTERM of a still-verified process remains separately allowed.
+ * Exact-PID SIGTERM of a still-verified process remains separately allowed for
+ * legacy Phase 0 cleanup. Strict lifecycle callers can forbid that fallback
+ * when endpoint ownership, target, or context identity has drifted.
  */
 async function revalidateEndpointCleanupAuthority(options: {
   commands: ReadOnlyCommandRunner;
@@ -810,7 +812,10 @@ async function revalidateEndpointCleanupAuthority(options: {
   expectedTargetId?: string | null;
   expectedContextUniqueId?: string | null;
   signal?: AbortSignal;
-}): Promise<{ ok: true } | { ok: false; reason: string }> {
+}): Promise<
+  { ok: true } |
+  { ok: false; reason: string; exactSignalFallbackAllowed: boolean }
+> {
   const ports = createNodePortInventoryAdapter(options.commands);
   const listeners = await ports.listenersFor(DEV_CDP_PORT, { signal: options.signal });
   const loopback = listeners.filter(
@@ -820,13 +825,18 @@ async function revalidateEndpointCleanupAuthority(options: {
   );
   const owners = new Set(loopback.map((entry) => entry.pid));
   if (owners.size === 0) {
-    return { ok: false, reason: "Declared development port has no owner before Browser.close." };
+    return {
+      ok: false,
+      reason: "Declared development port has no owner before Browser.close.",
+      exactSignalFallbackAllowed: false,
+    };
   }
   if (owners.size !== 1 || !owners.has(options.pid)) {
     return {
       ok: false,
       reason:
         "Listener co-ownership or foreign ownership before cleanup; refuse Browser.close under unique-owner contract.",
+      exactSignalFallbackAllowed: false,
     };
   }
 
@@ -840,6 +850,7 @@ async function revalidateEndpointCleanupAuthority(options: {
       return {
         ok: false,
         reason: "Endpoint browser identity missing/malformed before Browser.close.",
+        exactSignalFallbackAllowed: false,
       };
     }
     if (
@@ -851,6 +862,7 @@ async function revalidateEndpointCleanupAuthority(options: {
       return {
         ok: false,
         reason: "Endpoint published PID disagrees before Browser.close; refuse Browser.close.",
+        exactSignalFallbackAllowed: false,
       };
     }
     if (options.expectedTargetId) {
@@ -866,6 +878,7 @@ async function revalidateEndpointCleanupAuthority(options: {
         return {
           ok: false,
           reason: "Target identity drifted before Browser.close; refuse Browser.close.",
+          exactSignalFallbackAllowed: false,
         };
       }
       // Re-open and revalidate the exact default execution context unique ID.
@@ -892,6 +905,7 @@ async function revalidateEndpointCleanupAuthority(options: {
               ok: false,
               reason:
                 "Execution context unique ID drifted before Browser.close; refuse Browser.close.",
+              exactSignalFallbackAllowed: false,
             };
           }
         } finally {
@@ -903,6 +917,7 @@ async function revalidateEndpointCleanupAuthority(options: {
     return {
       ok: false,
       reason: "Endpoint unavailable before Browser.close; fall through to exact-PID signal.",
+      exactSignalFallbackAllowed: true,
     };
   }
   return { ok: true };
@@ -987,7 +1002,7 @@ async function stopPrivateRootHelpers(options: {
   }
 }
 
-type StopExactProcessResult = {
+export type StopExactProcessResult = {
   stopped: boolean;
   portReleased: boolean;
   uncertain: boolean;
@@ -995,7 +1010,7 @@ type StopExactProcessResult = {
   reason?: string;
 };
 
-async function stopExactProcess(options: {
+export async function stopExactProcess(options: {
   runtimeProcess: RuntimeProcess;
   commands: ReadOnlyCommandRunner;
   cdp: CdpAdapter;
@@ -1007,6 +1022,12 @@ async function stopExactProcess(options: {
   pollMs: number;
   expectedTargetId?: string | null;
   expectedContextUniqueId?: string | null;
+  /**
+   * Recovery/normal lifecycle callers fail closed when endpoint ownership,
+   * target, or context drifted. Phase 0 historical cleanup keeps its existing
+   * exact-PID fallback behavior.
+   */
+  requireCompleteEndpointOwnershipForSignal?: boolean;
   /** Private roots under which ChatGPT may spawn helper processes. */
   privateRoots?: readonly string[];
   /** Intentionally ignored for cleanup; cleanup always uses a fresh finite context. */
@@ -1034,8 +1055,10 @@ async function stopExactProcess(options: {
     }
 
     // Browser.close requires exclusive endpoint/target/context revalidation.
-    // Co-ownership or foreign/mismatched endpoint refuses Browser.close but still
-    // permits exact-PID SIGTERM of the verified process identity below.
+    // Co-ownership or foreign/mismatched endpoint refuses Browser.close. Legacy
+    // Phase 0 cleanup may still use exact-PID SIGTERM, while strict lifecycle
+    // callers fail closed unless CDP itself is unavailable after exact listener
+    // ownership was proven.
     let browserCloseAttempted = false;
     let browserCloseOk = false;
     let exactSignalUsed = false;
@@ -1047,6 +1070,19 @@ async function stopExactProcess(options: {
       expectedContextUniqueId: options.expectedContextUniqueId,
       signal: cleanup.signal,
     });
+    if (
+      !closeAuthority.ok &&
+      options.requireCompleteEndpointOwnershipForSignal === true &&
+      !closeAuthority.exactSignalFallbackAllowed
+    ) {
+      return {
+        stopped: false,
+        portReleased: false,
+        uncertain: true,
+        method: "none",
+        reason: closeAuthority.reason,
+      };
+    }
     if (closeAuthority.ok) {
       browserCloseAttempted = true;
       try {
@@ -1860,6 +1896,7 @@ async function runPhase0LockedBody(input: {
         appPath: frozenHost.bundlePath,
         executablePath: frozenHost.executablePath,
         launchMarker: DEFAULT_PHASE0_LAUNCH_MARKER,
+        frozenHost,
         updatedAt: options.adapters.clock.nowIso(),
       });
       startingState.status = "starting";
@@ -2060,6 +2097,7 @@ async function runPhase0LockedBody(input: {
             appPath: frozenHost.bundlePath,
             executablePath: frozenHost.executablePath,
             launchMarker: marker.value,
+            frozenHost,
             updatedAt: options.adapters.clock.nowIso(),
           });
           failedState.status = "failed";
@@ -2549,6 +2587,7 @@ async function runPhase0LockedBody(input: {
           appPath: frozenHost.bundlePath,
           executablePath: frozenHost.executablePath,
           launchMarker: marker.value,
+          frozenHost,
           updatedAt: options.adapters.clock.nowIso(),
         });
         failedState.status = "failed";
@@ -2610,6 +2649,7 @@ async function runPhase0LockedBody(input: {
         appPath: frozenHost.bundlePath,
         executablePath: frozenHost.executablePath,
         launchMarker: marker.value,
+        frozenHost,
         updatedAt: options.adapters.clock.nowIso(),
       });
       nextState.appVersion = frozenHost.appVersion;
@@ -2619,6 +2659,11 @@ async function runPhase0LockedBody(input: {
         nextState.pid = acceptanceProcess.pid;
         nextState.processStartedAt = acceptanceProcess.processStartedAt;
         nextState.targetId = acceptanceProcess.targetId;
+        nextState.browserIdentity = acceptanceProcess.browserIdentity;
+        nextState.executionContextId = acceptanceProcess.executionContextId;
+        nextState.executionContextUniqueId =
+          acceptanceProcess.executionContextUniqueId;
+        nextState.frameId = acceptanceProcess.frameId;
         nextState.startedAt = options.adapters.clock.nowIso();
       } else {
         nextState.status = "stopped";

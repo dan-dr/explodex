@@ -28,6 +28,8 @@ export type HostFileSystem = {
   mkdir?(path: string, options?: { recursive?: boolean; mode?: number }): Promise<void>;
   rename?(from: string, to: string): Promise<void>;
   readText?(path: string): Promise<string>;
+  /** Optional read-only direct-child inventory used by safe root validation. */
+  readDirectory?(path: string): Promise<string[]>;
 };
 
 export type HostProcess = {
@@ -109,6 +111,9 @@ export async function createNodeFileSystem(): Promise<HostFileSystem> {
     },
     async readText(path) {
       return fs.readFile(path, "utf8");
+    },
+    async readDirectory(path) {
+      return fs.readdir(path);
     },
   };
 }
