@@ -6,6 +6,7 @@
 import type { PluginLogger } from "../types/runtime-api.ts";
 import type {
   PluginReviewRequest,
+  PluginUpdateReviewRequest,
   ReviewOutcome,
 } from "./plugin-review.ts";
 
@@ -14,6 +15,15 @@ export type ExplodexRuntime = {
   readonly log: PluginLogger;
   readonly review: {
     open(request: PluginReviewRequest): Promise<ReviewOutcome>;
+    cancel(reason?: string): void;
+    cancelExact(
+      operationId: string,
+      callbackName: string,
+      reason?: string,
+    ): boolean;
+  };
+  readonly updates: {
+    open(request: PluginUpdateReviewRequest): Promise<ReviewOutcome>;
     cancel(reason?: string): void;
     cancelExact(
       operationId: string,

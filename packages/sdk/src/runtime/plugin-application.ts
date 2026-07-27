@@ -8,6 +8,7 @@ import {
 } from "../lifecycle/index.ts";
 import type {
   PluginReviewRequest,
+  PluginUpdateReviewRequest,
   ReviewSubmission,
 } from "./plugin-review.ts";
 
@@ -66,7 +67,7 @@ export type PluginRuntimeDiagnostic = {
 
 export type PluginApplicationController = {
   authorizeReview(
-    request: PluginReviewRequest,
+    request: PluginReviewRequest | PluginUpdateReviewRequest,
     submission: ReviewSubmission,
   ): void;
   applyApproved(

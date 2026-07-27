@@ -2,7 +2,10 @@ import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { chmod, link, mkdir, open, readFile, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { ArtifactSource } from "./install-state.ts";
+import {
+  parseArtifactSource,
+  type ArtifactSource,
+} from "./install-state.ts";
 
 const PRIVATE_DIRECTORY_MODE = 0o700;
 const PRIVATE_FILE_MODE = 0o600;
@@ -45,14 +48,14 @@ export function parseArtifactProvenance(value: unknown): ArtifactProvenanceRecor
   if (keys.length !== expected.length || !keys.every((key, index) => key === expected[index])) {
     return null;
   }
+  const source = parseArtifactSource(value.source);
   if (value.schemaVersion !== 1 || typeof value.id !== "string" ||
     !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value.id) || typeof value.version !== "string" ||
     value.version.length === 0 || typeof value.payloadSha256 !== "string" ||
     !SHA256_PATTERN.test(value.payloadSha256) || typeof value.archiveSha256 !== "string" ||
     !SHA256_PATTERN.test(value.archiveSha256) || typeof value.installedDirectoryName !== "string" ||
     value.installedDirectoryName.length === 0 || !isIsoTimestamp(value.installedAt) ||
-    !isRecord(value.source) || value.source.kind !== "local" ||
-    typeof value.source.archiveName !== "string" || value.source.archiveName.length === 0) {
+    source === null) {
     return null;
   }
   return {
@@ -62,7 +65,7 @@ export function parseArtifactProvenance(value: unknown): ArtifactProvenanceRecor
     payloadSha256: value.payloadSha256,
     archiveSha256: value.archiveSha256,
     installedDirectoryName: value.installedDirectoryName,
-    source: { kind: "local", archiveName: value.source.archiveName },
+    source,
     installedAt: value.installedAt,
   };
 }

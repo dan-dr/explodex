@@ -1,6 +1,9 @@
 export const REVIEW_SECURITY_WARNING =
   "Enabled plugins are trusted unsandboxed renderer code that can read or modify UI and authenticated renderer state. Confirmation and checksums do not provide sandboxing or publisher authentication.";
 
+const REVIEW_CALLBACK_PATTERN = /^__explodexReview_[A-Za-z0-9_]+$/;
+const UPDATE_CALLBACK_PATTERN = /^__explodexUpdate_[A-Za-z0-9_]+$/;
+
 export type ReviewArtifact = {
   id: string;
   displayName: string;
@@ -11,7 +14,9 @@ export type ReviewArtifact = {
   sourceLabel: string;
 };
 
-export type PluginReviewRequest = {
+export type ReviewSurface = "pending" | "update";
+
+type PluginReviewRequestBase = {
   schemaVersion: 1;
   operationId: string;
   nonce: string;
@@ -22,6 +27,18 @@ export type PluginReviewRequest = {
   warning?: string;
   artifacts: ReviewArtifact[];
 };
+
+export type PluginReviewRequest = PluginReviewRequestBase & {
+  surface?: never;
+  enabledPluginIds?: never;
+};
+
+export type PluginUpdateReviewRequest = PluginReviewRequestBase & {
+  surface: "update";
+  enabledPluginIds: string[];
+};
+
+type AnyReviewRequest = PluginReviewRequest | PluginUpdateReviewRequest;
 
 export type ReviewSelectionTuple = {
   id: string;
@@ -43,11 +60,14 @@ export type ReviewOutcome =
 
 export type ReviewRenderArtifact = ReviewArtifact & {
   selected: boolean;
+  disposition?: "will-replace-enabled" | "will-remain-disabled";
 };
 
 export type ReviewRenderModel = {
+  surface: ReviewSurface;
   operationId: string;
   warning: string;
+  submitLabel: "Enable Selected" | "Update Selected";
   artifacts: ReviewRenderArtifact[];
   onToggle(
     id: string,
@@ -73,7 +93,7 @@ export type PluginReviewHost = {
 };
 
 export type PluginReviewController = {
-  open(request: PluginReviewRequest): Promise<ReviewOutcome>;
+  open(request: AnyReviewRequest): Promise<ReviewOutcome>;
   cancel(reason?: string): void;
   cancelExact(
     operationId: string,
@@ -84,7 +104,7 @@ export type PluginReviewController = {
 };
 
 type ActiveReview = {
-  request: PluginReviewRequest;
+  request: AnyReviewRequest;
   selected: Set<string>;
   timer: unknown;
   handle: ReviewRenderHandle;
@@ -148,7 +168,10 @@ function parseArtifact(value: unknown): ReviewArtifact | null {
   };
 }
 
-function parseRequest(value: unknown): PluginReviewRequest | null {
+function parseRequest(
+  value: unknown,
+  expectedSurface: ReviewSurface,
+): AnyReviewRequest | null {
   const keysWithoutWarning = [
     "schemaVersion",
     "operationId",
@@ -159,17 +182,27 @@ function parseRequest(value: unknown): PluginReviewRequest | null {
     "applicationTtlMs",
     "artifacts",
   ] as const;
+  const expectedKeys = expectedSurface === "pending"
+    ? [keysWithoutWarning, [...keysWithoutWarning, "warning"]]
+    : [
+        [...keysWithoutWarning, "surface", "enabledPluginIds"],
+        [...keysWithoutWarning, "surface", "enabledPluginIds", "warning"],
+      ];
   if (
     !isRecord(value) ||
-    (!exactKeys(value, keysWithoutWarning) &&
-      !exactKeys(value, [...keysWithoutWarning, "warning"])) ||
+    !expectedKeys.some((keys) => exactKeys(value, keys)) ||
     value.schemaVersion !== 1 ||
+    (expectedSurface === "pending"
+      ? value.surface !== undefined || value.enabledPluginIds !== undefined
+      : value.surface !== "update" || !Array.isArray(value.enabledPluginIds)) ||
     typeof value.operationId !== "string" ||
     value.operationId.length === 0 ||
     typeof value.nonce !== "string" ||
     value.nonce.length === 0 ||
     typeof value.callbackName !== "string" ||
-    !/^__explodexReview_[A-Za-z0-9_]+$/.test(value.callbackName) ||
+    !(expectedSurface === "update"
+      ? UPDATE_CALLBACK_PATTERN
+      : REVIEW_CALLBACK_PATTERN).test(value.callbackName) ||
     typeof value.expiresAtMs !== "number" ||
     !Number.isFinite(value.expiresAtMs) ||
     typeof value.activationCommitment !== "string" ||
@@ -182,6 +215,19 @@ function parseRequest(value: unknown): PluginReviewRequest | null {
   ) {
     return null;
   }
+  const enabledPluginIds = new Set<string>();
+  if (expectedSurface === "update") {
+    for (const candidate of value.enabledPluginIds as unknown[]) {
+      if (
+        typeof candidate !== "string" ||
+        candidate.length === 0 ||
+        enabledPluginIds.has(candidate)
+      ) {
+        return null;
+      }
+      enabledPluginIds.add(candidate);
+    }
+  }
   const artifacts: ReviewArtifact[] = [];
   const tuples = new Set<string>();
   for (const candidate of value.artifacts) {
@@ -192,7 +238,7 @@ function parseRequest(value: unknown): PluginReviewRequest | null {
     tuples.add(key);
     artifacts.push(artifact);
   }
-  return {
+  const base: PluginReviewRequestBase = {
     schemaVersion: 1,
     operationId: value.operationId,
     nonce: value.nonce,
@@ -203,10 +249,17 @@ function parseRequest(value: unknown): PluginReviewRequest | null {
     warning: REVIEW_SECURITY_WARNING,
     artifacts,
   };
+  return expectedSurface === "update"
+    ? {
+        ...base,
+        surface: "update",
+        enabledPluginIds: [...enabledPluginIds].sort(),
+      }
+    : base;
 }
 
 function submission(
-  request: PluginReviewRequest,
+  request: AnyReviewRequest,
   selected: Set<string>,
 ): ReviewSubmission {
   return {
@@ -226,7 +279,7 @@ function submission(
 
 function parseSubmission(
   value: unknown,
-  request: PluginReviewRequest,
+  request: AnyReviewRequest,
 ): ReviewSubmission | null {
   if (
     !isRecord(value) ||
@@ -271,14 +324,16 @@ function parseSubmission(
 
 export function createPluginReviewController(options: {
   host: PluginReviewHost;
+  surface?: ReviewSurface;
   render(model: ReviewRenderModel): ReviewRenderHandle;
   onSubmitted?(
-    request: PluginReviewRequest,
+    request: AnyReviewRequest,
     submission: ReviewSubmission,
   ): void;
 }): PluginReviewController {
   let active: ActiveReview | null = null;
   let destroyed = false;
+  const surface = options.surface ?? "pending";
 
   const finish = (outcome: ReviewOutcome, reason: string): void => {
     const current = active;
@@ -304,7 +359,7 @@ export function createPluginReviewController(options: {
           reason: "review-already-active",
         });
       }
-      const request = parseRequest(value);
+      const request = parseRequest(value, surface);
       if (request === null) {
         return Promise.resolve({
           status: "rejected",
@@ -335,11 +390,22 @@ export function createPluginReviewController(options: {
           resolve(outcome);
         };
         const model: ReviewRenderModel = {
+          surface,
           operationId: request.operationId,
           warning: REVIEW_SECURITY_WARNING,
+          submitLabel: surface === "update"
+            ? "Update Selected"
+            : "Enable Selected",
           artifacts: request.artifacts.map((artifact) => ({
             ...artifact,
             selected: false,
+            ...(surface === "update"
+              ? {
+                  disposition: request.enabledPluginIds?.includes(artifact.id)
+                    ? "will-replace-enabled" as const
+                    : "will-remain-disabled" as const,
+                }
+              : {}),
           })),
           onToggle(id, version, payloadSha256, isSelected) {
             const key = tupleKey({ id, version, payloadSha256 });
@@ -452,7 +518,11 @@ export function renderPluginReviewDom(
   model: ReviewRenderModel,
 ): ReviewRenderHandle {
   const overlay = document.createElement("div");
-  overlay.dataset.explodexPluginReview = model.operationId;
+  if (model.surface === "update") {
+    overlay.dataset.explodexPluginUpdate = model.operationId;
+  } else {
+    overlay.dataset.explodexPluginReview = model.operationId;
+  }
   overlay.setAttribute("role", "presentation");
   overlay.style.position = "fixed";
   overlay.style.inset = "0";
@@ -478,7 +548,9 @@ export function renderPluginReviewDom(
 
   const title = document.createElement("h2");
   title.id = `explodex-review-title-${model.operationId}`;
-  title.textContent = "New plugins detected";
+  title.textContent = model.surface === "update"
+    ? "Plugin updates available"
+    : "New plugins detected";
   title.style.margin = "0 0 10px";
   title.style.fontSize = "20px";
   dialog.append(title);
@@ -534,6 +606,17 @@ export function renderPluginReviewDom(
     identity.style.marginTop = "6px";
     identity.style.opacity = ".72";
     details.append(name, description, identity);
+    if (artifact.disposition !== undefined) {
+      const disposition = document.createElement("small");
+      disposition.dataset.explodexUpdateDisposition = artifact.disposition;
+      disposition.textContent = artifact.disposition === "will-replace-enabled"
+        ? "This exact identity will become active and replace the currently enabled identity."
+        : "This plugin is disabled. The exact identity will remain disabled and pending review.";
+      disposition.style.display = "block";
+      disposition.style.marginTop = "6px";
+      disposition.style.color = "rgb(255,222,170)";
+      details.append(disposition);
+    }
     row.append(input, details);
     list.append(row);
   }
@@ -547,7 +630,7 @@ export function renderPluginReviewDom(
   const cancel = button(document, "Cancel");
   cancel.dataset.explodexReviewCancel = "true";
   cancel.addEventListener("click", model.onCancel);
-  const submit = button(document, "Enable Selected");
+  const submit = button(document, model.submitLabel);
   submit.dataset.explodexReviewSubmit = "true";
   submit.addEventListener("click", model.onSubmit);
   actions.append(cancel, submit);

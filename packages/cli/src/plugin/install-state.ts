@@ -21,7 +21,24 @@ export type LocalArtifactSource = {
   archiveName: string;
 };
 
-export type ArtifactSource = LocalArtifactSource;
+export type RegistryArtifactSource = {
+  kind: "registry";
+  registryUrl: string;
+  repositoryUrl: string;
+  artifactUrl: string;
+};
+
+export type GitHubArtifactSource = {
+  kind: "github";
+  repositoryUrl: string;
+  artifactUrl: string;
+  expectedArchiveSha256: string;
+};
+
+export type ArtifactSource =
+  | LocalArtifactSource
+  | RegistryArtifactSource
+  | GitHubArtifactSource;
 
 export type InstalledArtifact = ArtifactIdentity & {
   archiveSha256: string;
@@ -83,14 +100,75 @@ function parseIdentity(value: unknown): ArtifactIdentity | null {
   return { version: value.version, payloadSha256: value.payloadSha256 };
 }
 
-function parseSource(value: unknown): ArtifactSource | null {
-  if (!isRecord(value) || !exactKeys(value, ["kind", "archiveName"]) || value.kind !== "local") {
-    return null;
+function isSafeHttpsUrl(value: unknown): value is string {
+  if (typeof value !== "string" || value.length === 0 || value.length > 2_048) {
+    return false;
   }
-  if (typeof value.archiveName !== "string" || !isSafeLocalArchiveName(value.archiveName)) {
-    return null;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "https:" && parsed.username === "" &&
+      parsed.password === "";
+  } catch {
+    return false;
   }
-  return { kind: "local", archiveName: value.archiveName };
+}
+
+export function parseArtifactSource(value: unknown): ArtifactSource | null {
+  if (!isRecord(value) || typeof value.kind !== "string") return null;
+  if (value.kind === "local") {
+    if (
+      !exactKeys(value, ["kind", "archiveName"]) ||
+      typeof value.archiveName !== "string" ||
+      !isSafeLocalArchiveName(value.archiveName)
+    ) {
+      return null;
+    }
+    return { kind: "local", archiveName: value.archiveName };
+  }
+  if (value.kind === "registry") {
+    if (
+      !exactKeys(value, [
+        "kind",
+        "registryUrl",
+        "repositoryUrl",
+        "artifactUrl",
+      ]) ||
+      !isSafeHttpsUrl(value.registryUrl) ||
+      !isSafeHttpsUrl(value.repositoryUrl) ||
+      !isSafeHttpsUrl(value.artifactUrl)
+    ) {
+      return null;
+    }
+    return {
+      kind: "registry",
+      registryUrl: value.registryUrl,
+      repositoryUrl: value.repositoryUrl,
+      artifactUrl: value.artifactUrl,
+    };
+  }
+  if (value.kind === "github") {
+    if (
+      !exactKeys(value, [
+        "kind",
+        "repositoryUrl",
+        "artifactUrl",
+        "expectedArchiveSha256",
+      ]) ||
+      !isSafeHttpsUrl(value.repositoryUrl) ||
+      !isSafeHttpsUrl(value.artifactUrl) ||
+      typeof value.expectedArchiveSha256 !== "string" ||
+      !SHA256_PATTERN.test(value.expectedArchiveSha256)
+    ) {
+      return null;
+    }
+    return {
+      kind: "github",
+      repositoryUrl: value.repositoryUrl,
+      artifactUrl: value.artifactUrl,
+      expectedArchiveSha256: value.expectedArchiveSha256,
+    };
+  }
+  return null;
 }
 
 function parseInstalledArtifact(value: unknown, id: string): InstalledArtifact | null {
@@ -103,7 +181,7 @@ function parseInstalledArtifact(value: unknown, id: string): InstalledArtifact |
     "installedAt",
   ])) return null;
   const identity = parseIdentity({ version: value.version, payloadSha256: value.payloadSha256 });
-  const source = parseSource(value.source);
+  const source = parseArtifactSource(value.source);
   if (identity === null || source === null || typeof value.archiveSha256 !== "string" ||
     !SHA256_PATTERN.test(value.archiveSha256) || typeof value.relativePath !== "string" ||
     !isSafeRelativeArtifactPath(value.relativePath, id) || !isIsoTimestamp(value.installedAt)) {
@@ -202,7 +280,15 @@ function isSafeRelativeArtifactPath(value: string, id: string): boolean {
 }
 
 export function sourceLabel(source: ArtifactSource): string {
-  return `Local archive: ${source.archiveName}`;
+  if (source.kind === "local") {
+    return `Local archive: ${source.archiveName}`;
+  }
+  const repository = new URL(source.repositoryUrl);
+  const parts = repository.pathname.split("/").filter((part) => part.length > 0);
+  const ownerRepo = parts.slice(0, 2).join("/");
+  return source.kind === "registry"
+    ? `Registry: ${ownerRepo}`
+    : `GitHub release: ${ownerRepo}`;
 }
 
 export async function loadPluginsState(options: {

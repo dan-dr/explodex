@@ -62,6 +62,15 @@ export {
   revalidateEnabledPluginArtifacts,
 } from "./reconciliation.ts";
 export {
+  applySelectedPluginUpdates,
+  listPluginUpdateRecommendations,
+  mergePluginUpdateApplicationResults,
+} from "./update-transaction.ts";
+export {
+  buildMetadataUpdateExpression,
+  createUpdateReviewProtocolContext,
+} from "./update-review-protocol.ts";
+export {
   runReconciliationOnDeclaredTarget,
 } from "./reconciliation-target.ts";
 export {
@@ -153,6 +162,18 @@ export type {
   PluginMutationResult,
 } from "./reconciliation.ts";
 export type {
+  PluginUpdateAdapters,
+  PluginUpdateFailure,
+  PluginUpdateListingResult,
+  PluginUpdateMetadata,
+  PluginUpdateRecommendation,
+  PluginUpdateResult,
+  PluginUpdateSuccess,
+} from "./update-transaction.ts";
+export type {
+  UpdateReviewProtocolContext,
+} from "./update-review-protocol.ts";
+export type {
   DeclaredTargetReconciliationResult,
 } from "./reconciliation-target.ts";
 export type {
@@ -170,8 +191,10 @@ export type {
 export type { ArtifactProvenanceRecord } from "./install-provenance.ts";
 export type {
   ArtifactSource,
+  GitHubArtifactSource,
   InstalledArtifact,
   LocalArtifactSource,
+  RegistryArtifactSource,
   PluginStateRecord,
   PluginsState,
   PluginsStateLoadResult,

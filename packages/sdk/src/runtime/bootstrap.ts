@@ -11,8 +11,6 @@ import {
 import {
   createPluginReviewController,
   renderPluginReviewDom,
-  type PluginReviewRequest,
-  type ReviewOutcome,
 } from "./plugin-review.ts";
 import type { ExplodexRuntime } from "./public.ts";
 import { RUNTIME_VERSION } from "./version.ts";
@@ -112,6 +110,24 @@ export function installRuntime(global: RuntimeHost): InternalExplodexRuntime {
       application.authorizeReview(request, submission);
     },
   });
+  const updates = createPluginReviewController({
+    host: {
+      callbacks: global as unknown as Record<string, unknown>,
+      now: () => Date.now(),
+      setTimeout: (callback, delayMs) => global.setTimeout(callback, delayMs),
+      clearTimeout: (handle) => global.clearTimeout(handle),
+    },
+    surface: "update",
+    render(model) {
+      if (global.document === undefined || global.document.body === null) {
+        throw new Error("Explodex plugin update review requires a live renderer document.");
+      }
+      return renderPluginReviewDom(global.document, model);
+    },
+    onSubmitted(request, submission) {
+      application.authorizeReview(request, submission);
+    },
+  });
   const reconcileEnabled = application.claimEnabledReconciliation();
   if (reconcileEnabled === null) {
     throw new Error("Explodex enabled reconciliation capability was unavailable.");
@@ -120,6 +136,7 @@ export function installRuntime(global: RuntimeHost): InternalExplodexRuntime {
     if (destroyed) return;
     destroyed = true;
     review.destroy();
+    updates.destroy();
     await application.destroy();
     log.info("destroy", { reason: options?.reason ?? "explicit" });
     if (global.Explodex === runtime) {
@@ -142,6 +159,15 @@ export function installRuntime(global: RuntimeHost): InternalExplodexRuntime {
       cancel: (reason) => review.cancel(reason),
       cancelExact: (operationId, callbackName, reason) =>
         review.cancelExact(operationId, callbackName, reason),
+    },
+    updates: {
+      open: (request) => {
+        application.disableEnabledReconciliation();
+        return updates.open(request);
+      },
+      cancel: (reason) => updates.cancel(reason),
+      cancelExact: (operationId, callbackName, reason) =>
+        updates.cancelExact(operationId, callbackName, reason),
     },
     [PRIVATE_APPLY_APPROVED]: (input, evaluate, secret) =>
       application.applyApproved(input, evaluate, secret),
