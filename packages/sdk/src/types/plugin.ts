@@ -51,6 +51,18 @@ export type PluginTrackedResources = {
   subscription(unsubscribe: () => void): void;
 };
 
+/** Revocable handle for one manifest-declared plugin asset. */
+export type PluginAssetHandle = {
+  readonly path: string;
+  text(): Promise<string>;
+  bytes(): Promise<Uint8Array>;
+};
+
+/** Browser-safe plugin-scoped access to exact validated asset bytes. */
+export type PluginAssets = {
+  open(path: string): Promise<PluginAssetHandle>;
+};
+
 /** API object passed to setup after the runtime accepts a definition. */
 export type PluginApi = ExplodexRuntimeApi & {
   readonly pluginId: string;
@@ -60,6 +72,8 @@ export type PluginApi = ExplodexRuntimeApi & {
   readonly token: string;
   /** Register resources for guaranteed teardown disposal. */
   readonly track: PluginTrackedResources;
+  /** Open only assets declared by this plugin's accepted manifest. */
+  readonly assets: PluginAssets;
 };
 
 export type PluginTeardown = () => void | Promise<void>;

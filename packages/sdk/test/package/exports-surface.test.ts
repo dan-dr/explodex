@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
@@ -16,11 +16,13 @@ const PUBLIC_EXPORTS = [".", "./runtime", "./testing", "./package.json"] as cons
 async function resolveFromConsumer(
   consumerRoot: string,
   specifier: string,
+  conditions: readonly string[] = [],
 ): Promise<string> {
   // Use Node's ESM resolver so import-only export conditions are honored.
   const proc = Bun.spawn(
     [
       "node",
+      ...conditions.map((condition) => `--conditions=${condition}`),
       "--input-type=module",
       "-e",
       `const url = await import.meta.resolve(${JSON.stringify(specifier)}, ${JSON.stringify(
@@ -64,13 +66,15 @@ describe("VAL-SDK-001 packed SDK public surface", () => {
     expect(packageJson.exports["./src/index.js"]).toBeUndefined();
     expect(packageJson.exports["./src/*"]).toBeUndefined();
 
-    // Root export uses import + types; runtime uses default (classic script).
+    // Root/testing exports are Node-safe ESM. The runtime value is browser-only.
     const rootExport = packageJson.exports["."] as Record<string, string>;
     expect(rootExport.types).toBe("./dist/index.d.ts");
     expect(rootExport.import).toBe("./dist/index.js");
     const runtimeExport = packageJson.exports["./runtime"] as Record<string, string>;
     expect(runtimeExport.types).toBe("./dist/runtime/public.d.ts");
-    expect(runtimeExport.default).toBe("./dist/runtime/explodex-runtime.iife.js");
+    expect(runtimeExport.browser).toBe("./dist/runtime/explodex-runtime.iife.js");
+    expect(runtimeExport.import).toBeUndefined();
+    expect(runtimeExport.default).toBeUndefined();
     const testingExport = packageJson.exports["./testing"] as Record<string, string>;
     expect(testingExport.types).toBe("./dist/testing/index.d.ts");
     expect(testingExport.import).toBe("./dist/testing/index.js");
@@ -120,12 +124,23 @@ describe("VAL-SDK-001 packed SDK public surface", () => {
         expect(typeof mod.SDK_VERSION).toBe("string");
         expect(typeof mod.satisfiesSdkRange).toBe("function");
 
-        // Runtime path resolves to the IIFE artifact, not the authoring module.
+        // Ordinary Node resolution must never select the renderer IIFE.
+        await expect(
+          resolveFromConsumer(installed.consumerRoot, "@explodex/sdk/runtime"),
+        ).rejects.toThrow();
+
+        // The declared browser condition resolves to the IIFE artifact.
         const runtimeResolved = await resolveFromConsumer(
           installed.consumerRoot,
           "@explodex/sdk/runtime",
+          ["browser"],
         );
         expect(runtimeResolved.endsWith("explodex-runtime.iife.js")).toBe(true);
+        expect(
+          (await realpath(runtimeResolved)).startsWith(
+            `${await realpath(installed.consumerRoot)}/`,
+          ),
+        ).toBe(true);
         const runtimeSource = await readFile(runtimeResolved, "utf8");
         expect(runtimeSource.includes("sourceMappingURL=")).toBe(true);
         // Authoring module must not be the IIFE.
@@ -134,6 +149,17 @@ describe("VAL-SDK-001 packed SDK public surface", () => {
           false,
         );
         expect(resolvedRoot === runtimeResolved).toBe(false);
+
+        const testingResolved = await resolveFromConsumer(
+          installed.consumerRoot,
+          "@explodex/sdk/testing",
+        );
+        expect(testingResolved.endsWith("dist/testing/index.js")).toBe(true);
+        expect(
+          (await realpath(testingResolved)).startsWith(
+            `${await realpath(installed.consumerRoot)}/`,
+          ),
+        ).toBe(true);
 
         // Undeclared deep imports must fail package resolution.
         for (const deep of [

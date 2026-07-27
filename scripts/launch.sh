@@ -123,15 +123,19 @@ find_codex() {
 
 run_injector() {
     local plugins_env=""
+    local sdk_path="${EXPLODEX_SDK_PATH:-$ROOT/packages/sdk/dist/runtime/explodex-runtime.iife.js}"
     if (( ${#EXTRA_PLUGINS[@]} > 0 )); then
         plugins_env="$(IFS=:; echo "${EXTRA_PLUGINS[*]}")"
+    fi
+    if [[ -z "${EXPLODEX_SDK_PATH:-}" && ! -f "$sdk_path" ]]; then
+        bash "$ROOT/packages/sdk/scripts/run-build.sh"
     fi
 
     local user_plugins="${EXPLODEX_USER_PLUGINS_DIR:-$HOME/.explodex/plugins}"
     mkdir -p "$user_plugins"
 
     EXPLODEX_DEBUG_PORT="$PORT" \
-        EXPLODEX_SDK_PATH="${EXPLODEX_SDK_PATH:-$ROOT/sdk/explodex-sdk.js}" \
+        EXPLODEX_SDK_PATH="$sdk_path" \
         EXPLODEX_PLUGINS_DIR="${EXPLODEX_PLUGINS_DIR:-$ROOT/plugins}" \
         EXPLODEX_USER_PLUGINS_DIR="$user_plugins" \
         EXPLODEX_PLUGINS="$plugins_env" \

@@ -6,6 +6,8 @@ export type {
 
 export type {
   DefinedPlugin,
+  PluginAssetHandle,
+  PluginAssets,
   PluginApi,
   PluginDefinition,
   PluginSetup,

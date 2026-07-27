@@ -1,2 +1,2 @@
-/** Runtime-embedded SDK version. Must match packages/sdk/src/version.ts and package.json. */
-export const RUNTIME_VERSION = "1.2.0" as const;
+/** Runtime-embedded alias of the single authored SDK version authority. */
+export { SDK_VERSION as RUNTIME_VERSION } from "../version.ts";

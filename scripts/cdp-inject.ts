@@ -40,11 +40,18 @@ function findSdkPath(): string | null {
   const env = process.env.EXPLODEX_SDK_PATH ?? "";
   const resourceDir = injectorResourceDir();
   const candidates = [
-    join(__dirname, "..", "sdk", "explodex-sdk.js"),
+    env,
     join(resourceDir, "explodex-sdk.js"),
     join(__dirname, "explodex-sdk.js"),
-    join(process.cwd(), "sdk", "explodex-sdk.js"),
-    env,
+    join(
+      __dirname,
+      "..",
+      "packages/sdk/dist/runtime/explodex-runtime.iife.js",
+    ),
+    join(
+      process.cwd(),
+      "packages/sdk/dist/runtime/explodex-runtime.iife.js",
+    ),
   ];
   for (const cand of candidates) {
     if (cand && existsSync(cand) && statSync(cand).isFile()) return resolve(cand);

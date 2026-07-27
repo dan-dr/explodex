@@ -11,21 +11,37 @@ import type { SdkRuntimeIdentity } from "./types.ts";
  * Preference order:
  * 1. Packed `@explodex/sdk` runtime export when installed alongside the CLI
  * 2. Monorepo `packages/sdk/dist/runtime/explodex-runtime.iife.js` during development
- * 3. Transitional root `sdk/explodex-sdk.js` until cleanup
  */
 export function defaultGeneratedSdkRuntimePath(options?: {
   repositoryRoot?: string;
 }): string {
   if (options?.repositoryRoot !== undefined && options.repositoryRoot !== "") {
-    return join(options.repositoryRoot, "sdk", "explodex-sdk.js");
+    return join(
+      options.repositoryRoot,
+      "packages",
+      "sdk",
+      "dist",
+      "runtime",
+      "explodex-runtime.iife.js",
+    );
   }
-  // packages/cli/src/host -> repo root is four levels up.
+  // packages/cli/{src,dist}/host -> packages/sdk/dist/runtime.
   const here = dirname(fileURLToPath(import.meta.url));
-  return resolve(here, "..", "..", "..", "..", "sdk", "explodex-sdk.js");
+  return resolve(
+    here,
+    "..",
+    "..",
+    "..",
+    "sdk",
+    "dist",
+    "runtime",
+    "explodex-runtime.iife.js",
+  );
 }
 
 function extractVersion(source: string): string | null {
   const match =
+    /SDK_VERSION\s*=\s*["']([^"']+)["']/.exec(source) ??
     /const\s+VERSION\s*=\s*["']([^"']+)["']/.exec(source) ??
     /version:\s*["']([^"']+)["']/.exec(source) ??
     /"version"\s*:\s*"([^"]+)"/.exec(source);
@@ -68,7 +84,6 @@ export async function resolveSdkRuntimeIdentityForCli(): Promise<
     // packages/cli/src/host or packages/cli/dist/host → packages/sdk/dist/...
     resolve(here, "..", "..", "..", "sdk", "dist", "runtime", "explodex-runtime.iife.js"),
     resolve(here, "..", "..", "..", "..", "packages", "sdk", "dist", "runtime", "explodex-runtime.iife.js"),
-    defaultGeneratedSdkRuntimePath(),
   ];
 
   for (const candidate of monorepoCandidates) {
@@ -109,12 +124,12 @@ async function tryResolvePackedSdkRuntime(): Promise<
         : null;
     if (version === null) return null;
 
-    let runtimePath: string;
-    try {
-      runtimePath = require.resolve("@explodex/sdk/runtime");
-    } catch {
-      runtimePath = join(dirname(packageJsonPath), "dist", "runtime", "explodex-runtime.iife.js");
-    }
+    const runtimePath = join(
+      dirname(packageJsonPath),
+      "dist",
+      "runtime",
+      "explodex-runtime.iife.js",
+    );
 
     const source = await readFile(runtimePath, "utf8");
     const sha256 = createHash("sha256").update(source, "utf8").digest("hex");

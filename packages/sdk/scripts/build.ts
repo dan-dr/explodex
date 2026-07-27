@@ -11,7 +11,6 @@
  */
 import { createHash } from "node:crypto";
 import {
-  copyFile,
   mkdir,
   readFile,
   readdir,
@@ -20,7 +19,8 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { dirname, join, relative, sep } from "node:path";
+import { basename, dirname, join, relative, sep } from "node:path";
+import { SDK_VERSION } from "../src/version.ts";
 
 const packageRoot = join(import.meta.dir, "..");
 const stagingRoot = join(packageRoot, "dist-build");
@@ -72,7 +72,7 @@ const FORBIDDEN_MAP_PATH_MARKERS = [
 
 type ExpectedOutput = {
   schemaVersion: 1;
-  generatedAt: string;
+  sdkVersion: typeof SDK_VERSION;
   files: Record<string, { sha256: string; bytes: number }>;
 };
 
@@ -105,7 +105,7 @@ async function listFilesRecursive(root: string): Promise<string[]> {
   if (await pathExists(root)) {
     await walk(root);
   }
-  return out.sort((a, b) => a.localeCompare(b));
+  return out.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 }
 
 function toPosixRelative(from: string, to: string): string {
@@ -116,7 +116,7 @@ async function writeExpectedOutputManifest(root: string): Promise<ExpectedOutput
   const files = await listFilesRecursive(root);
   const manifest: ExpectedOutput = {
     schemaVersion: 1,
-    generatedAt: new Date().toISOString(),
+    sdkVersion: SDK_VERSION,
     files: {},
   };
   for (const file of files) {
@@ -193,13 +193,18 @@ async function rewriteSourceMapToPackageRelative(
     }
     throw new Error(`Unable to rewrite source map path to package-relative form: ${source}`);
   });
+  const sourcesContent = await Promise.all(
+    rewritten.map((source) =>
+      readFile(join(packageRoot, ...source.split("/")), "utf8")
+    ),
+  );
 
   const portable = {
     version: map.version ?? 3,
     file: generatedFileName,
     sourceRoot: "",
     sources: rewritten,
-    sourcesContent: map.sourcesContent,
+    sourcesContent,
     names: map.names ?? [],
     mappings: map.mappings ?? "",
   };
@@ -207,6 +212,18 @@ async function rewriteSourceMapToPackageRelative(
   const text = `${JSON.stringify(portable)}\n`;
   assertNoForbiddenMapSources(text, mapPath);
   await writeFile(mapPath, text, "utf8");
+}
+
+async function normalizeGeneratedSourceMaps(): Promise<void> {
+  const maps = (await listFilesRecursive(stagingRoot)).filter((path) =>
+    path.endsWith(".map")
+  );
+  for (const mapPath of maps) {
+    await rewriteSourceMapToPackageRelative(
+      mapPath,
+      basename(mapPath, ".map"),
+    );
+  }
 }
 
 async function ensureSourceMappingUrl(jsPath: string, mapFileName: string): Promise<void> {
@@ -239,86 +256,19 @@ async function bundleRuntimeIife(): Promise<void> {
     throw new Error(`Runtime IIFE bundle failed:\n${messages}`);
   }
 
-  // Bun may name the map with a different convention; normalize.
-  const produced = await listFilesRecursive(outdir);
-  const jsFile = produced.find((path) => path.endsWith(".js"));
-  if (jsFile === undefined) {
-    throw new Error("Runtime IIFE bundle did not emit a .js file");
-  }
   const desiredJs = join(outdir, "explodex-runtime.iife.js");
-  if (jsFile !== desiredJs) {
-    await rename(jsFile, desiredJs);
+  if (!(await pathExists(desiredJs))) {
+    throw new Error("Runtime IIFE bundle did not emit explodex-runtime.iife.js");
   }
 
-  const mapCandidate =
-    produced.find((path) => path.endsWith(".js.map")) ??
-    produced.find((path) => path.endsWith(".map"));
   const desiredMap = join(outdir, "explodex-runtime.iife.js.map");
-  if (mapCandidate === undefined) {
-    throw new Error("Runtime IIFE bundle did not emit a source map");
-  }
-  if (mapCandidate !== desiredMap) {
-    await rename(mapCandidate, desiredMap);
+  if (!(await pathExists(desiredMap))) {
+    throw new Error(
+      "Runtime IIFE bundle did not emit explodex-runtime.iife.js.map",
+    );
   }
 
-  await rewriteSourceMapToPackageRelative(desiredMap, "explodex-runtime.iife.js");
   await ensureSourceMappingUrl(desiredJs, "explodex-runtime.iife.js.map");
-
-  // Public types for the runtime export path (type-only).
-  const publicTypesSource = join(packageRoot, "src", "runtime", "public.ts");
-  // Emit a minimal declaration companion by hand from the public surface.
-  // Authoring declarations come from tsc; runtime public types are a thin re-export.
-  const publicDts = `export type ExplodexRuntime = {
-  readonly version: string;
-  readonly log: {
-    debug(message: string, detail?: unknown): void;
-    info(message: string, detail?: unknown): void;
-    warn(message: string, detail?: unknown): void;
-    error(message: string, detail?: unknown): void;
-  };
-  readonly review: {
-    open(request: {
-      schemaVersion: 1;
-      operationId: string;
-      nonce: string;
-      callbackName: string;
-      expiresAtMs: number;
-      warning?: string;
-      artifacts: Array<{
-        id: string;
-        displayName: string;
-        description: string;
-        version: string;
-        payloadSha256: string;
-        sdkRange: string;
-        sourceLabel: string;
-      }>;
-    }): Promise<
-      | {
-          status: "submitted";
-          payload: {
-            schemaVersion: 1;
-            nonce: string;
-            selected: Array<{
-              id: string;
-              version: string;
-              payloadSha256: string;
-            }>;
-          };
-        }
-      | { status: "cancelled"; reason: string }
-      | { status: "expired"; reason: string }
-      | { status: "rejected"; reason: string }
-    >;
-    cancel(reason?: string): void;
-  };
-  destroy(options?: { reason?: string }): void;
-};
-`;
-  await writeFile(join(outdir, "public.d.ts"), publicDts, "utf8");
-  // Keep the authored public.ts content hashable via copy of the type source note.
-  await copyFile(publicTypesSource, join(outdir, "public.ts.note"));
-  await rm(join(outdir, "public.ts.note"), { force: true });
 }
 
 function assertAuthoringOutputs(files: string[]): void {
@@ -341,6 +291,7 @@ function assertAuthoringOutputs(files: string[]): void {
     "runtime/explodex-runtime.iife.js",
     "runtime/explodex-runtime.iife.js.map",
     "runtime/public.d.ts",
+    "runtime/public.d.ts.map",
   ];
   for (const path of required) {
     if (!rel.has(path)) {
@@ -381,8 +332,35 @@ async function validateStaging(): Promise<void> {
     throw new Error("Runtime IIFE missing package-relative sourceMappingURL");
   }
 
-  const mapPath = join(stagingRoot, "runtime", "explodex-runtime.iife.js.map");
-  assertNoForbiddenMapSources(await readFile(mapPath, "utf8"), mapPath);
+  const mapFiles = files.filter((path) => path.endsWith(".map"));
+  for (const mapPath of mapFiles) {
+    const mapText = await readFile(mapPath, "utf8");
+    assertNoForbiddenMapSources(mapText, mapPath);
+    const parsed = JSON.parse(mapText) as {
+      sources?: unknown;
+      sourcesContent?: unknown;
+    };
+    const sources = Array.isArray(parsed.sources) ? parsed.sources : [];
+    if (
+      sources.some(
+        (source) =>
+          typeof source !== "string" ||
+          !source.startsWith("src/") ||
+          !source.endsWith(".ts"),
+      )
+    ) {
+      throw new Error(
+        `Source map sources must be package-relative authored TypeScript: ${mapPath}`,
+      );
+    }
+    if (
+      !Array.isArray(parsed.sourcesContent) ||
+      parsed.sourcesContent.length !== sources.length ||
+      parsed.sourcesContent.some((content) => typeof content !== "string")
+    ) {
+      throw new Error(`Source map must embed authored sourcesContent: ${mapPath}`);
+    }
+  }
 
   // Browser-safety: authored runtime graph must not reference Node/Bun globals as free requires.
   const forbidden = ["node:fs", "node:path", "node:child_process", "bun:sqlite", "electron"];
@@ -407,6 +385,19 @@ async function compileAuthoring(): Promise<void> {
   }
 }
 
+async function assertVersionAuthority(): Promise<void> {
+  const packageJson = JSON.parse(
+    await readFile(join(packageRoot, "package.json"), "utf8"),
+  ) as { version?: unknown };
+  if (packageJson.version !== SDK_VERSION) {
+    throw new Error(
+      `SDK version authority mismatch: src/version.ts=${SDK_VERSION}, package.json=${String(
+        packageJson.version,
+      )}`,
+    );
+  }
+}
+
 async function main(): Promise<void> {
   const previousDistExisted = await pathExists(finalRoot);
   let previousBackup: string | null = null;
@@ -415,8 +406,10 @@ async function main(): Promise<void> {
   await mkdir(stagingRoot, { recursive: true });
 
   try {
+    await assertVersionAuthority();
     await compileAuthoring();
     await bundleRuntimeIife();
+    await normalizeGeneratedSourceMaps();
     await validateStaging();
     await writeExpectedOutputManifest(stagingRoot);
 

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as ts from "typescript";
 import {
   buildSdkPackage,
   installSdkFromTarball,
@@ -55,15 +56,6 @@ describe("VAL-SDK-002 strict shipped declarations", () => {
                   noEmit: true,
                   skipLibCheck: false,
                   types: [],
-                  paths: {
-                    "@explodex/sdk": [
-                      `${installed.consumerRoot}/node_modules/@explodex/sdk/dist/index.d.ts`,
-                    ],
-                    "@explodex/sdk/*": [
-                      `${installed.consumerRoot}/node_modules/@explodex/sdk/dist/*`,
-                    ],
-                  },
-                  baseUrl: ".",
                 },
                 include: ["src/**/*.ts"],
               },
@@ -87,10 +79,14 @@ describe("VAL-SDK-002 strict shipped declarations", () => {
   defineConfig,
   definePlugin,
   SDK_VERSION,
+  evaluateSdkCompatibility,
   satisfiesSdkRange,
+  type ExplodexRuntime,
   type PluginApi,
   type ExplodexConfig,
+  type TrackedEventListener,
 } from "@explodex/sdk";
+import type { ExplodexRuntime as RendererRuntime } from "@explodex/sdk/runtime";
 
 const config: ExplodexConfig = defineConfig({
   version: "2026.07.26",
@@ -113,18 +109,50 @@ const plugin = definePlugin({
 const asyncPlugin = definePlugin({
   async setup(api) {
     api.log.info("async");
+    const callback: TrackedEventListener = (event: unknown) => {
+      api.log.debug("event", event);
+    };
+    const target = {
+      addEventListener(
+        _type: string,
+        _listener: TrackedEventListener | null,
+        _options?: boolean | Record<string, unknown>,
+      ): void {},
+      removeEventListener(
+        _type: string,
+        _listener: TrackedEventListener | null,
+        _options?: boolean | Record<string, unknown>,
+      ): void {},
+    };
+    api.track.listen(target, "fixture", callback);
+    const notice = await api.assets.open("notice.txt");
+    const [text, bytes] = await Promise.all([notice.text(), notice.bytes()]);
+    api.log.info(text, { bytes: bytes.byteLength });
     return async () => {
       await Promise.resolve();
     };
   },
 });
 
+type IsAny<T> = 0 extends (1 & T) ? true : false;
+type AssertFalse<T extends false> = T;
+type _PluginApiIsNotAny = AssertFalse<IsAny<PluginApi>>;
+type _AssetOpenIsNotAny = AssertFalse<
+  IsAny<ReturnType<PluginApi["assets"]["open"]>>
+>;
+type _RendererRuntimeIsNotAny = AssertFalse<IsAny<RendererRuntime>>;
+
+const runtimeShape = {} as ExplodexRuntime;
+const rendererRuntimeShape: RendererRuntime = runtimeShape;
+
 export const values = {
   config,
   plugin,
   asyncPlugin,
+  rendererRuntimeShape,
   version: SDK_VERSION,
   ok: satisfiesSdkRange(SDK_VERSION, "^1.2.0"),
+  compatibility: evaluateSdkCompatibility(SDK_VERSION, "^1.2.0"),
 };
 
 // Compile-time: unknown inputs are accepted by the helper without any casts.
@@ -167,16 +195,48 @@ export function checkUnknown(version: unknown, range: unknown): boolean {
             expect(stripped.match(anyPattern)).toBeNull();
           }
 
-          // Runtime exports agree with documented value exports.
-          const runtimeMod = await import(
-            join(installed.consumerRoot, "node_modules", "@explodex", "sdk", "dist", "index.js")
+          // Declaration-derived value exports must agree exactly with runtime keys.
+          const packageRoot = join(
+            installed.consumerRoot,
+            "node_modules",
+            "@explodex",
+            "sdk",
           );
-          expect(typeof runtimeMod.definePlugin).toBe("function");
-          expect(typeof runtimeMod.defineConfig).toBe("function");
-          expect(typeof runtimeMod.SDK_VERSION).toBe("string");
-          expect(typeof runtimeMod.satisfiesSdkRange).toBe("function");
-          expect(typeof runtimeMod.parseSemVer).toBe("function");
-          expect(typeof runtimeMod.currentSdkSatisfiesRange).toBe("function");
+          const declarationPath = join(packageRoot, "dist", "index.d.ts");
+          const program = ts.createProgram(
+            [declarationPath],
+            {
+              module: ts.ModuleKind.NodeNext,
+              moduleResolution: ts.ModuleResolutionKind.NodeNext,
+              strict: true,
+              skipLibCheck: false,
+              types: [],
+            },
+          );
+          const checker = program.getTypeChecker();
+          const sourceFile = program.getSourceFile(declarationPath);
+          expect(sourceFile).toBeDefined();
+          const moduleSymbol =
+            sourceFile === undefined
+              ? undefined
+              : checker.getSymbolAtLocation(sourceFile);
+          expect(moduleSymbol).toBeDefined();
+          const declaredValueExports = (moduleSymbol === undefined
+            ? []
+            : checker.getExportsOfModule(moduleSymbol)
+          )
+            .filter((symbol) => {
+              const target =
+                symbol.flags & ts.SymbolFlags.Alias
+                  ? checker.getAliasedSymbol(symbol)
+                  : symbol;
+              return (target.flags & ts.SymbolFlags.Value) !== 0;
+            })
+            .map((symbol) => symbol.name)
+            .sort();
+
+          const runtimeMod = await import(join(packageRoot, "dist", "index.js"));
+          expect(Object.keys(runtimeMod).sort()).toEqual(declaredValueExports);
         } finally {
           await rm(fixtureRoot, { recursive: true, force: true });
         }

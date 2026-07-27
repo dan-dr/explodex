@@ -14,7 +14,7 @@
     },
     "./runtime": {
       "types": "./dist/runtime/public.d.ts",
-      "default": "./dist/runtime/explodex-runtime.iife.js"
+      "browser": "./dist/runtime/explodex-runtime.iife.js"
     },
     "./testing": {
       "types": "./dist/testing/index.d.ts",

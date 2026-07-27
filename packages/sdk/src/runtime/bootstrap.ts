@@ -5,34 +5,26 @@ import {
   type PluginReviewRequest,
   type ReviewOutcome,
 } from "./plugin-review.ts";
+import type { ExplodexRuntime } from "./public.ts";
 import { RUNTIME_VERSION } from "./version.ts";
 
 const RUNTIME_MARK = "__explodexSdkRuntimeMark";
 const RUNTIME_INSTANCE = "__explodexSdkRuntimeInstance";
 
-export type ExplodexRuntime = {
-  readonly version: string;
-  readonly log: ReturnType<typeof createLogger>;
-  readonly review: {
-    open(request: PluginReviewRequest): Promise<ReviewOutcome>;
-    cancel(reason?: string): void;
-  };
-  /** Dispose mounts and listeners owned by this runtime generation. */
-  destroy(options?: { reason?: string }): void;
-  /** Internal marker for harnesses; not a public plugin API. */
+type InternalExplodexRuntime = ExplodexRuntime & {
   readonly [RUNTIME_MARK]: string;
 };
 
 type RuntimeHost = {
-  Explodex?: ExplodexRuntime;
-  [RUNTIME_INSTANCE]?: ExplodexRuntime;
+  Explodex?: InternalExplodexRuntime;
+  [RUNTIME_INSTANCE]?: InternalExplodexRuntime;
   console: Console;
   document?: Document;
   setTimeout(callback: () => void, delayMs: number): unknown;
   clearTimeout(handle: unknown): void;
 };
 
-function isExplodexRuntime(value: unknown): value is ExplodexRuntime {
+function isExplodexRuntime(value: unknown): value is InternalExplodexRuntime {
   if (typeof value !== "object" || value === null) return false;
   const record = value as Record<string, unknown>;
   return (
@@ -47,7 +39,7 @@ function isExplodexRuntime(value: unknown): value is ExplodexRuntime {
  * Install or reuse the single documented SDK runtime on a browser-like host.
  * Repeated evaluation converges on one live instance for the same version.
  */
-export function installRuntime(global: RuntimeHost): ExplodexRuntime {
+export function installRuntime(global: RuntimeHost): InternalExplodexRuntime {
   const existing = global.Explodex;
   if (isExplodexRuntime(existing) && global[RUNTIME_INSTANCE] === existing) {
     return existing;
@@ -79,7 +71,7 @@ export function installRuntime(global: RuntimeHost): ExplodexRuntime {
     },
   });
 
-  const runtime: ExplodexRuntime = {
+  const runtime: InternalExplodexRuntime = {
     version: RUNTIME_VERSION,
     log,
     review: {

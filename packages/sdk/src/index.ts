@@ -23,6 +23,8 @@ export type {
   ExplodexConfig,
   ExplodexRuntimeApi,
   LogLevel,
+  PluginAssetHandle,
+  PluginAssets,
   PluginApi,
   PluginDefinition,
   PluginLifecycle,
@@ -36,6 +38,7 @@ export type {
   TrackedMountNode,
   TrackedObserver,
 } from "./types/index.ts";
+export type { ExplodexRuntime } from "./runtime/public.ts";
 
 export {
   DEFAULT_SETUP_TIMEOUT_MS,

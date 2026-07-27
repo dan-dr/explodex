@@ -29,9 +29,7 @@ for ts in scripts/cdp-inject.ts scripts/dev.ts scripts/package-app.ts scripts/bu
   bun -e "import './${ts}'"
 done
 
-bun ./scripts/sync-plugin-skill.ts --check
-
-for file in sdk/explodex-sdk.js plugins/*/*.js; do
+for file in plugins/*/*.js; do
   bun build "$file" --outfile="/tmp/explodex-validate-$(basename "$file")"
 done
 
@@ -39,7 +37,6 @@ for json in package.json .mcp.json plugins/*/plugin.json; do
   bun -e "JSON.parse(await Bun.file('$json').text())"
 done
 
-bun ./node_modules/.bin/tsc -p sdk/tsconfig.json
 bun run build:npm
 bun test
 

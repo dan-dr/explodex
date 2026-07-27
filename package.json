@@ -2,7 +2,6 @@
   "name": "explodex",
   "version": "0.2.2",
   "description": "A plugin SDK for extending the Codex desktop app.",
-  "types": "sdk/explodex-sdk.d.ts",
   "bin": {
     "explodex": "bin/explodex.mjs"
   },
@@ -14,8 +13,8 @@
   "files": [
     "bin/",
     "lib/",
-    "sdk/explodex-sdk.js",
-    "sdk/explodex-sdk.d.ts",
+    "packages/sdk/dist/runtime/explodex-runtime.iife.js",
+    "packages/sdk/dist/runtime/explodex-runtime.iife.js.map",
     "plugins/",
     "assets/icon/Explodex.icns",
     "scripts/splash-screen.swift",

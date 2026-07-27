@@ -17,11 +17,16 @@ const SPLASH_APP = join(RES, "Splash.app");
 const PLUGINS_SRC = join(ROOT, "plugins");
 const PLUGINS_DST = join(RES, "plugins");
 const ICON_SRC = join(ROOT, "assets", "icon", "Explodex.icns");
+const GENERATED_SDK_RUNTIME = join(
+  ROOT,
+  "packages/sdk/dist/runtime/explodex-runtime.iife.js",
+);
 
 export async function packageApp(): Promise<string> {
   if (!(await pathExists(TEMPLATE))) {
     throw new Error(`Missing app template at ${TEMPLATE}`);
   }
+  await run(["bash", join(ROOT, "packages", "sdk", "scripts", "run-build.sh")]);
 
   await rm(DIST, { recursive: true, force: true });
   await cp(TEMPLATE, DIST, { recursive: true });
@@ -33,7 +38,7 @@ export async function packageApp(): Promise<string> {
     await cp(join(PLUGINS_SRC, entry), join(PLUGINS_DST, entry), { recursive: true });
   }
 
-  await cp(join(ROOT, "sdk", "explodex-sdk.js"), join(RES, "explodex-sdk.js"));
+  await cp(GENERATED_SDK_RUNTIME, join(RES, "explodex-sdk.js"));
   await cp(join(ROOT, "scripts", "cdp-inject.sh"), join(RES, "cdp-inject.sh"));
 
   await chmod(join(RES, "cdp-inject.sh"), 0o755);
