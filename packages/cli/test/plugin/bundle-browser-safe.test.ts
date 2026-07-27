@@ -7,6 +7,7 @@ import {
   PRIVATE_REGISTER_GLOBAL,
 } from "../../../sdk/src/testing/index.ts";
 import { buildPluginWorkspace, readBuiltPluginIndex } from "../../src/plugin/build.ts";
+import { scanBrowserSafeIife } from "../../src/plugin/browser-scan.ts";
 import { fingerprintDist } from "../../src/plugin/bundle.ts";
 import {
   createValidWorkspace,
@@ -219,7 +220,7 @@ export default definePlugin({
 
       const harness = createInertRegistrationHarness();
       let setupThroughEval = 0;
-      const result = harness.evaluateSource({
+      const result = await harness.evaluateSource({
         expectedPluginId: "realm",
         source,
       });
@@ -240,7 +241,7 @@ export default definePlugin({
     }
   }, 120_000);
 
-  test("private global markers in source fail build", async () => {
+  test("private renderer globals and statically computed bridge access fail build", async () => {
     const { workspace, cleanup } = await createValidWorkspace({
       name: "explodex-plugin-private-global",
     });
@@ -252,9 +253,11 @@ export default definePlugin({
 
 export default definePlugin({
   setup() {
-    // Deliberate private global reference
-    const catalog = (globalThis as { __EXPLODEX_PLUGIN_CATALOG__?: unknown }).__EXPLODEX_PLUGIN_CATALOG__;
-    void catalog;
+    const root = globalThis;
+    const bridgeName = "electron" + "Bridge";
+    const privateName = "__EXPLODEX_" + "BRIDGE__";
+    void (root as Record<string, unknown>)[bridgeName];
+    void (root as Record<string, unknown>)[privateName];
   },
 });
 `,
@@ -264,19 +267,128 @@ export default definePlugin({
         workspacePath: workspace,
         timeoutMs: 60_000,
       });
-      // Either typecheck/bundle scan rejects the private global marker in output.
-      if (result.ok) {
-        const source = await readBuiltPluginIndex(workspace);
-        expect(source.includes("__EXPLODEX_PLUGIN_CATALOG__")).toBe(true);
-        // Build may succeed if the string is only in source map path-free form;
-        // realm validation still fails when private globals are required.
-        const harness = createInertRegistrationHarness();
-        // Registration can succeed; the assertion is that host interaction is not via private globals.
-        const reg = harness.evaluateSource({ expectedPluginId: "private-global", source });
-        expect(reg.ok).toBe(true);
-      } else {
-        expect(result.ok).toBe(false);
-      }
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("expected browser-safety failure");
+      expect(result.message).toMatch(/electronBridge|private renderer|bridge/i);
+      expect(result.distFingerprintAfter).toBeNull();
+    } finally {
+      await cleanup();
+    }
+  }, 120_000);
+
+  test("syntax-aware authority ignores forbidden words in comments and inert strings", () => {
+    const source = `
+      /* process.env and electronBridge are documentation examples. */
+      const note = "require(\\\"fs\\\") and __EXPLODEX_BRIDGE__ are not executed";
+      void note;
+      (function (global) {
+        global.__EXPLODEX_PRIVATE_REGISTER__("safe", { setup() {} });
+      })(globalThis);
+    `;
+    expect(scanBrowserSafeIife(source)).toEqual({ ok: true });
+  });
+
+  test("syntax-aware authority resolves global and property aliases", () => {
+    for (const source of [
+      `
+        const root = globalThis;
+        const prefix = "electron";
+        const bridge = prefix + "Bridge";
+        void root[bridge];
+      `,
+      `
+        let root;
+        root = globalThis;
+        void root["electron" + "Bridge"];
+      `,
+      'void Reflect.get(globalThis, "electronBridge");',
+      'void Object.getOwnPropertyDescriptor(globalThis, "electronBridge");',
+      "let bridge; ({ electronBridge: bridge } = globalThis);",
+      "const root = (0, globalThis); void root.electronBridge;",
+      "(function read() { return this.electronBridge; })();",
+      "void this.electronBridge;",
+    ]) {
+      const result = scanBrowserSafeIife(source);
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("expected private bridge rejection");
+      expect(result.ruleId).toBe("browser.private-renderer-global");
+      expect(result.marker).toBe("electronBridge");
+    }
+  });
+
+  test("syntax-aware authority does not confuse local this or invalidated aliases", () => {
+    expect(
+      scanBrowserSafeIife(`
+        const local = { read() { return this.electronBridge; } };
+        void local;
+      `),
+    ).toEqual({ ok: true });
+    expect(
+      scanBrowserSafeIife(`
+        let key = "electronBridge";
+        key += "Safe";
+        void globalThis[key];
+      `),
+    ).toEqual({ ok: true });
+    expect(
+      scanBrowserSafeIife(`
+        let key = "electronBridge";
+        key++;
+        void globalThis[key];
+      `),
+    ).toEqual({ ok: true });
+    expect(
+      scanBrowserSafeIife(`
+        let key = "electronBridge";
+        [key] = ["safe"];
+        void globalThis[key];
+      `),
+    ).toEqual({ ok: true });
+    expect(
+      scanBrowserSafeIife(`
+        function local() {
+          if (true) { var process = {}; }
+          try { throw new Error("x"); } catch (process) { void process; }
+          return process;
+        }
+        void local;
+      `),
+    ).toEqual({ ok: true });
+  });
+
+  test("syntax-aware authority preserves absolute-path rejection for templates", () => {
+    const result = scanBrowserSafeIife("const path = `/Users/example/plugin`;");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected absolute path rejection");
+    expect(result.ruleId).toBe("browser.absolute-path");
+  });
+
+  test("build directly observes top-level effects instead of trusting source declarations", async () => {
+    const { workspace, cleanup } = await createValidWorkspace({
+      name: "explodex-plugin-top-level-effect",
+    });
+    try {
+      await writeWorkspaceFile(
+        workspace,
+        "src/index.ts",
+        `import { definePlugin } from "@explodex/sdk";
+
+document.body.appendChild(document.createElement("div"));
+
+export default definePlugin({
+  setup() {},
+});
+`,
+      );
+
+      const result = await buildPluginWorkspace({
+        workspacePath: workspace,
+        timeoutMs: 60_000,
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("expected inert-evaluation failure");
+      expect(result.message).toMatch(/side effect|inert registration/i);
+      expect(result.distFingerprintAfter).toBeNull();
     } finally {
       await cleanup();
     }

@@ -596,19 +596,18 @@ describe("VAL-SDK-034 standalone artifact validation is source-free and exact", 
     }
   }, 300_000);
 
-  test("identity mismatch and browser-primitive injection fail closed", async () => {
+  test("identity mismatch and computed private-bridge injection fail closed", async () => {
     const { workspace, cleanup } = await buildFixture("explodex-plugin-standalone-fail");
     try {
       const dist = join(workspace, "dist");
 
-      // Corrupt index.js with a forbidden primitive while keeping size by pad? easier: just write and expect checksum fail first.
-      // After rewriting checksums to match, browser scan must still fail.
+      // Recompute checksums so integrity passes and the shared syntax-aware
+      // browser authority must reject the executable computed access.
       await writeFile(
         join(dist, "index.js"),
-        `/* corrupted */\nrequire("fs");\n//# sourceMappingURL=index.js.map\n`,
+        `const root = globalThis;\nconst bridge = "electron" + "Bridge";\nvoid root[bridge];\n//# sourceMappingURL=index.js.map\n`,
         "utf8",
       );
-      // Rebuild checksums so we pass integrity but fail browser scan.
       const { buildChecksumsFromDir, writeChecksums } = await import(
         "../../src/plugin/checksums.ts"
       );
@@ -618,7 +617,32 @@ describe("VAL-SDK-034 standalone artifact validation is source-free and exact", 
       const browserFail = await validateStandaloneArtifact(dist);
       expect(browserFail.ok).toBe(false);
       if (browserFail.ok) throw new Error("expected failure");
-      expect(browserFail.message).toMatch(/forbidden|require\(/i);
+      expect(browserFail.message).toMatch(/electronBridge|private renderer|bridge/i);
+    } finally {
+      await cleanup();
+    }
+  }, 180_000);
+
+  test("standalone validation directly observes top-level DOM effects", async () => {
+    const { workspace, cleanup } = await buildFixture("explodex-plugin-standalone-effect");
+    try {
+      const dist = join(workspace, "dist");
+      const original = await readFile(join(dist, "index.js"), "utf8");
+      await writeFile(
+        join(dist, "index.js"),
+        `document.body.appendChild(document.createElement("div"));\n${original}`,
+        "utf8",
+      );
+      const { buildChecksumsFromDir, writeChecksums } = await import(
+        "../../src/plugin/checksums.ts"
+      );
+      await writeChecksums(dist, await buildChecksumsFromDir(dist));
+
+      const result = await validateStandaloneArtifact(dist);
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("expected failure");
+      expect(result.message).toMatch(/side effect|inert registration/i);
+      expect(JSON.stringify(result.details)).toMatch(/domMutations/);
     } finally {
       await cleanup();
     }

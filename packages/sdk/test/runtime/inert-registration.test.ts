@@ -97,23 +97,114 @@ describe("VAL-SDK-018 inert definition registration", () => {
     expect(bare.host[PRIVATE_REGISTER_GLOBAL]).toBeUndefined();
   });
 
-  test("side effects during evaluation fail inert registration", () => {
+  test.each([
+    {
+      name: "DOM mutation",
+      source: 'document.body.appendChild(document.createElement("div"));',
+      field: "domMutations",
+    },
+    {
+      name: "DOM property mutation",
+      source: 'document.body.innerHTML = "<div>blocked</div>";',
+      field: "domMutations",
+    },
+    {
+      name: "document property mutation",
+      source: 'document.title = "blocked";',
+      field: "domMutations",
+    },
+    {
+      name: "text-node property mutation",
+      source: 'document.createTextNode("before").textContent = "blocked";',
+      field: "domMutations",
+    },
+    {
+      name: "network request",
+      source: 'fetch("https://example.invalid/inert");',
+      field: "networkCalls",
+    },
+    {
+      name: "storage mutation",
+      source: 'localStorage.setItem("inert", "blocked");',
+      field: "storageMutations",
+    },
+    {
+      name: "timer registration",
+      source: "setTimeout(() => {}, 1);",
+      field: "timerRegistrations",
+    },
+    {
+      name: "host action",
+      source: 'electronBridge.sendMessageFromView({ type: "blocked" });',
+      field: "hostActions",
+    },
+    {
+      name: "global mutation",
+      source: "globalThis.inertMutation = true;",
+      field: "globalMutations",
+    },
+  ])("directly observes and rejects top-level $name", async ({ source, field }) => {
     const harness = createInertRegistrationHarness();
-    const def = definePlugin({ setup() {} });
-    const result = harness.evaluate({
+    const result = await harness.evaluateSource({
       expectedPluginId: "sample",
-      sideEffects: { setupCalls: 1 },
-      evaluate() {
-        const register = harness.host[PRIVATE_REGISTER_GLOBAL] as (
-          id: string,
-          def: unknown,
-        ) => void;
-        register("sample", def);
-      },
+      source: `
+        ${source}
+        globalThis.__EXPLODEX_PRIVATE_REGISTER__("sample", { setup() {} });
+      `,
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected failure");
     expect(result.code).toBe("plugin.registration.side-effect");
+    expect(result.sideEffects[field as keyof typeof result.sideEffects]).toBeGreaterThan(0);
+  });
+
+  test("caller-declared side-effect counters are not an acceptance input", async () => {
+    const harness = createInertRegistrationHarness();
+    const options: Parameters<typeof harness.evaluateSource>[0] & {
+      sideEffects?: { domMutations: number };
+    } = {
+      expectedPluginId: "sample",
+      source: 'globalThis.__EXPLODEX_PRIVATE_REGISTER__("sample", { setup() {} });',
+      sideEffects: { domMutations: 100 },
+    };
+    const result = await harness.evaluateSource(options);
+    expect(result.ok).toBe(true);
+  });
+
+  test("drains top-level microtasks before accepting inert registration", async () => {
+    const harness = createInertRegistrationHarness();
+    const result = await harness.evaluateSource({
+      expectedPluginId: "sample",
+      source: `
+        Promise.resolve()
+          .then(() => Promise.resolve())
+          .then(() => fetch("https://example.invalid/deferred"));
+        globalThis.__EXPLODEX_PRIVATE_REGISTER__("sample", { setup() {} });
+      `,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected deferred side-effect failure");
+    expect(result.code).toBe("plugin.registration.side-effect");
+    expect(result.sideEffects.timerRegistrations).toBeGreaterThan(0);
+  });
+
+  test("drains async-function intrinsic microtasks before acceptance", async () => {
+    const harness = createInertRegistrationHarness();
+    const result = await harness.evaluateSource({
+      expectedPluginId: "sample",
+      source: `
+        (async () => {
+          await 0;
+          await 0;
+          fetch("https://example.invalid/async");
+        })();
+        globalThis.__EXPLODEX_PRIVATE_REGISTER__("sample", { setup() {} });
+      `,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected async side-effect failure");
+    expect(result.code).toBe("plugin.registration.side-effect");
+    expect(result.sideEffects.networkCalls).toBe(1);
   });
 
   test("failed setup never leaves catalog as successfully applied", async () => {

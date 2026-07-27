@@ -24,6 +24,19 @@ export type TrackedResourceSnapshot = {
   readonly total: number;
 };
 
+export type TrackedDisposalFailure = {
+  readonly kind: TrackedResourceKind;
+  readonly message: string;
+};
+
+export type TrackedDisposalResult = {
+  readonly attempted: TrackedResourceSnapshot;
+  readonly disposed: TrackedResourceSnapshot;
+  readonly failed: TrackedResourceSnapshot;
+  readonly residual: TrackedResourceSnapshot;
+  readonly failures: readonly TrackedDisposalFailure[];
+};
+
 type Disposable = {
   dispose(): void;
 };
@@ -58,7 +71,7 @@ export type TrackedResourceRegistry = {
   readonly accepting: boolean;
   snapshot(): TrackedResourceSnapshot;
   rejectNew(reason: string): void;
-  disposeAll(): TrackedResourceSnapshot;
+  disposeAll(): TrackedDisposalResult;
   track: {
     mount(node: MountLike): void;
     listen(
@@ -107,6 +120,7 @@ export function createTrackedResourceRegistry(options: {
 
   let accepting = true;
   const entries: Array<{ kind: TrackedResourceKind; dispose: () => void }> = [];
+  let disposalResult: TrackedDisposalResult | null = null;
 
   function assertAccepting(kind: TrackedResourceKind): void {
     if (!accepting) {
@@ -121,12 +135,14 @@ export function createTrackedResourceRegistry(options: {
     entries.push({ kind, dispose });
   }
 
-  function snapshot(): TrackedResourceSnapshot {
+  function snapshotEntries(
+    tracked: ReadonlyArray<{ kind: TrackedResourceKind }>,
+  ): TrackedResourceSnapshot {
     const counts = emptySnapshot();
     const mutable = counts as {
       -readonly [K in keyof TrackedResourceSnapshot]: TrackedResourceSnapshot[K];
     };
-    for (const entry of entries) {
+    for (const entry of tracked) {
       switch (entry.kind) {
         case "mount":
           mutable.mounts += 1;
@@ -159,21 +175,42 @@ export function createTrackedResourceRegistry(options: {
     return counts;
   }
 
-  function disposeAll(): TrackedResourceSnapshot {
+  function snapshot(): TrackedResourceSnapshot {
+    return snapshotEntries(entries);
+  }
+
+  function disposeAll(): TrackedDisposalResult {
     accepting = false;
-    const before = snapshot();
+    if (disposalResult !== null) return disposalResult;
+
+    const attemptedEntries = [...entries];
+    const disposedEntries: Array<{ kind: TrackedResourceKind }> = [];
+    const failedEntries: Array<{ kind: TrackedResourceKind; dispose: () => void }> = [];
+    const failures: TrackedDisposalFailure[] = [];
     // Dispose in reverse registration order.
     for (let i = entries.length - 1; i >= 0; i -= 1) {
       const entry = entries[i];
       if (entry === undefined) continue;
       try {
         entry.dispose();
-      } catch {
-        // Best-effort disposal; continue remaining resources.
+        disposedEntries.push(entry);
+      } catch (error: unknown) {
+        failedEntries.unshift(entry);
+        failures.push({
+          kind: entry.kind,
+          message: error instanceof Error ? error.message : "Tracked resource disposal failed",
+        });
       }
     }
-    entries.length = 0;
-    return before;
+    entries.splice(0, entries.length, ...failedEntries);
+    disposalResult = {
+      attempted: snapshotEntries(attemptedEntries),
+      disposed: snapshotEntries(disposedEntries),
+      failed: snapshotEntries(failedEntries),
+      residual: snapshot(),
+      failures,
+    };
+    return disposalResult;
   }
 
   const track: TrackedResourceRegistry["track"] = {
@@ -190,23 +227,26 @@ export function createTrackedResourceRegistry(options: {
       });
     },
     listen(target, type, listener, listenerOptions) {
+      assertAccepting("listener");
       target.addEventListener(type, listener, listenerOptions);
-      add("listener", () => {
+      entries.push({ kind: "listener", dispose: () => {
         target.removeEventListener(type, listener, listenerOptions);
-      });
+      } });
     },
     timeout(handler, ms, ...args) {
+      assertAccepting("timeout");
       const id = timers.setTimeout(handler, ms, ...args) as unknown as number;
-      add("timeout", () => {
+      entries.push({ kind: "timeout", dispose: () => {
         timers.clearTimeout(id as unknown as ReturnType<typeof setTimeout>);
-      });
+      } });
       return id;
     },
     interval(handler, ms, ...args) {
+      assertAccepting("interval");
       const id = timers.setInterval(handler, ms, ...args) as unknown as number;
-      add("interval", () => {
+      entries.push({ kind: "interval", dispose: () => {
         timers.clearInterval(id as unknown as ReturnType<typeof setInterval>);
-      });
+      } });
       return id;
     },
     observe(observer) {

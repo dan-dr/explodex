@@ -340,7 +340,7 @@ export async function buildPluginWorkspace(options: {
     // Definition registration must succeed before commit.
     const jsText = await readFile(join(stagingDir, "index.js"), "utf8");
     const harness = createInertRegistrationHarness();
-    const registration = harness.evaluateSource({
+    const registration = await harness.evaluateSource({
       expectedPluginId: report.id,
       source: jsText,
     });

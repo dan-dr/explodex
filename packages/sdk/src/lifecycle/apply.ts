@@ -4,7 +4,10 @@
  * replace a newer generation, or register new tracked resources.
  */
 
-import type { PluginDefinition, PluginTeardown } from "../types/plugin.ts";
+import type {
+  PluginDefinition,
+  PluginTeardown,
+} from "../types/plugin.ts";
 import {
   DEFAULT_SETUP_TIMEOUT_MS,
   DEFAULT_TEARDOWN_TIMEOUT_MS,
@@ -12,6 +15,7 @@ import {
 import { createPluginApi } from "./plugin-api.ts";
 import {
   createTrackedResourceRegistry,
+  type TrackedDisposalResult,
   type TrackedResourceRegistry,
   type TrackedResourceSnapshot,
 } from "./tracked-resources.ts";
@@ -33,7 +37,15 @@ export type PluginApplicationRecord = {
   readonly setupCount: number;
   readonly teardownCount: number;
   readonly resources: TrackedResourceSnapshot;
+  readonly cleanup: TrackedDisposalResult | null;
+  readonly supersededCleanupFailures: readonly SupersededCleanupFailure[];
   readonly error?: { code: string; message: string };
+};
+
+export type SupersededCleanupFailure = {
+  readonly generation: number;
+  readonly token: string;
+  readonly cleanup: TrackedDisposalResult;
 };
 
 export type ApplyPluginResult =
@@ -50,7 +62,7 @@ export type ApplyPluginResult =
 
 export type UnloadPluginResult = {
   readonly record: PluginApplicationRecord;
-  readonly disposed: TrackedResourceSnapshot;
+  readonly disposed: TrackedDisposalResult;
   readonly teardownInvoked: boolean;
 };
 
@@ -60,11 +72,14 @@ type LiveSlot = {
   token: string;
   status: PluginApplicationStatus;
   setupCount: number;
+  setupSettled: boolean;
   teardownCount: number;
   definition: PluginDefinition;
   resources: TrackedResourceRegistry;
   teardown: PluginTeardown | null;
   teardownInvoked: boolean;
+  cleanup: TrackedDisposalResult | null;
+  supersededCleanupFailures: SupersededCleanupFailure[];
   error?: { code: string; message: string };
 };
 
@@ -99,6 +114,8 @@ function toRecord(slot: LiveSlot): PluginApplicationRecord {
     setupCount: slot.setupCount,
     teardownCount: slot.teardownCount,
     resources: slot.resources.snapshot(),
+    cleanup: slot.cleanup,
+    supersededCleanupFailures: [...slot.supersededCleanupFailures],
     ...(slot.error !== undefined ? { error: slot.error } : {}),
   };
 }
@@ -132,27 +149,6 @@ function withTimeout<T>(
   });
 }
 
-async function invokeTeardownOnce(
-  slot: LiveSlot,
-  timeoutMs: number,
-): Promise<void> {
-  if (slot.teardownInvoked) return;
-  slot.teardownInvoked = true;
-  const teardown = slot.teardown;
-  slot.teardown = null;
-  if (teardown === null) {
-    slot.resources.disposeAll();
-    return;
-  }
-  slot.status = "tearing-down";
-  try {
-    await withTimeout(Promise.resolve().then(() => teardown()), timeoutMs, "teardown");
-    slot.teardownCount += 1;
-  } finally {
-    slot.resources.disposeAll();
-  }
-}
-
 /**
  * Create an in-memory plugin lifecycle host.
  * Not a public general activation setter; used by the runtime and testing harness.
@@ -162,6 +158,153 @@ export function createPluginLifecycleHost(): PluginLifecycleHost {
   let nextGeneration = 1;
   let totalSetupInvocations = 0;
   let totalTeardownInvocations = 0;
+
+  function mergeCleanupFailure(
+    slot: LiveSlot,
+    cleanup: TrackedDisposalResult,
+  ): void {
+    if (cleanup.failures.length === 0) return;
+    const cleanupMessage = cleanup.failures
+      .map((failure) => `${failure.kind}: ${failure.message}`)
+      .join("; ");
+    if (slot.error === undefined) {
+      slot.error = {
+        code: "plugin.lifecycle.cleanup-failed",
+        message: `Tracked resource cleanup failed: ${cleanupMessage}`,
+      };
+      return;
+    }
+    if (!slot.error.message.includes(cleanupMessage)) {
+      slot.error = {
+        code: slot.error.code,
+        message: `${slot.error.message}; tracked resource cleanup also failed: ${cleanupMessage}`,
+      };
+    }
+  }
+
+  function disposeSlotResources(slot: LiveSlot): TrackedDisposalResult {
+    const cleanup = slot.resources.disposeAll();
+    slot.cleanup = cleanup;
+    mergeCleanupFailure(slot, cleanup);
+    return cleanup;
+  }
+
+  async function invokeTeardownOnce(
+    slot: LiveSlot,
+    timeoutMs: number,
+    label = "teardown",
+  ): Promise<boolean> {
+    if (slot.teardownInvoked) {
+      disposeSlotResources(slot);
+      return false;
+    }
+    slot.teardownInvoked = true;
+    const teardown = slot.teardown;
+    slot.teardown = null;
+    if (teardown === null) {
+      disposeSlotResources(slot);
+      return false;
+    }
+    slot.teardownCount += 1;
+    totalTeardownInvocations += 1;
+    const finalStatus = slot.status;
+    slot.status = "tearing-down";
+    try {
+      await withTimeout(Promise.resolve().then(() => teardown()), timeoutMs, label);
+    } finally {
+      disposeSlotResources(slot);
+      slot.status = finalStatus;
+    }
+    return true;
+  }
+
+  async function cleanupOnlySetupResult(
+    slot: LiveSlot,
+    setupResult: PluginTeardown | void,
+    timeoutMs: number,
+    label: string,
+  ): Promise<void> {
+    slot.resources.rejectNew("cleanup-only");
+    if (typeof setupResult === "function") {
+      slot.teardown = setupResult;
+      try {
+        await invokeTeardownOnce(slot, timeoutMs, label);
+      } catch (error: unknown) {
+        const message =
+          error instanceof Error ? error.message : "Cleanup-only teardown failed";
+        slot.error =
+          slot.error === undefined
+            ? { code: "plugin.lifecycle.teardown-failed", message }
+            : {
+                code: slot.error.code,
+                message: `${slot.error.message}; cleanup-only teardown failed: ${message}`,
+              };
+      }
+    } else {
+      disposeSlotResources(slot);
+    }
+  }
+
+  async function cleanupSupersededPrevious(
+    previous: LiveSlot | undefined,
+    current: LiveSlot,
+    timeoutMs: number,
+  ): Promise<boolean> {
+    if (previous === undefined || previous === current) return true;
+    if (!previous.setupSettled && previous.teardown === null) {
+      // The superseded setup task still owns any teardown it may eventually return.
+      // Reject and dispose tracked resources now, but leave teardown authority unconsumed.
+      const cleanup = disposeSlotResources(previous);
+      if (cleanup.failures.length > 0) {
+        current.supersededCleanupFailures.push({
+          generation: previous.generation,
+          token: previous.token,
+          cleanup,
+        });
+        current.error =
+          current.error === undefined
+            ? {
+                code: "plugin.lifecycle.previous-cleanup-failed",
+                message: `Superseded generation ${previous.generation} retained ${cleanup.residual.total} tracked resources`,
+              }
+            : current.error;
+        return false;
+      }
+      return true;
+    }
+    let teardownError: unknown = null;
+    try {
+      await invokeTeardownOnce(previous, timeoutMs, "superseded-generation-teardown");
+    } catch (error: unknown) {
+      teardownError = error;
+    }
+    if (previous.cleanup?.failures.length) {
+      current.supersededCleanupFailures.push({
+        generation: previous.generation,
+        token: previous.token,
+        cleanup: previous.cleanup,
+      });
+    }
+    if (teardownError !== null || previous.cleanup?.failures.length) {
+      const message = teardownError instanceof Error
+        ? teardownError.message
+        : previous.cleanup?.failures.length
+          ? `Superseded generation ${previous.generation} retained ${previous.cleanup.residual.total} tracked resources`
+          : "Superseded generation cleanup failed";
+      current.error =
+        current.error === undefined
+          ? {
+              code: "plugin.lifecycle.previous-cleanup-failed",
+              message,
+            }
+          : {
+              code: current.error.code,
+              message: `${current.error.message}; superseded generation cleanup failed: ${message}`,
+            };
+      return false;
+    }
+    return true;
+  }
 
   async function apply(options: {
     pluginId: string;
@@ -194,11 +337,15 @@ export function createPluginLifecycleHost(): PluginLifecycleHost {
       token,
       status: "setting-up",
       setupCount: 0,
+      setupSettled: false,
       teardownCount: 0,
       definition: options.definition,
       resources,
       teardown: null,
       teardownInvoked: false,
+      cleanup: null,
+      supersededCleanupFailures:
+        previous === undefined ? [] : [...previous.supersededCleanupFailures],
     };
     slots.set(pluginId, slot);
 
@@ -209,33 +356,28 @@ export function createPluginLifecycleHost(): PluginLifecycleHost {
       resources,
     });
 
+    let setupTask: Promise<void | PluginTeardown> | null = null;
     try {
       totalSetupInvocations += 1;
       slot.setupCount = 1;
+      setupTask = Promise.resolve().then(() => options.definition.setup(api));
       const setupResult = await withTimeout(
-        Promise.resolve().then(() => options.definition.setup(api)),
+        setupTask,
         setupTimeoutMs,
         "setup",
       );
+      slot.setupSettled = true;
 
       // Generation-safety: if unload/supersede replaced this slot, do not apply.
       const current = slots.get(pluginId);
       if (current !== slot) {
-        resources.rejectNew("superseded");
-        if (typeof setupResult === "function") {
-          // Cleanup-only mode for late-resolving superseded setup.
-          try {
-            await withTimeout(
-              Promise.resolve().then(() => (setupResult as PluginTeardown)()),
-              teardownTimeoutMs,
-              "superseded-setup-teardown",
-            );
-            totalTeardownInvocations += 1;
-          } catch {
-            // Reported as superseded; cleanup best-effort.
-          }
-        }
-        resources.disposeAll();
+        slot.status = "superseded";
+        await cleanupOnlySetupResult(
+          slot,
+          setupResult,
+          teardownTimeoutMs,
+          "superseded-setup-teardown",
+        );
         return {
           ok: false,
           code: "plugin.lifecycle.superseded",
@@ -246,28 +388,24 @@ export function createPluginLifecycleHost(): PluginLifecycleHost {
             token,
             status: "superseded",
             setupCount: 1,
-            teardownCount: typeof setupResult === "function" ? 1 : 0,
+            teardownCount: slot.teardownCount,
             resources: resources.snapshot(),
+            cleanup: slot.cleanup,
+            supersededCleanupFailures: [...slot.supersededCleanupFailures],
+            ...(slot.error !== undefined ? { error: slot.error } : {}),
           },
         };
       }
 
       if (slot.status === "superseded" || slot.status === "unloaded") {
-        resources.rejectNew(slot.status);
-        if (typeof setupResult === "function") {
-          try {
-            await withTimeout(
-              Promise.resolve().then(() => (setupResult as PluginTeardown)()),
-              teardownTimeoutMs,
-              "late-setup-teardown",
-            );
-            totalTeardownInvocations += 1;
-            slot.teardownCount += 1;
-          } catch {
-            // best-effort
-          }
-        }
-        resources.disposeAll();
+        const finalStatus = slot.status;
+        await cleanupOnlySetupResult(
+          slot,
+          setupResult,
+          teardownTimeoutMs,
+          "late-setup-teardown",
+        );
+        slot.status = finalStatus;
         return {
           ok: false,
           code: "plugin.lifecycle.superseded",
@@ -282,17 +420,18 @@ export function createPluginLifecycleHost(): PluginLifecycleHost {
       slot.status = "applied";
 
       // If there was a previous applied generation, tear it down now.
-      if (previous !== undefined && previous !== slot) {
-        try {
-          await invokeTeardownOnce(previous, teardownTimeoutMs);
-          totalTeardownInvocations += previous.teardownCount > 0 ? 0 : 0;
-          // Count actual teardown invocations from previous.
-          if (previous.teardownInvoked) {
-            totalTeardownInvocations += 1;
-          }
-        } catch {
-          // Prior generation cleanup failures are recorded but do not roll back new apply.
-        }
+      const previousCleaned = await cleanupSupersededPrevious(
+        previous,
+        slot,
+        teardownTimeoutMs,
+      );
+      if (!previousCleaned) {
+        return {
+          ok: false,
+          code: "plugin.lifecycle.previous-cleanup-failed",
+          message: slot.error?.message ?? "Superseded generation cleanup failed",
+          record: toRecord(slot),
+        };
       }
 
       return { ok: true, record: toRecord(slot) };
@@ -302,18 +441,39 @@ export function createPluginLifecycleHost(): PluginLifecycleHost {
       const code = /timed out/i.test(message)
         ? "plugin.lifecycle.setup-timeout"
         : "plugin.lifecycle.setup-failed";
-      slot.status = "failed";
+      const terminalStatus =
+        slot.status === "unloaded" || slot.status === "superseded"
+          ? slot.status
+          : "failed";
+      slot.status = terminalStatus;
+      if (code !== "plugin.lifecycle.setup-timeout") {
+        slot.setupSettled = true;
+      }
       slot.error = { code, message };
       resources.rejectNew("setup-failed");
-      resources.disposeAll();
+      disposeSlotResources(slot);
 
-      // Restore previous generation if we superseded it in-memory but new setup failed.
-      if (previous !== undefined && previous !== slot && previous.status === "superseded") {
-        previous.status = "applied";
-        slots.set(pluginId, previous);
-      } else if (slots.get(pluginId) === slot) {
-        // Leave failed slot for inspection; not successfully applied.
+      if (code === "plugin.lifecycle.setup-timeout" && setupTask !== null) {
+        void setupTask
+          .then(
+            async (lateResult) => {
+              slot.setupSettled = true;
+              await cleanupOnlySetupResult(
+                slot,
+                lateResult,
+                teardownTimeoutMs,
+                "late-timeout-setup-teardown",
+              );
+              slot.status = terminalStatus;
+            },
+            () => {
+              // The original timed-out setup may reject later; it stays failed.
+              slot.setupSettled = true;
+            },
+          );
       }
+
+      await cleanupSupersededPrevious(previous, slot, teardownTimeoutMs);
 
       return {
         ok: false,
@@ -336,43 +496,40 @@ export function createPluginLifecycleHost(): PluginLifecycleHost {
 
     // Idempotent: repeated unload does not re-invoke teardown.
     if (slot.status === "unloaded") {
+      const disposed = disposeSlotResources(slot);
       return {
         record: toRecord(slot),
-        disposed: slot.resources.snapshot(),
+        disposed,
         teardownInvoked: false,
       };
     }
 
-    const wasApplied = slot.status === "applied" || slot.status === "setting-up";
+    const statusBeforeUnload = slot.status;
+    const wasApplied = statusBeforeUnload === "applied";
+    const wasSettingUp = statusBeforeUnload === "setting-up";
     slot.status = "unloaded";
     slot.resources.rejectNew("unloaded");
 
     let teardownInvoked = false;
     if (wasApplied || slot.teardown !== null) {
-      const beforeCount = slot.teardownCount;
       try {
-        await invokeTeardownOnce(slot, teardownTimeoutMs);
-        if (slot.teardownCount > beforeCount) {
-          totalTeardownInvocations += 1;
-          teardownInvoked = true;
-        } else if (slot.teardownInvoked && beforeCount === 0 && slot.teardownCount === 0) {
-          // teardown function was null; resources still disposed.
-          teardownInvoked = false;
-        } else if (slot.teardownInvoked) {
-          teardownInvoked = true;
-        }
+        teardownInvoked = await invokeTeardownOnce(slot, teardownTimeoutMs);
       } catch (error: unknown) {
         slot.error = {
           code: "plugin.lifecycle.teardown-failed",
           message: error instanceof Error ? error.message : "Plugin teardown failed",
         };
       }
+    } else if (wasSettingUp) {
+      // The setup task still owns any teardown it may eventually return.
+      // Dispose currently tracked resources now without consuming that future teardown.
+      disposeSlotResources(slot);
     } else {
-      slot.resources.disposeAll();
+      disposeSlotResources(slot);
     }
 
     slot.status = "unloaded";
-    const disposed = slot.resources.snapshot();
+    const disposed = slot.cleanup ?? disposeSlotResources(slot);
     return {
       record: toRecord(slot),
       disposed,

@@ -21,7 +21,7 @@ export type RegistrationPhaseResult =
       ok: true;
       registration: RegistrationRecord;
       registrationCount: 1;
-      sideEffects: SideEffectCanaries;
+      sideEffects: SideEffectObservations;
     }
   | {
       ok: false;
@@ -31,20 +31,25 @@ export type RegistrationPhaseResult =
         | "plugin.registration.id-mismatch"
         | "plugin.registration.out-of-phase"
         | "plugin.registration.invalid-definition"
+        | "plugin.registration.evaluation-failed"
         | "plugin.registration.side-effect";
       message: string;
       registrationCount: number;
-      sideEffects: SideEffectCanaries;
+      sideEffects: SideEffectObservations;
       details?: Record<string, unknown>;
     };
 
-export type SideEffectCanaries = {
+export type SideEffectObservations = {
   readonly setupCalls: number;
   readonly domMutations: number;
   readonly networkCalls: number;
   readonly storageMutations: number;
+  readonly timerRegistrations: number;
   readonly hostActions: number;
+  readonly globalMutations: number;
 };
+
+export type SideEffectKind = Exclude<keyof SideEffectObservations, "setupCalls">;
 
 export type RegistrationHost = Record<string, unknown> & {
   [PRIVATE_REGISTER_GLOBAL]?: unknown;
@@ -60,9 +65,14 @@ export type PrivateRegistrationController = {
    */
   evaluateInert(options: {
     expectedPluginId: string;
-    evaluate: () => void;
-    sideEffects?: Partial<SideEffectCanaries>;
+    evaluate: (recordSideEffect: (kind: SideEffectKind) => void) => void;
   }): RegistrationPhaseResult;
+  evaluateInertAsync(options: {
+    expectedPluginId: string;
+    evaluate: (
+      recordSideEffect: (kind: SideEffectKind) => void,
+    ) => void | Promise<void>;
+  }): Promise<RegistrationPhaseResult>;
   /**
    * Attempt registration. Only succeeds during an active private phase.
    * Called by generated plugin IIFEs; not a public activation API.
@@ -70,37 +80,27 @@ export type PrivateRegistrationController = {
   register(pluginId: string, definition: unknown): void;
 };
 
-function emptySideEffects(): SideEffectCanaries {
+function emptySideEffects(): SideEffectObservations {
   return {
     setupCalls: 0,
     domMutations: 0,
     networkCalls: 0,
     storageMutations: 0,
+    timerRegistrations: 0,
     hostActions: 0,
+    globalMutations: 0,
   };
 }
 
-function mergeSideEffects(
-  base: SideEffectCanaries,
-  extra?: Partial<SideEffectCanaries>,
-): SideEffectCanaries {
-  if (extra === undefined) return base;
-  return {
-    setupCalls: base.setupCalls + (extra.setupCalls ?? 0),
-    domMutations: base.domMutations + (extra.domMutations ?? 0),
-    networkCalls: base.networkCalls + (extra.networkCalls ?? 0),
-    storageMutations: base.storageMutations + (extra.storageMutations ?? 0),
-    hostActions: base.hostActions + (extra.hostActions ?? 0),
-  };
-}
-
-function hasSideEffects(canaries: SideEffectCanaries): boolean {
+function hasSideEffects(observations: SideEffectObservations): boolean {
   return (
-    canaries.setupCalls > 0 ||
-    canaries.domMutations > 0 ||
-    canaries.networkCalls > 0 ||
-    canaries.storageMutations > 0 ||
-    canaries.hostActions > 0
+    observations.setupCalls > 0 ||
+    observations.domMutations > 0 ||
+    observations.networkCalls > 0 ||
+    observations.storageMutations > 0 ||
+    observations.timerRegistrations > 0 ||
+    observations.hostActions > 0 ||
+    observations.globalMutations > 0
   );
 }
 
@@ -166,107 +166,167 @@ export function createPrivateRegistrationController(
     delete host[PRIVATE_REGISTER_GLOBAL];
   }
 
+  function finishEvaluation(
+    expectedId: string,
+    sideEffects: SideEffectObservations,
+    evaluationError: unknown,
+  ): RegistrationPhaseResult {
+    if (hasSideEffects(sideEffects)) {
+      return {
+        ok: false,
+        code: "plugin.registration.side-effect",
+        message:
+          "Plugin evaluation performed setup or host side effects during inert registration",
+        registrationCount: records.length,
+        sideEffects,
+        details: { sideEffects },
+      };
+    }
+
+    if (evaluationError !== null) {
+      return {
+        ok: false,
+        code: "plugin.registration.evaluation-failed",
+        message:
+          evaluationError instanceof Error
+            ? `Plugin evaluation failed: ${evaluationError.message}`
+            : "Plugin evaluation failed",
+        registrationCount: records.length,
+        sideEffects,
+      };
+    }
+
+    if (outOfPhaseAttempts > 0 && records.length === 0) {
+      return {
+        ok: false,
+        code: "plugin.registration.out-of-phase",
+        message: "Plugin registration was attempted outside the private evaluation phase",
+        registrationCount: 0,
+        sideEffects,
+        details: { outOfPhaseAttempts },
+      };
+    }
+
+    if (records.length === 0) {
+      return {
+        ok: false,
+        code: "plugin.registration.none",
+        message: "Plugin evaluation registered zero definitions",
+        registrationCount: 0,
+        sideEffects,
+      };
+    }
+
+    if (records.length > 1) {
+      return {
+        ok: false,
+        code: "plugin.registration.multiple",
+        message: `Plugin evaluation registered ${records.length} definitions; exactly one is required`,
+        registrationCount: records.length,
+        sideEffects,
+        details: {
+          pluginIds: records.map((record) => record.pluginId),
+        },
+      };
+    }
+
+    const only = records[0]!;
+    if (only.pluginId !== expectedId) {
+      return {
+        ok: false,
+        code: "plugin.registration.id-mismatch",
+        message: `Registered plugin id "${only.pluginId}" does not match expected "${expectedId}"`,
+        registrationCount: 1,
+        sideEffects,
+        details: {
+          expectedPluginId: expectedId,
+          registeredPluginId: only.pluginId,
+        },
+      };
+    }
+
+    const frozen: DefinedPlugin = Object.freeze({
+      setup: only.definition.setup,
+      __explodexDefinedPlugin: true as const,
+    });
+
+    return {
+      ok: true,
+      registration: {
+        pluginId: only.pluginId,
+        definition: frozen,
+      },
+      registrationCount: 1,
+      sideEffects,
+    };
+  }
+
+  function beginEvaluation(expectedId: string): {
+    sideEffects: SideEffectObservations;
+    recordSideEffect: (kind: SideEffectKind) => void;
+  } {
+    if (active) {
+      throw new Error("A private registration phase is already active");
+    }
+    active = true;
+    expectedPluginId = expectedId;
+    records = [];
+    outOfPhaseAttempts = 0;
+    const sideEffects = emptySideEffects();
+    const mutableSideEffects = sideEffects as {
+      -readonly [K in keyof SideEffectObservations]: SideEffectObservations[K];
+    };
+    installHooks();
+    return {
+      sideEffects,
+      recordSideEffect(kind) {
+        mutableSideEffects[kind] += 1;
+      },
+    };
+  }
+
+  function endEvaluation(): void {
+    clearHooks();
+    active = false;
+    expectedPluginId = null;
+  }
+
   return {
     get active() {
       return active;
     },
     register,
     evaluateInert(options) {
-      if (active) {
-        throw new Error("A private registration phase is already active");
-      }
-
-      active = true;
-      expectedPluginId = options.expectedPluginId;
-      records = [];
-      outOfPhaseAttempts = 0;
-      const sideEffects = mergeSideEffects(emptySideEffects(), options.sideEffects);
-
-      installHooks();
+      const phase = beginEvaluation(options.expectedPluginId);
+      let evaluationError: unknown = null;
       try {
-        options.evaluate();
+        options.evaluate(phase.recordSideEffect);
+      } catch (error: unknown) {
+        evaluationError = error;
       } finally {
-        clearHooks();
-        active = false;
-        expectedPluginId = null;
+        endEvaluation();
       }
-
-      if (hasSideEffects(sideEffects)) {
-        return {
-          ok: false,
-          code: "plugin.registration.side-effect",
-          message:
-            "Plugin evaluation performed setup or host side effects during inert registration",
-          registrationCount: records.length,
-          sideEffects,
-          details: { sideEffects },
-        };
+      return finishEvaluation(
+        options.expectedPluginId,
+        phase.sideEffects,
+        evaluationError,
+      );
+    },
+    async evaluateInertAsync(options) {
+      const phase = beginEvaluation(options.expectedPluginId);
+      let evaluationError: unknown = null;
+      try {
+        await options.evaluate(phase.recordSideEffect);
+      } catch (error: unknown) {
+        evaluationError = error;
+      } finally {
+        endEvaluation();
       }
-
-      if (outOfPhaseAttempts > 0 && records.length === 0) {
-        return {
-          ok: false,
-          code: "plugin.registration.out-of-phase",
-          message: "Plugin registration was attempted outside the private evaluation phase",
-          registrationCount: 0,
-          sideEffects,
-          details: { outOfPhaseAttempts },
-        };
-      }
-
-      if (records.length === 0) {
-        return {
-          ok: false,
-          code: "plugin.registration.none",
-          message: "Plugin evaluation registered zero definitions",
-          registrationCount: 0,
-          sideEffects,
-        };
-      }
-
-      if (records.length > 1) {
-        return {
-          ok: false,
-          code: "plugin.registration.multiple",
-          message: `Plugin evaluation registered ${records.length} definitions; exactly one is required`,
-          registrationCount: records.length,
-          sideEffects,
-          details: {
-            pluginIds: records.map((record) => record.pluginId),
-          },
-        };
-      }
-
-      const only = records[0]!;
-      if (only.pluginId !== options.expectedPluginId) {
-        return {
-          ok: false,
-          code: "plugin.registration.id-mismatch",
-          message: `Registered plugin id "${only.pluginId}" does not match expected "${options.expectedPluginId}"`,
-          registrationCount: 1,
-          sideEffects,
-          details: {
-            expectedPluginId: options.expectedPluginId,
-            registeredPluginId: only.pluginId,
-          },
-        };
-      }
-
-      // Freeze definition surface so harness consumers cannot mutate setup binding casually.
-      const frozen: DefinedPlugin = Object.freeze({
-        setup: only.definition.setup,
-        __explodexDefinedPlugin: true as const,
-      });
-
-      return {
-        ok: true,
-        registration: {
-          pluginId: only.pluginId,
-          definition: frozen,
-        },
-        registrationCount: 1,
-        sideEffects,
-      };
+      return finishEvaluation(
+        options.expectedPluginId,
+        phase.sideEffects,
+        evaluationError,
+      );
     },
   };
 }

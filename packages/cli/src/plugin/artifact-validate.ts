@@ -324,7 +324,7 @@ export async function validateInstallablePayloadDir(
   const jsText = await readFile(join(root, "index.js"), "utf8");
   const browser = scanBrowserSafeIife(jsText);
   if (!browser.ok) {
-    return fail("plugin.artifact.invalid", browser.message, { marker: browser.marker });
+    return fail("plugin.artifact.invalid", browser.message, { browserSafety: browser });
   }
 
   // Map must be present, package-relative, and reference index.js.
@@ -361,7 +361,7 @@ export async function validateInstallablePayloadDir(
 
   // Exactly one inert definition registration; no setup.
   const harness = createInertRegistrationHarness();
-  const registration = harness.evaluateSource({
+  const registration = await harness.evaluateSource({
     expectedPluginId: manifest.id,
     source: jsText,
   });

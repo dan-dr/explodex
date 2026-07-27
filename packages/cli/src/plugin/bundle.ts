@@ -9,6 +9,7 @@ import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import * as esbuild from "esbuild";
+import { scanBrowserSafeIife } from "./browser-scan.ts";
 
 export type BundleImportDiagnostic = {
   readonly specifier: string;
@@ -94,17 +95,6 @@ const FORBIDDEN_PREFIXES = [
   "fs/",
   "node-fetch",
   "electron/",
-] as const;
-
-const PRIVATE_GLOBAL_MARKERS = [
-  "__EXPLODEX_PLUGIN_CATALOG__",
-  "__EXPLODEX_PATHS__",
-  "__EXPLODEX_BRIDGE__",
-  "require(",
-  "module.exports",
-  "process.",
-  "Buffer.",
-  "Bun.",
 ] as const;
 
 function sha256Hex(bytes: Uint8Array | string): string {
@@ -385,54 +375,23 @@ export async function bundlePluginIife(options: {
     const mapPath = join(stagingDir, "index.js.map");
     const mapRaw = (await pathExists(mapPath)) ? await readFile(mapPath, "utf8") : "";
 
-    // Classic-script scans.
-    if (/^\s*import\s/m.test(jsText) || /^\s*export\s/m.test(jsText)) {
+    const browserSafety = scanBrowserSafeIife(jsText);
+    if (!browserSafety.ok) {
+      diagnostics.push({
+        specifier: browserSafety.marker,
+        importer: options.entryRelative,
+        chain: [options.entryRelative, browserSafety.marker],
+        reason: browserSafety.message,
+      });
       return {
         ok: false,
         code: "plugin.source.invalid",
-        message: "Plugin bundle retained ESM import/export statements",
+        message: browserSafety.message,
         diagnostics,
+        details: {
+          browserSafety,
+        },
       };
-    }
-    for (const marker of PRIVATE_GLOBAL_MARKERS) {
-      // Allow the private register symbol we inject; reject the rest.
-      if (marker === "require(" || marker === "module.exports" || marker === "process." || marker === "Buffer." || marker === "Bun.") {
-        if (jsText.includes(marker)) {
-          // process.env may appear in some deps; reject free Node process usage.
-          diagnostics.push({
-            specifier: marker,
-            importer: options.entryRelative,
-            chain: [options.entryRelative, marker],
-            reason: "Bundle references a forbidden Node/private runtime primitive",
-          });
-          return {
-            ok: false,
-            code: "plugin.source.invalid",
-            message: `Plugin bundle references forbidden runtime primitive: ${marker}`,
-            diagnostics,
-          };
-        }
-      }
-      if (
-        marker === "__EXPLODEX_PLUGIN_CATALOG__" ||
-        marker === "__EXPLODEX_PATHS__" ||
-        marker === "__EXPLODEX_BRIDGE__"
-      ) {
-        if (jsText.includes(marker)) {
-          diagnostics.push({
-            specifier: marker,
-            importer: options.entryRelative,
-            chain: [options.entryRelative, marker],
-            reason: "Bundle references a private renderer global",
-          });
-          return {
-            ok: false,
-            code: "plugin.source.invalid",
-            message: `Plugin bundle references private renderer global: ${marker}`,
-            diagnostics,
-          };
-        }
-      }
     }
 
     // Package-relative source map (no absolute workspace paths).

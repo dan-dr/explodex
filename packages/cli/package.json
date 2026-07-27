@@ -63,6 +63,7 @@
   },
   "dependencies": {
     "@explodex/sdk": "1.2.0",
+    "acorn": "8.15.0",
     "esbuild": "0.25.12"
   }
 }

@@ -96,9 +96,9 @@ describe("VAL-SDK-019 bounded generation-safe setup/teardown", () => {
     if (apply.ok) throw new Error("expected superseded");
     expect(apply.code).toBe("plugin.lifecycle.superseded");
     expect(apply.record.status).not.toBe("applied");
-    // Late teardown invoked at most once in cleanup-only mode.
+    // Late teardown is invoked exactly once in cleanup-only mode.
     await new Promise((r) => setTimeout(r, 20));
-    expect(teardownCalls).toBeLessThanOrEqual(1);
+    expect(teardownCalls).toBe(1);
   });
 
   test("supersession rejects new tracked resources from late generation", async () => {
@@ -157,5 +157,128 @@ describe("VAL-SDK-019 bounded generation-safe setup/teardown", () => {
     await harness.unload("sample");
     await harness.unload("sample");
     expect(teardownCalls).toBe(1);
+  });
+
+  test("failed replacement never restores the superseded generation", async () => {
+    const harness = createLifecycleHarness();
+    let oldTeardownCalls = 0;
+
+    const first = await harness.apply("sample", {
+      setup() {
+        return () => {
+          oldTeardownCalls += 1;
+        };
+      },
+    });
+    expect(first.ok).toBe(true);
+
+    const replacement = await harness.apply("sample", {
+      setup() {
+        throw new Error("replacement failed");
+      },
+    });
+    expect(replacement.ok).toBe(false);
+    if (replacement.ok) throw new Error("expected replacement failure");
+    expect(replacement.record.status).toBe("failed");
+    expect(harness.host.get("sample")?.generation).toBe(replacement.record.generation);
+    expect(harness.host.get("sample")?.status).toBe("failed");
+    expect(harness.host.get("sample")?.generation).not.toBe(first.record.generation);
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(oldTeardownCalls).toBe(1);
+  });
+
+  test("in-flight generation superseded by a failed replacement finishes cleanup-only", async () => {
+    const harness = createLifecycleHarness();
+    const gate = deferred<PluginTeardown>();
+    let oldTeardownCalls = 0;
+
+    const firstPromise = harness.apply(
+      "sample",
+      {
+        setup() {
+          return gate.promise;
+        },
+      },
+      { setupTimeoutMs: 2_000 },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    const replacement = await harness.apply("sample", {
+      setup() {
+        throw new Error("replacement failed");
+      },
+    });
+    expect(replacement.ok).toBe(false);
+    if (replacement.ok) throw new Error("expected replacement failure");
+    expect(harness.host.get("sample")?.generation).toBe(replacement.record.generation);
+
+    gate.resolve(() => {
+      oldTeardownCalls += 1;
+    });
+    const first = await firstPromise;
+    expect(first.ok).toBe(false);
+    if (first.ok) throw new Error("expected superseded result");
+    expect(first.code).toBe("plugin.lifecycle.superseded");
+    expect(first.record.status).toBe("superseded");
+    expect(oldTeardownCalls).toBe(1);
+    expect(harness.host.get("sample")?.generation).toBe(replacement.record.generation);
+    expect(harness.host.get("sample")?.status).toBe("failed");
+  });
+
+  test("timed-out setup may only finish through one cleanup-only teardown", async () => {
+    const harness = createLifecycleHarness();
+    const gate = deferred<PluginTeardown>();
+    let teardownCalls = 0;
+
+    const result = await harness.apply(
+      "sample",
+      {
+        setup() {
+          return gate.promise;
+        },
+      },
+      { setupTimeoutMs: 20, teardownTimeoutMs: 1_000 },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected timeout");
+    expect(result.code).toBe("plugin.lifecycle.setup-timeout");
+
+    gate.resolve(() => {
+      teardownCalls += 1;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(teardownCalls).toBe(1);
+    expect(harness.host.get("sample")?.status).toBe("failed");
+  });
+
+  test("late setup rejection cannot overwrite unloaded leak truth", async () => {
+    const harness = createLifecycleHarness();
+    const gate = deferred<void>();
+    const applyPromise = harness.apply(
+      "sample",
+      {
+        async setup(api) {
+          api.track.subscription(() => {
+            throw new Error("still retained");
+          });
+          await gate.promise;
+        },
+      },
+      { setupTimeoutMs: 2_000 },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    const unload = await harness.unload("sample");
+    expect(unload?.record.status).toBe("unloaded");
+    expect(unload?.record.resources.subscriptions).toBe(1);
+    expect(harness.detectTrackedLeaks("sample").leaked).toBe(true);
+
+    gate.reject(new Error("late setup rejection"));
+    const apply = await applyPromise;
+    expect(apply.ok).toBe(false);
+    expect(harness.host.get("sample")?.status).toBe("unloaded");
+    expect(harness.detectTrackedLeaks("sample").leaked).toBe(true);
   });
 });

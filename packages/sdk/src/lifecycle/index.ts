@@ -11,7 +11,8 @@ export {
   type RegistrationHost,
   type RegistrationPhaseResult,
   type RegistrationRecord,
-  type SideEffectCanaries,
+  type SideEffectKind,
+  type SideEffectObservations,
 } from "./registration.ts";
 export {
   createPluginLifecycleHost,
@@ -19,11 +20,14 @@ export {
   type PluginApplicationRecord,
   type PluginApplicationStatus,
   type PluginLifecycleHost,
+  type SupersededCleanupFailure,
   type UnloadPluginResult,
 } from "./apply.ts";
 export {
   createTrackedResourceRegistry,
   sumSnapshots,
+  type TrackedDisposalFailure,
+  type TrackedDisposalResult,
   type TrackedResourceKind,
   type TrackedResourceRegistry,
   type TrackedResourceSnapshot,
