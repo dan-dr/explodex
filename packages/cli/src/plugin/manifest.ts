@@ -6,6 +6,11 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { PluginLifecycle } from "@explodex/sdk";
 import { compareBytewise } from "./dist-files.ts";
+import {
+  PayloadPathTopologyTracker,
+  validateNormalizedPayloadPath,
+} from "./payload-path.ts";
+import { validateOpaqueVersion } from "./version.ts";
 
 export type PluginManifestV1 = {
   schemaVersion: 1;
@@ -42,6 +47,8 @@ export function buildPluginManifest(options: {
   assets: readonly string[];
 }): PluginManifestV1 {
   const assets = [...options.assets].sort(compareBytewise);
+  const assetFailure = validateManifestAssets(assets);
+  if (assetFailure !== null) throw new Error(assetFailure);
   return {
     schemaVersion: 1,
     id: options.id,
@@ -91,11 +98,15 @@ export function parsePluginManifest(raw: unknown):
   if (value.entry !== "index.js") {
     return { ok: false, message: 'plugin.json entry must be "index.js"' };
   }
-  if (typeof value.id !== "string" || value.id.length === 0) {
+  if (
+    typeof value.id !== "string" ||
+    !/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(value.id)
+  ) {
     return { ok: false, message: "plugin.json id is invalid" };
   }
-  if (typeof value.version !== "string" || value.version.length === 0) {
-    return { ok: false, message: "plugin.json version is invalid" };
+  const version = validateOpaqueVersion(value.version);
+  if (!version.ok) {
+    return { ok: false, message: `plugin.json version is invalid: ${version.message}` };
   }
   if (typeof value.displayName !== "string" || value.displayName.length === 0) {
     return { ok: false, message: "plugin.json displayName is invalid" };
@@ -119,18 +130,46 @@ export function parsePluginManifest(raw: unknown):
   ) {
     return { ok: false, message: "plugin.json assets must be an array of strings" };
   }
+  const assets = value.assets as string[];
+  const assetFailure = validateManifestAssets(assets);
+  if (assetFailure !== null) {
+    return { ok: false, message: assetFailure };
+  }
+  const orderedAssets = [...assets].sort(compareBytewise);
+  if (assets.some((asset, index) => asset !== orderedAssets[index])) {
+    return {
+      ok: false,
+      message: "plugin.json assets must be ordered by encoded UTF-8 bytes",
+    };
+  }
   return {
     ok: true,
     manifest: {
       schemaVersion: 1,
       id: value.id,
-      version: value.version,
+      version: version.version,
       displayName: value.displayName,
       description: value.description,
       sdkRange: value.sdkRange,
       lifecycle: value.lifecycle,
       entry: "index.js",
-      assets: value.assets as string[],
+      assets,
     },
   };
+}
+
+function validateManifestAssets(assets: readonly string[]): string | null {
+  const topology = new PayloadPathTopologyTracker();
+  for (const asset of assets) {
+    const validated = validateNormalizedPayloadPath(asset, { kind: "file" });
+    if (!validated.ok) return `plugin.json asset is invalid: ${validated.message}`;
+    if (!validated.validated.path.startsWith("assets/")) {
+      return `plugin.json asset must be beneath assets/: ${asset}`;
+    }
+    const topologyFailure = topology.addFileWithImplicitDirectories(validated.validated);
+    if (topologyFailure !== null) {
+      return `plugin.json assets are not unique: ${topologyFailure.message}`;
+    }
+  }
+  return null;
 }

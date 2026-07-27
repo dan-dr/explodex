@@ -88,6 +88,9 @@ describe("M3-F02 immutable local installation", () => {
       }
 
       const installedDirectoryName = basename(result.artifactPath);
+      expect(installedDirectoryName).toContain(result.payloadSha256);
+      expect(packaged.archiveRootName).toContain(result.payloadSha256);
+      expect(packaged.archiveFileName).toContain(result.payloadSha256);
       const provenance = JSON.parse(
         await readFile(join(home, "plugins", result.id, ".provenance", `${installedDirectoryName}.json`), "utf8"),
       ) as Record<string, unknown>;

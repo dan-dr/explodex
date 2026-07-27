@@ -6,14 +6,12 @@
 
 import { encodeOpaqueVersionComponent } from "./version.ts";
 
-/** Short payload suffix used in path/root names (not activation identity). */
-export const SHORT_PAYLOAD_HEX_LENGTH = 12;
-
-/** Maximum length of a named archive top-level directory. */
-export const MAX_ARCHIVE_ROOT_NAME_LENGTH = 240;
+/** Ustar name-field byte limit for the single-component archive root. */
+export const MAX_ARCHIVE_ROOT_NAME_LENGTH = 100;
 
 /** Maximum length of a release/archive file basename. */
 export const MAX_ARCHIVE_FILE_NAME_LENGTH = 255;
+export const MAX_INSTALLED_DIRECTORY_NAME_LENGTH = 255;
 
 const PAYLOAD_HEX_PATTERN = /^[a-f0-9]{64}$/;
 const ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -25,20 +23,18 @@ export type EncodedArtifactIdentity = {
   version: string;
   /** Full lowercase payload digest. */
   payloadSha256: string;
-  /** First SHORT_PAYLOAD_HEX_LENGTH hex chars of payloadSha256. */
-  shortPayloadSha256: string;
   /** Encoded opaque version component. */
   encodedVersion: string;
   /**
    * Single named top-level archive directory:
-   * `{id}-{encodedVersion}-{shortPayloadSha256}`
+   * `{id}-{encodedVersion}-{payloadSha256}`
    */
   archiveRootName: string;
   /** Canonical archive basename: `{archiveRootName}.tar.gz` */
   archiveFileName: string;
   /**
    * Installed directory name under `~/.explodex/plugins/<id>/`:
-   * `{encodedVersion}-{shortPayloadSha256}`
+   * `{encodedVersion}-{payloadSha256}`
    */
   installedDirectoryName: string;
 };
@@ -65,13 +61,6 @@ export function encodeIdentityComponent(value: string): string {
   return out;
 }
 
-export function shortPayloadSha256(payloadSha256: string): string {
-  if (!PAYLOAD_HEX_PATTERN.test(payloadSha256)) {
-    throw new Error("payloadSha256 must be 64 lowercase hexadecimal characters.");
-  }
-  return payloadSha256.slice(0, SHORT_PAYLOAD_HEX_LENGTH);
-}
-
 /**
  * Build the canonical encoded identity used for archive topology and paths.
  * Never substitutes archiveSha256 for the payload digest suffix.
@@ -92,28 +81,34 @@ export function encodeArtifactIdentity(options: {
   }
 
   const encodedVersion = encodeOpaqueVersionComponent(version);
-  const short = shortPayloadSha256(payloadSha256);
   // ID is already path-safe; still run through the encoder for one vocabulary.
   const encodedId = encodeIdentityComponent(id);
-  const archiveRootName = `${encodedId}-${encodedVersion}-${short}`;
-  if (archiveRootName.length > MAX_ARCHIVE_ROOT_NAME_LENGTH) {
+  const archiveRootName = `${encodedId}-${encodedVersion}-${payloadSha256}`;
+  if (Buffer.byteLength(archiveRootName, "utf8") > MAX_ARCHIVE_ROOT_NAME_LENGTH) {
     throw new Error(
-      `Encoded archive root name exceeds ${MAX_ARCHIVE_ROOT_NAME_LENGTH} characters.`,
+      `Encoded archive root name exceeds ${MAX_ARCHIVE_ROOT_NAME_LENGTH} UTF-8 bytes.`,
     );
   }
   const archiveFileName = `${archiveRootName}.tar.gz`;
-  if (archiveFileName.length > MAX_ARCHIVE_FILE_NAME_LENGTH) {
+  if (Buffer.byteLength(archiveFileName, "utf8") > MAX_ARCHIVE_FILE_NAME_LENGTH) {
     throw new Error(
-      `Encoded archive file name exceeds ${MAX_ARCHIVE_FILE_NAME_LENGTH} characters.`,
+      `Encoded archive file name exceeds ${MAX_ARCHIVE_FILE_NAME_LENGTH} UTF-8 bytes.`,
     );
   }
-  const installedDirectoryName = `${encodedVersion}-${short}`;
+  const installedDirectoryName = `${encodedVersion}-${payloadSha256}`;
+  if (
+    Buffer.byteLength(installedDirectoryName, "utf8") >
+      MAX_INSTALLED_DIRECTORY_NAME_LENGTH
+  ) {
+    throw new Error(
+      `Encoded installed directory name exceeds ${MAX_INSTALLED_DIRECTORY_NAME_LENGTH} UTF-8 bytes.`,
+    );
+  }
 
   return {
     id,
     version,
     payloadSha256,
-    shortPayloadSha256: short,
     encodedVersion,
     archiveRootName,
     archiveFileName,

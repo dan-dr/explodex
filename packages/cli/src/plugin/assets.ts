@@ -6,6 +6,10 @@
 import { copyFile, lstat, mkdir, realpath, stat } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { compareBytewise } from "./dist-files.ts";
+import {
+  PayloadPathTopologyTracker,
+  validateNormalizedPayloadPath,
+} from "./payload-path.ts";
 
 export type NormalizedAsset = {
   /** Declared path relative to assets/ root (posix). */
@@ -36,27 +40,6 @@ function toPosix(path: string): string {
   return path.split(sep).join("/");
 }
 
-function isUnsafeDeclaredPath(declared: string): string | null {
-  if (declared.length === 0) return "Asset path must be non-empty";
-  if (declared.includes("\0")) return "Asset path must not contain NUL";
-  if (/[\u0001-\u001f\u007f]/.test(declared)) {
-    return "Asset path must not contain control characters";
-  }
-  if (declared.includes("\\")) return "Asset path must not use backslash separators";
-  if (declared.startsWith("/")) return "Asset path must not be absolute";
-  if (/^[A-Za-z]:/.test(declared)) return "Asset path must not be drive-like";
-  if (declared === "." || declared === ".." || declared.split("/").includes("..")) {
-    return "Asset path must not contain traversal segments";
-  }
-  if (declared.startsWith("./") || declared.includes("/./")) {
-    return "Asset path must be normalized without ./ segments";
-  }
-  if (declared.endsWith("/") || declared.includes("//")) {
-    return "Asset path must not contain empty segments";
-  }
-  return null;
-}
-
 /**
  * Normalize and validate declared asset paths, ensuring each source exists
  * as a regular file under workspace/assets without escaping links.
@@ -68,7 +51,7 @@ export async function normalizeDeclaredAssets(options: {
   const workspacePath = resolve(options.workspacePath);
   const assetsRoot = join(workspacePath, "assets");
   const seenDeclared = new Set<string>();
-  const seenInstallable = new Set<string>();
+  const topology = new PayloadPathTopologyTracker();
   const normalized: NormalizedAsset[] = [];
 
   for (const raw of options.declared) {
@@ -88,13 +71,14 @@ export async function normalizeDeclaredAssets(options: {
         details: { asset: raw },
       };
     }
-    const unsafe = isUnsafeDeclaredPath(declared);
-    if (unsafe !== null) {
+    const installable = `assets/${declared}`;
+    const validated = validateNormalizedPayloadPath(installable, { kind: "file" });
+    if (!validated.ok) {
       return {
         ok: false,
         code: "plugin.source.invalid",
-        message: `${unsafe}: ${declared}`,
-        details: { asset: declared },
+        message: validated.message,
+        details: { asset: declared, entryClass: validated.entryClass },
       };
     }
     if (seenDeclared.has(declared)) {
@@ -107,16 +91,19 @@ export async function normalizeDeclaredAssets(options: {
     }
     seenDeclared.add(declared);
 
-    const installable = `assets/${declared}`;
-    if (seenInstallable.has(installable)) {
+    const topologyFailure = topology.addFileWithImplicitDirectories(validated.validated);
+    if (topologyFailure !== null) {
       return {
         ok: false,
         code: "plugin.source.invalid",
-        message: `Normalized asset path collision: ${installable}`,
-        details: { asset: declared, installable },
+        message: topologyFailure.message,
+        details: {
+          asset: declared,
+          installable,
+          entryClass: topologyFailure.entryClass,
+        },
       };
     }
-    seenInstallable.add(installable);
 
     const sourcePath = join(assetsRoot, ...declared.split("/"));
     let sourceStats;
@@ -185,7 +172,7 @@ export async function normalizeDeclaredAssets(options: {
 
     normalized.push({
       declared,
-      installable,
+      installable: validated.validated.path,
       sourcePath,
     });
   }

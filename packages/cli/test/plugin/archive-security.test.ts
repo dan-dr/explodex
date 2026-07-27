@@ -9,6 +9,7 @@ import {
   buildNamedRootArchive,
   extractNamedRootArchive,
 } from "../../src/plugin/archive.ts";
+import { encodeArtifactIdentity } from "../../src/plugin/identity-encode.ts";
 
 function writeTarString(target: Buffer, offset: number, value: string, length: number): void {
   Buffer.from(value, "utf8").copy(target, offset, 0, length);
@@ -79,6 +80,7 @@ const IDENTITY = {
   version: "1.0.0",
   payloadSha256: "ab".repeat(32),
 };
+const ARCHIVE_ROOT = encodeArtifactIdentity(IDENTITY).archiveRootName;
 
 function expectArchiveFailure(
   archive: Buffer,
@@ -114,7 +116,9 @@ describe("VAL-SDK-032 shared path and topology validation", () => {
       });
 
     expect(() => build(["assets/Icon.png", "assets/icon.png"])).toThrow(/collid/i);
-    expect(() => build(["assets/café.txt", "assets/cafe\u0301.txt"])).toThrow(/collid/i);
+    expect(() => build(["assets/café.txt", "assets/cafe\u0301.txt"])).toThrow(
+      /collid|NFC|canonical/i,
+    );
     expect(() => build(["assets", "assets/child.txt"])).toThrow(/descends|conflicts|topology/i);
     expect(() => build(["assets/Foo", "assets/foo/bar.js"])).toThrow(/normalized|descends|conflicts/i);
     expect(() => build(["assets/Foo/a.js", "assets/foo/b.js"])).toThrow(/normalized|collid/i);
@@ -132,7 +136,7 @@ describe("VAL-SDK-032 shared path and topology validation", () => {
   });
 
   test("extraction rejects collision, escape, and hostile special entry classes", () => {
-    const root = "archive-security-1.0.0-abababababababab";
+    const root = ARCHIVE_ROOT;
     const cases: Array<{
       expected: string;
       entries: Array<{ path: string; typeFlag?: string; bytes?: Buffer; linkName?: string }>;
@@ -152,7 +156,7 @@ describe("VAL-SDK-032 shared path and topology validation", () => {
         ],
       },
       {
-        expected: "normalized-collision",
+        expected: "non-canonical-unicode",
         entries: [
           { path: `${root}/assets/café.txt`, bytes: Buffer.from("a") },
           { path: `${root}/assets/cafe\u0301.txt`, bytes: Buffer.from("b") },
@@ -173,6 +177,10 @@ describe("VAL-SDK-032 shared path and topology validation", () => {
       {
         expected: "drive-like-path",
         entries: [{ path: "C:/drive", bytes: Buffer.from("x") }],
+      },
+      {
+        expected: "directory-suffix",
+        entries: [{ path: `${root}/index.js/`, bytes: Buffer.from("x") }],
       },
       {
         expected: "symlink",
@@ -206,10 +214,17 @@ describe("VAL-SDK-032 shared path and topology validation", () => {
         ],
       },
       {
-        expected: "file-directory-topology",
+        expected: "normalized-collision",
         entries: [
           { path: `${root}/assets/Foo`, bytes: Buffer.from("file") },
           { path: `${root}/assets/foo/bar.js`, bytes: Buffer.from("child") },
+        ],
+      },
+      {
+        expected: "normalized-collision",
+        entries: [
+          { path: `${root}/assets/Foo/a.js`, bytes: Buffer.from("a") },
+          { path: `${root}/assets/foo/b.js`, bytes: Buffer.from("b") },
         ],
       },
     ];
@@ -220,7 +235,7 @@ describe("VAL-SDK-032 shared path and topology validation", () => {
   });
 
   test("rejects corrupt headers and truncated containers", () => {
-    const root = "archive-security-1.0.0-abababababababab";
+    const root = ARCHIVE_ROOT;
     const valid = rawArchive([{ path: `${root}/index.js`, bytes: Buffer.from("x") }]);
     const corrupt = Buffer.from(valid);
     corrupt[20] ^= 0xff;
@@ -279,7 +294,7 @@ describe("VAL-SDK-033 deterministic expansion limits", () => {
 
   test("archive parser enforces entry, path, file, total, and bomb limits", () => {
     const limits = ARTIFACT_SCHEMA_V1_LIMITS;
-    const root = "archive-security-1.0.0-abababababababab";
+    const root = ARCHIVE_ROOT;
 
     const exactEntries = Array.from({ length: limits.maxArchiveEntries }, (_, index) => ({
       path: `${root}/assets/f-${index.toString().padStart(3, "0")}`,

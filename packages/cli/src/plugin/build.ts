@@ -30,6 +30,7 @@ import {
   writeGenerationRecord,
 } from "./generation.ts";
 import { buildPluginManifest, writePluginManifest } from "./manifest.ts";
+import { validatePluginSourceMapV3 } from "./source-map.ts";
 import { validatePluginSource } from "./validate.ts";
 import type { NormalizedSourceReport } from "./types.ts";
 
@@ -288,25 +289,24 @@ export async function buildPluginWorkspace(options: {
       });
     }
 
-    // Portable map absolute-path guard.
+    // Exact shared V3 map validation before any payload metadata is committed.
     const mapText = await readFile(join(stagingDir, "index.js.map"), "utf8");
-    if (mapText.includes(workspacePath) || /"sources"\s*:\s*\[[^\]]*"\//.test(mapText)) {
-      // Allow only relative sources; reject absolute workspace leakage.
-      const mapJson = JSON.parse(mapText) as { sources?: string[] };
-      const bad = (mapJson.sources ?? []).some(
-        (source) => source.startsWith("/") || source.includes(workspacePath),
-      );
-      if (bad) {
-        await rm(stagingDir, { recursive: true, force: true });
-        const after = await fingerprintDistTree(workspacePath);
-        return failResult({
-          code: "plugin.source.invalid",
-          message: "Generated source map contains non-portable absolute paths",
-          priorDistFingerprint,
-          distFingerprintAfter: after,
-          diagnostics: bundled.diagnostics,
-        });
-      }
+    const stagedJsText = await readFile(join(stagingDir, "index.js"), "utf8");
+    const mapValidation = validatePluginSourceMapV3({
+      mapText,
+      generatedSource: stagedJsText,
+    });
+    if (!mapValidation.ok) {
+      await rm(stagingDir, { recursive: true, force: true });
+      const after = await fingerprintDistTree(workspacePath);
+      return failResult({
+        code: "plugin.source.invalid",
+        message: mapValidation.message,
+        details: mapValidation.details,
+        priorDistFingerprint,
+        distFingerprintAfter: after,
+        diagnostics: bundled.diagnostics,
+      });
     }
 
     const stagedAssets = await stageDeclaredAssets({
@@ -338,11 +338,10 @@ export async function buildPluginWorkspace(options: {
     await writePluginManifest(stagingDir, manifest);
 
     // Definition registration must succeed before commit.
-    const jsText = await readFile(join(stagingDir, "index.js"), "utf8");
     const harness = createInertRegistrationHarness();
     const registration = await harness.evaluateSource({
       expectedPluginId: report.id,
-      source: jsText,
+      source: stagedJsText,
     });
     if (!registration.ok) {
       await rm(stagingDir, { recursive: true, force: true });

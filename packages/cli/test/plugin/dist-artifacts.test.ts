@@ -236,11 +236,23 @@ export default definePlugin({
       const js = await readFile(join(workspace, "dist", "index.js"), "utf8");
       expect(js).toContain("sourceMappingURL=index.js.map");
       const map = JSON.parse(await readFile(join(workspace, "dist", "index.js.map"), "utf8")) as {
+        version: number;
         file: string;
         sources: string[];
-        sourceRoot?: string;
+        sourcesContent: string[];
+        names: string[];
+        mappings: string;
+        sourceRoot: string;
       };
+      expect(map.version).toBe(3);
       expect(map.file).toBe("index.js");
+      expect(map.sourceRoot).toBe("");
+      expect(map.sources.length).toBeGreaterThan(0);
+      expect(map.sources.every((source) => /^src\/.+\.tsx?$/.test(source))).toBe(true);
+      expect(map.sourcesContent.length).toBe(map.sources.length);
+      expect(map.sourcesContent.every((source) => typeof source === "string")).toBe(true);
+      expect(map.names.every((name) => typeof name === "string")).toBe(true);
+      expect(map.mappings.length).toBeGreaterThan(0);
       expect(map.sources.every((source) => !source.startsWith("/") && !source.includes(workspace))).toBe(
         true,
       );

@@ -20,7 +20,7 @@ describe("M3-F02 plugins state", () => {
               version: "opaque+1",
               payloadSha256: "11".repeat(32),
               archiveSha256: "22".repeat(32),
-              relativePath: "plugins/sample/opaque+1-111111111111",
+              relativePath: `plugins/sample/opaque+1-${"11".repeat(32)}`,
               source: { kind: "local" as const, archiveName: "sample.tar.gz" },
               installedAt: "2026-07-27T00:00:00.000Z",
             },

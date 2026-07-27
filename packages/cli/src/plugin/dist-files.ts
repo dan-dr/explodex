@@ -5,6 +5,12 @@
 import { createHash } from "node:crypto";
 import { access, readFile, readdir, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import {
+  comparePayloadPathsByUtf8Bytes,
+  PayloadPathTopologyTracker,
+  validateNormalizedPayloadPath,
+  type PayloadPathKind,
+} from "./payload-path.ts";
 
 /** Private generation binding file; not part of the installable payload. */
 export const GENERATION_FILE = ".explodex-generation.json";
@@ -18,12 +24,14 @@ export const INSTALLABLE_ROOT_FILES = [
 ] as const;
 
 export function isInstallableRelativePath(relative: string): boolean {
+  const validated = validateNormalizedPayloadPath(relative, { kind: "file" });
+  if (!validated.ok) return false;
   if (relative === GENERATION_FILE) return false;
   if (relative.startsWith(".explodex-")) return false;
   if (INSTALLABLE_ROOT_FILES.includes(relative as (typeof INSTALLABLE_ROOT_FILES)[number])) {
     return true;
   }
-  return relative === "assets" || relative.startsWith("assets/");
+  return relative.startsWith("assets/");
 }
 
 export async function listDistFiles(distPath: string): Promise<string[]> {
@@ -55,32 +63,55 @@ export async function fingerprintDistTree(workspacePath: string): Promise<string
 }
 
 export function compareBytewise(a: string, b: string): number {
-  if (a < b) return -1;
-  if (a > b) return 1;
-  return 0;
+  return comparePayloadPathsByUtf8Bytes(a, b);
 }
 
 export function sha256Hex(bytes: Uint8Array | string): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-async function listFilesRecursive(root: string, prefix = ""): Promise<string[]> {
+export type PayloadTreeEntry = {
+  path: string;
+  kind: PayloadPathKind;
+};
+
+export async function listPayloadTreeEntries(
+  root: string,
+  prefix = "",
+  topology = new PayloadPathTopologyTracker(),
+): Promise<PayloadTreeEntry[]> {
   let entries;
   try {
     entries = await readdir(join(root, prefix), { withFileTypes: true });
-  } catch {
+  } catch (error: unknown) {
+    if (prefix.length > 0) throw error;
     return [];
   }
-  const out: string[] = [];
+  const out: PayloadTreeEntry[] = [];
   for (const entry of entries) {
     const relative = prefix.length === 0 ? entry.name : `${prefix}/${entry.name}`;
+    const kind: PayloadPathKind = entry.isDirectory() ? "directory" : "file";
+    if (!entry.isDirectory() && !entry.isFile()) {
+      throw new Error(`Payload contains a special filesystem entry: ${relative}`);
+    }
+    const validated = validateNormalizedPayloadPath(relative, { kind });
+    if (!validated.ok) throw new Error(validated.message);
+    const topologyFailure = topology.add(validated.validated, kind);
+    if (topologyFailure !== null) throw new Error(topologyFailure.message);
     if (entry.isDirectory()) {
-      out.push(...(await listFilesRecursive(root, relative)));
-    } else if (entry.isFile()) {
-      out.push(relative);
+      out.push({ path: validated.validated.path, kind });
+      out.push(...(await listPayloadTreeEntries(root, validated.validated.path, topology)));
+    } else {
+      out.push({ path: validated.validated.path, kind });
     }
   }
-  return out;
+  return out.sort((left, right) => compareBytewise(left.path, right.path));
+}
+
+async function listFilesRecursive(root: string): Promise<string[]> {
+  return (await listPayloadTreeEntries(root))
+    .filter((entry) => entry.kind === "file")
+    .map((entry) => entry.path);
 }
 
 async function pathExists(path: string): Promise<boolean> {

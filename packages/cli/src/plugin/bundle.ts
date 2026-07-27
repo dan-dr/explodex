@@ -5,11 +5,20 @@
  */
 
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import * as esbuild from "esbuild";
 import { scanBrowserSafeIife } from "./browser-scan.ts";
+import { validatePluginSourceMapV3 } from "./source-map.ts";
 
 export type BundleImportDiagnostic = {
   readonly specifier: string;
@@ -229,6 +238,7 @@ export async function bundlePluginIife(options: {
   const shimVirtualPath = "explodex-sdk-shim.js";
   const shimSource = buildSdkShim(options.pluginId);
   await mkdir(stagingDir, { recursive: true });
+  const workspaceCanonical = await realpath(workspacePath);
 
   const importerChain = new Map<string, string[]>();
 
@@ -394,63 +404,62 @@ export async function bundlePluginIife(options: {
       };
     }
 
-    // Package-relative source map (no absolute workspace paths).
-    let mapText = "";
-    if (mapRaw.length > 0) {
-      try {
-        const parsed = JSON.parse(mapRaw) as {
-          version?: number;
-          file?: string;
-          sources?: string[];
-          sourcesContent?: Array<string | null>;
-          mappings?: string;
-          names?: string[];
-          sourceRoot?: string;
-        };
-        const sources = Array.isArray(parsed.sources) ? parsed.sources : [];
-        const rewritten = sources.map((source) => {
-          const normalized = source.replace(/\\/g, "/");
-          if (normalized.includes("explodex-sdk-shim")) {
-            return "explodex-sdk-shim.js";
-          }
-          const abs = normalized.startsWith("file://")
-            ? decodeURIComponent(normalized.replace(/^file:\/\//, ""))
-            : normalized;
-          const rel = toPosix(relative(workspacePath, abs.startsWith("/") ? abs : join(workspacePath, abs)));
-          if (rel.startsWith("..") || rel.startsWith("/")) {
-            // Keep package-relative by stripping to src/ when possible.
-            const srcIndex = normalized.lastIndexOf("/src/");
-            if (srcIndex >= 0) return normalized.slice(srcIndex + 1);
-            return normalized.split("/").pop() ?? "source.ts";
-          }
-          return rel;
-        });
-        mapText = `${JSON.stringify({
-          version: parsed.version ?? 3,
-          file: "index.js",
-          sourceRoot: "",
-          sources: rewritten,
-          sourcesContent: parsed.sourcesContent,
-          names: parsed.names ?? [],
-          mappings: parsed.mappings ?? "",
-        })}\n`;
-      } catch {
-        mapText = `${JSON.stringify({
-          version: 3,
-          file: "index.js",
-          sourceRoot: "",
-          sources: [options.entryRelative],
-          mappings: "",
-        })}\n`;
+    if (mapRaw.length === 0) {
+      return {
+        ok: false,
+        code: "plugin.source.invalid",
+        message: "Plugin bundle did not emit the required V3 source map",
+        diagnostics,
+      };
+    }
+    let mapText: string;
+    try {
+      const parsed = JSON.parse(mapRaw) as {
+        version?: unknown;
+        sources?: unknown;
+        sourcesContent?: unknown;
+        mappings?: unknown;
+        names?: unknown;
+      };
+      if (
+        parsed.version !== 3 ||
+        !Array.isArray(parsed.sources) ||
+        !parsed.sources.every((source) => typeof source === "string") ||
+        !Array.isArray(parsed.sourcesContent) ||
+        parsed.sourcesContent.length !== parsed.sources.length ||
+        !parsed.sourcesContent.every((content) => typeof content === "string") ||
+        typeof parsed.mappings !== "string" ||
+        !Array.isArray(parsed.names) ||
+        !parsed.names.every((name) => typeof name === "string")
+      ) {
+        throw new Error("Bundler source map does not have the required V3 fields");
       }
-    } else {
+      const rewritten = await Promise.all(parsed.sources.map((source, index) =>
+        portableTypeScriptSourcePath({
+          source,
+          index,
+          workspacePath: workspaceCanonical,
+          stagingDir,
+        })
+      ));
       mapText = `${JSON.stringify({
         version: 3,
         file: "index.js",
         sourceRoot: "",
-        sources: [options.entryRelative],
-        mappings: "",
+        sources: rewritten,
+        sourcesContent: parsed.sourcesContent,
+        names: parsed.names,
+        mappings: parsed.mappings,
       })}\n`;
+    } catch (error: unknown) {
+      return {
+        ok: false,
+        code: "plugin.source.invalid",
+        message: error instanceof Error
+          ? `Plugin source map generation failed: ${error.message}`
+          : "Plugin source map generation failed",
+        diagnostics,
+      };
     }
 
     if (!jsText.includes("sourceMappingURL=")) {
@@ -458,6 +467,20 @@ export async function bundlePluginIife(options: {
     } else {
       jsText = jsText.replace(/\/\/# sourceMappingURL=.*$/m, "//# sourceMappingURL=index.js.map");
       if (!jsText.endsWith("\n")) jsText += "\n";
+    }
+
+    const sourceMapValidation = validatePluginSourceMapV3({
+      mapText,
+      generatedSource: jsText,
+    });
+    if (!sourceMapValidation.ok) {
+      return {
+        ok: false,
+        code: "plugin.source.invalid",
+        message: sourceMapValidation.message,
+        diagnostics,
+        details: sourceMapValidation.details,
+      };
     }
 
     // Final guard: installable JS must not embed absolute workspace paths.
@@ -497,6 +520,44 @@ export async function bundlePluginIife(options: {
       details: { diagnostics },
     };
   }
+}
+
+async function portableTypeScriptSourcePath(options: {
+  source: string;
+  index: number;
+  workspacePath: string;
+  stagingDir: string;
+}): Promise<string> {
+  const normalized = options.source.replace(/\\/g, "/");
+  if (normalized.includes("explodex-sdk-shim")) {
+    return "src/.explodex/sdk-shim.ts";
+  }
+  const decoded = normalized.startsWith("file://")
+    ? decodeURIComponent(normalized.replace(/^file:\/\//, ""))
+    : normalized;
+  const unresolvedSource = decoded.startsWith("/")
+    ? decoded
+    : resolve(options.stagingDir, decoded);
+  const sourceAbsolute = await realpath(unresolvedSource);
+  const relativeSource = toPosix(relative(options.workspacePath, sourceAbsolute));
+  if (
+    !relativeSource.startsWith("../") &&
+    !relativeSource.startsWith("/") &&
+    /^src\/.+\.tsx?$/u.test(relativeSource)
+  ) {
+    return relativeSource;
+  }
+  const nodeModulesMarker = "/node_modules/";
+  const normalizedAbsolute = sourceAbsolute.replace(/\\/g, "/");
+  const nodeModulesIndex = normalizedAbsolute.lastIndexOf(nodeModulesMarker);
+  if (nodeModulesIndex >= 0) {
+    const dependencyPath = normalizedAbsolute.slice(
+      nodeModulesIndex + nodeModulesMarker.length,
+    );
+    const withoutExtension = dependencyPath.replace(/\.[A-Za-z0-9]+$/u, "");
+    return `src/.explodex/dependencies/${withoutExtension || `source-${options.index}`}.ts`;
+  }
+  throw new Error(`Source map contains a non-package TypeScript source: ${options.source}`);
 }
 
 /**

@@ -28,7 +28,6 @@ import { listInstallableFiles } from "../../src/plugin/dist-files.ts";
 import {
   encodeArtifactIdentity,
   encodeIdentityComponent,
-  shortPayloadSha256,
 } from "../../src/plugin/identity-encode.ts";
 import { packagePluginWorkspace } from "../../src/plugin/package.ts";
 import {
@@ -101,7 +100,9 @@ export default definePlugin({
 /** Independent payload digest implementation for VAL-SDK-028. */
 function independentPayloadSha256(manifest: ChecksumsManifest): string {
   const parts: Buffer[] = [Buffer.from("explodex-payload-v1\0", "utf8")];
-  for (const path of Object.keys(manifest.files).sort()) {
+  for (const path of Object.keys(manifest.files).sort((left, right) =>
+    Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"))
+  )) {
     const record = manifest.files[path]!;
     parts.push(Buffer.from(path, "utf8"));
     parts.push(Buffer.from("\0", "utf8"));
@@ -145,7 +146,11 @@ describe("VAL-SDK-027 checksums.json covers every other installable file exactly
       const installable = (await listInstallableFiles(dist)).filter(
         (path) => path !== "checksums.json",
       );
-      expect(Object.keys(checksums.files).sort()).toEqual(installable.sort());
+      expect(Object.keys(checksums.files).sort((left, right) =>
+        Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"))
+      )).toEqual(installable.sort((left, right) =>
+        Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"))
+      ));
 
       for (const path of installable) {
         const bytes = await readFile(join(dist, path));
@@ -232,7 +237,9 @@ describe("VAL-SDK-028 payloadSha256 has one canonical archive-independent algori
       const withoutDomain = sha256(
         Buffer.concat(
           Object.keys(checksums.files)
-            .sort()
+            .sort((left, right) =>
+              Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"))
+            )
             .flatMap((path) => {
               const record = checksums.files[path]!;
               return [
@@ -269,7 +276,7 @@ describe("VAL-SDK-028 payloadSha256 has one canonical archive-independent algori
             "bad\npath": { sha256: "a".repeat(64), bytes: 0 },
           },
         }),
-      ).toThrow(/Invalid path/);
+      ).toThrow(/path.*control character/i);
     } finally {
       await cleanup();
     }
@@ -441,17 +448,23 @@ describe("VAL-SDK-031 archives use one canonical named top-level directory", () 
       version: "1.0.0+meta",
       payloadSha256: "ab".repeat(32),
     });
-    expect(identity.shortPayloadSha256).toBe(shortPayloadSha256("ab".repeat(32)));
     expect(identity.archiveRootName).toBe(
-      `hello-world-${encodeIdentityComponent("1.0.0+meta")}-${identity.shortPayloadSha256}`,
+      `hello-world-${encodeIdentityComponent("1.0.0+meta")}-${identity.payloadSha256}`,
     );
     expect(identity.archiveFileName).toBe(`${identity.archiveRootName}.tar.gz`);
     expect(identity.installedDirectoryName).toBe(
-      `${identity.encodedVersion}-${identity.shortPayloadSha256}`,
+      `${identity.encodedVersion}-${identity.payloadSha256}`,
     );
     // Case-stable: uppercase letters in version remain uppercase after encoding.
     expect(encodeIdentityComponent("Build.1")).toBe("Build.1");
     expect(encodeIdentityComponent("a/b")).toContain("%2F");
+    expect(() =>
+      encodeArtifactIdentity({
+        id: "hello-world",
+        version: "v".repeat(40),
+        payloadSha256: "ab".repeat(32),
+      })
+    ).toThrow(/archive root.*100 UTF-8 bytes/i);
 
     const { workspace, cleanup } = await buildFixture(
       "explodex-plugin-named-root",

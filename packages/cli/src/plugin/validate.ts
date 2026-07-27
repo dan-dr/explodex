@@ -9,8 +9,14 @@ import { access, readFile, readdir, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { loadExplodexConfigOnce } from "./config-load.ts";
 import { deriveMatchingIdentity } from "./identity.ts";
+import { encodeArtifactIdentity } from "./identity-encode.ts";
 import { scanEntryImports } from "./imports.ts";
 import { normalizeLifecycle } from "./lifecycle.ts";
+import {
+  comparePayloadPathsByUtf8Bytes,
+  PayloadPathTopologyTracker,
+  validateNormalizedPayloadPath,
+} from "./payload-path.ts";
 import { parsePluginPackageJson } from "./package-json.ts";
 import type { SourceValidationResult } from "./types.ts";
 import { REQUIRED_WORKSPACE_FILES } from "./types.ts";
@@ -112,6 +118,19 @@ export async function validatePluginSource(options: {
       details: versionResult.details,
     });
   }
+  try {
+    encodeArtifactIdentity({
+      id: identity.id,
+      version: versionResult.version,
+      payloadSha256: "0".repeat(64),
+    });
+  } catch (error: unknown) {
+    return failUnchanged(distBefore, workspacePath, "plugin.source.invalid", {
+      message: error instanceof Error
+        ? `Artifact identity cannot be represented safely: ${error.message}`
+        : "Artifact identity cannot be represented safely.",
+    });
+  }
 
   const lifecycleResult = normalizeLifecycle(configLoaded.config.lifecycle);
   if (!lifecycleResult.ok) {
@@ -141,21 +160,29 @@ export async function validatePluginSource(options: {
   }
 
   const assets = configLoaded.config.assets ?? [];
+  const assetTopology = new PayloadPathTopologyTracker();
   for (const asset of assets) {
     if (typeof asset !== "string" || asset.length === 0) {
       return failUnchanged(distBefore, workspacePath, "plugin.source.invalid", {
         message: "Asset paths must be non-empty strings.",
       });
     }
-    if (
-      asset.includes("\0") ||
-      asset.includes("\\") ||
-      asset.startsWith("/") ||
-      asset.includes("..")
-    ) {
+    const validatedAsset = validateNormalizedPayloadPath(`assets/${asset}`, {
+      kind: "file",
+    });
+    if (!validatedAsset.ok) {
       return failUnchanged(distBefore, workspacePath, "plugin.source.invalid", {
-        message: `Asset path is unsafe: ${asset}`,
-        details: { asset },
+        message: validatedAsset.message,
+        details: { asset, entryClass: validatedAsset.entryClass },
+      });
+    }
+    const topologyFailure = assetTopology.addFileWithImplicitDirectories(
+      validatedAsset.validated,
+    );
+    if (topologyFailure !== null) {
+      return failUnchanged(distBefore, workspacePath, "plugin.source.invalid", {
+        message: topologyFailure.message,
+        details: { asset, entryClass: topologyFailure.entryClass },
       });
     }
   }
@@ -211,7 +238,7 @@ async function fingerprintDist(workspacePath: string): Promise<string> {
 
   const hash = createHash("sha256");
   const files = await listFilesRecursive(distPath);
-  files.sort();
+  files.sort(comparePayloadPathsByUtf8Bytes);
   for (const relative of files) {
     const absolute = join(distPath, relative);
     const bytes = await readFile(absolute);

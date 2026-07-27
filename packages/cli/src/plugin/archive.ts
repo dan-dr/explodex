@@ -152,7 +152,9 @@ export function buildNamedRootArchive(options: {
         ? parts[index]!
         : `${directoryPrefix}/${parts[index]!}`;
       if (!generatedDirectories.has(directoryPrefix)) {
-        const validatedDirectory = validateArchivePath(directoryPrefix);
+        const validatedDirectory = validateArchivePath(directoryPrefix, {
+          kind: "directory",
+        });
         if (!validatedDirectory.ok) throwArchivePathFailure(validatedDirectory.message);
         const directoryFailure = directoryTopology.add(validatedDirectory.validated, "directory");
         if (directoryFailure !== null) throwArchivePathFailure(directoryFailure.message);
@@ -436,19 +438,28 @@ export function extractNamedRootArchive(
     const name = readTarString(header, 0, 100);
     const prefix = readTarString(header, 345, 155);
     const full = prefix.length > 0 ? `${prefix}/${name}` : name;
-    const validatedFull = validateArchivePath(full, { maxUtf8Bytes: null });
-    if (!validatedFull.ok) {
-      return failure(validatedFull.message, {
-        entryClass: validatedFull.entryClass,
-        path: full,
-      });
-    }
     const size = parseStrictOctal(header, 124, 12, "size");
     if (typeof size !== "number") return size;
     const typeByte = header[156] ?? 0;
     const typeFlag = typeByte === 0 ? "\0" : String.fromCharCode(typeByte);
     const type = classifyType(typeFlag, full);
     if (!type.ok) return type;
+    if (type.kind === "directory" && !full.endsWith("/")) {
+      return failure(`Archive directory path must end with a slash: ${full}`, {
+        entryClass: "directory-suffix",
+        path: full,
+      });
+    }
+    const validatedFull = validateArchivePath(full, {
+      kind: type.kind,
+      maxUtf8Bytes: null,
+    });
+    if (!validatedFull.ok) {
+      return failure(validatedFull.message, {
+        entryClass: validatedFull.entryClass,
+        path: full,
+      });
+    }
     if (type.kind === "directory" && size !== 0) {
       return failure(`Archive directory has non-zero size: ${full}`, {
         entryClass: "directory-with-data",
@@ -484,7 +495,7 @@ export function extractNamedRootArchive(
     }
 
     const root = validatedFull.validated.components[0]!;
-    const rootKey = root.normalize("NFC").toLocaleLowerCase("en-US");
+    const rootKey = root.toLocaleLowerCase("en-US").normalize("NFC");
     if (archiveRootName === null) {
       archiveRootName = root;
       rootCollisionKey = rootKey;
@@ -513,14 +524,16 @@ export function extractNamedRootArchive(
         });
       }
     } else {
-      const relativeResult = validateArchivePath(normalizedRelative);
+      const relativeResult = validateArchivePath(normalizedRelative, { kind: type.kind });
       if (!relativeResult.ok) {
         return failure(relativeResult.message, {
           entryClass: relativeResult.entryClass,
           path: normalizedRelative,
         });
       }
-      const topologyFailure = topology.add(relativeResult.validated, type.kind);
+      const topologyFailure = type.kind === "file"
+        ? topology.addFileWithImplicitDirectories(relativeResult.validated)
+        : topology.add(relativeResult.validated, type.kind);
       if (topologyFailure !== null) {
         return failure(topologyFailure.message, {
           entryClass: topologyFailure.entryClass,

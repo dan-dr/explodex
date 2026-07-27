@@ -23,8 +23,13 @@ export {
 export {
   encodeArtifactIdentity,
   encodeIdentityComponent,
-  shortPayloadSha256,
 } from "./identity-encode.ts";
+export {
+  comparePayloadPathsByUtf8Bytes,
+  PayloadPathTopologyTracker,
+  validateNormalizedPayloadPath,
+} from "./payload-path.ts";
+export { validatePluginSourceMapV3 } from "./source-map.ts";
 export {
   buildNamedRootArchive,
   extractNamedRootArchive,

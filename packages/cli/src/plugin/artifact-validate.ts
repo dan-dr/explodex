@@ -25,10 +25,12 @@ import {
   INSTALLABLE_ROOT_FILES,
   isInstallableRelativePath,
   listInstallableFiles,
+  listPayloadTreeEntries,
   sha256Hex,
 } from "./dist-files.ts";
 import { encodeArtifactIdentity } from "./identity-encode.ts";
 import { parsePluginManifest, type PluginManifestV1 } from "./manifest.ts";
+import { validatePluginSourceMapV3 } from "./source-map.ts";
 
 export type StandaloneArtifactSuccess = {
   ok: true;
@@ -125,29 +127,29 @@ export async function validateInstallablePayloadDir(
     );
   }
 
-  // Reject non-installable unexpected files other than the private generation record.
-  const { readdir } = await import("node:fs/promises");
-  async function listAll(prefix = ""): Promise<string[]> {
-    const entries = await readdir(join(root, prefix), { withFileTypes: true });
-    const out: string[] = [];
-    for (const entry of entries) {
-      const relative = prefix.length === 0 ? entry.name : `${prefix}/${entry.name}`;
-      if (entry.isDirectory()) {
-        out.push(...(await listAll(relative)));
-      } else if (entry.isFile()) {
-        out.push(relative);
-      } else {
-        return [`__special__:${relative}`];
-      }
-    }
-    return out;
+  let treeEntries: Awaited<ReturnType<typeof listPayloadTreeEntries>>;
+  try {
+    treeEntries = await listPayloadTreeEntries(root);
+  } catch (error: unknown) {
+    return fail(
+      "plugin.artifact.invalid",
+      error instanceof Error ? error.message : "Artifact payload path is invalid.",
+    );
   }
-  const allFiles = await listAll();
-  for (const relative of allFiles) {
-    if (relative.startsWith("__special__:")) {
-      return fail("plugin.artifact.invalid", "Artifact contains a special filesystem entry.", {
-        path: relative.slice("__special__:".length),
-      });
+  for (const entry of treeEntries) {
+    const relative = entry.path;
+    if (entry.kind === "directory") {
+      if (relative !== "assets" && !relative.startsWith("assets/")) {
+        return fail("plugin.artifact.invalid", `Unexpected payload directory: ${relative}`, {
+          path: relative,
+        });
+      }
+      if (!installable.some((file) => file.startsWith(`${relative}/`))) {
+        return fail("plugin.artifact.invalid", `Artifact contains an empty payload directory: ${relative}`, {
+          path: relative,
+        });
+      }
+      continue;
     }
     if (relative === GENERATION_FILE && options?.source === "directory") continue;
     if (!isInstallableRelativePath(relative)) {
@@ -224,14 +226,9 @@ export async function validateInstallablePayloadDir(
     return fail("plugin.artifact.invalid", verified.message, { path: verified.path });
   }
 
-  // Every checksum path must be installable and present; no duplicates by construction of object keys.
+  // Every checksum path must use the shared installable vocabulary.
   const checksumPaths = Object.keys(checksums.files).sort(compareBytewise);
   for (const path of checksumPaths) {
-    if (path.includes("\0") || path.includes("\n") || path.includes("\r")) {
-      return fail("plugin.artifact.invalid", `checksums.json path contains disallowed controls: ${JSON.stringify(path)}`, {
-        path,
-      });
-    }
     if (!isInstallableRelativePath(path) || path === "checksums.json") {
       return fail("plugin.artifact.invalid", `checksums.json lists a non-installable path: ${path}`, {
         path,
@@ -281,21 +278,23 @@ export async function validateInstallablePayloadDir(
     );
   }
 
+  let encodedIdentity: ReturnType<typeof encodeArtifactIdentity>;
+  try {
+    encodedIdentity = encodeArtifactIdentity({
+      id: manifest.id,
+      version: manifest.version,
+      payloadSha256,
+    });
+  } catch (error: unknown) {
+    return fail(
+      "plugin.artifact.invalid",
+      error instanceof Error ? error.message : "Identity encoding failed",
+    );
+  }
+
   // If this came from an archive, the named root must match the encoder.
   if (options?.archiveRootName) {
-    let expectedRoot: string;
-    try {
-      expectedRoot = encodeArtifactIdentity({
-        id: manifest.id,
-        version: manifest.version,
-        payloadSha256,
-      }).archiveRootName;
-    } catch (error: unknown) {
-      return fail(
-        "plugin.artifact.invalid",
-        error instanceof Error ? error.message : "Identity encoding failed",
-      );
-    }
+    const expectedRoot = encodedIdentity.archiveRootName;
     if (options.archiveRootName !== expectedRoot) {
       return fail(
         "plugin.artifact.invalid",
@@ -327,10 +326,10 @@ export async function validateInstallablePayloadDir(
     return fail("plugin.artifact.invalid", browser.message, { browserSafety: browser });
   }
 
-  // Map must be present, package-relative, and reference index.js.
-  let mapRaw: unknown;
+  // Map must have the exact V3 package-relative TypeScript shape and identity.
+  let mapText: string;
   try {
-    mapRaw = JSON.parse(await readFile(join(root, "index.js.map"), "utf8")) as unknown;
+    mapText = await readFile(join(root, "index.js.map"), "utf8");
   } catch (error: unknown) {
     return fail(
       "plugin.artifact.invalid",
@@ -339,24 +338,12 @@ export async function validateInstallablePayloadDir(
         : "index.js.map is unreadable",
     );
   }
-  if (mapRaw === null || typeof mapRaw !== "object" || Array.isArray(mapRaw)) {
-    return fail("plugin.artifact.invalid", "index.js.map must be a JSON object.");
-  }
-  const map = mapRaw as { file?: unknown; sources?: unknown };
-  if (map.file !== "index.js") {
-    return fail("plugin.artifact.invalid", 'index.js.map file field must be "index.js".');
-  }
-  if (Array.isArray(map.sources)) {
-    for (const source of map.sources) {
-      if (typeof source !== "string") continue;
-      if (source.startsWith("/") || source.includes("\\")) {
-        return fail(
-          "plugin.artifact.invalid",
-          "index.js.map contains non-portable source paths.",
-          { source },
-        );
-      }
-    }
+  const sourceMap = validatePluginSourceMapV3({
+    mapText,
+    generatedSource: jsText,
+  });
+  if (!sourceMap.ok) {
+    return fail("plugin.artifact.invalid", sourceMap.message, sourceMap.details);
   }
 
   // Exactly one inert definition registration; no setup.
@@ -490,7 +477,10 @@ async function validateExtractedArchive(
 export function computePayloadSha256FromFiles(
   files: ReadonlyMap<string, Buffer>,
 ): string {
-  const records: ChecksumsManifest = { schemaVersion: 1, files: {} };
+  const records: ChecksumsManifest = {
+    schemaVersion: 1,
+    files: Object.create(null) as ChecksumsManifest["files"],
+  };
   for (const path of [...files.keys()].sort(compareBytewise)) {
     if (path === "checksums.json") continue;
     const bytes = files.get(path)!;
