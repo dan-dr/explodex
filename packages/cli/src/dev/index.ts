@@ -5,6 +5,8 @@ export * from "./root-selection.ts";
 export * from "./state.ts";
 export * from "./ownership.ts";
 export * from "./workflow.ts";
+export * from "./lifecycle.ts";
+export * from "./lifecycle-operation.ts";
 export * from "./status-operation.ts";
 export * from "./phase0.ts";
 export * from "./lifecycle-gate.ts";

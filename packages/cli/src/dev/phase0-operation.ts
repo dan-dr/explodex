@@ -682,6 +682,7 @@ async function collectReadiness(options: {
 
 async function browserCloseIfPossible(
   cdp: CdpAdapter,
+  timeoutMs: number,
   signal?: AbortSignal,
 ): Promise<boolean> {
   try {
@@ -710,7 +711,7 @@ async function browserCloseIfPossible(
           // ignore
         }
         reject(new Error("Browser.close connect timed out"));
-      }, 1_500);
+      }, Math.max(1, Math.min(1_500, timeoutMs)));
       const onOpen = (): void => {
         globalThis.clearTimeout(connectTimeout);
         cleanup();
@@ -739,7 +740,7 @@ async function browserCloseIfPossible(
       const timeout = globalThis.setTimeout(() => {
         socket.close();
         reject(new Error("Browser.close timed out"));
-      }, 5_000);
+      }, Math.max(1, Math.min(5_000, timeoutMs)));
       const onMessage = (event: MessageEvent): void => {
         if (typeof event.data !== "string") return;
         try {
@@ -1028,12 +1029,19 @@ export async function stopExactProcess(options: {
    * exact-PID fallback behavior.
    */
   requireCompleteEndpointOwnershipForSignal?: boolean;
+  /** Injectable Browser.close attempt for exact ordering/failure tests. */
+  browserClose?: (options: {
+    cdp: CdpAdapter;
+    timeoutMs: number;
+    signal: AbortSignal;
+  }) => Promise<boolean>;
   /** Private roots under which ChatGPT may spawn helper processes. */
   privateRoots?: readonly string[];
   /** Intentionally ignored for cleanup; cleanup always uses a fresh finite context. */
   signal?: AbortSignal;
 }): Promise<StopExactProcessResult> {
-  const cleanup = createCleanupContext(options.timeoutMs + 2_000);
+  const deadline = Date.now() + options.timeoutMs;
+  const cleanup = createCleanupContext(options.timeoutMs);
   try {
     const processAuthority = await revalidateProcessCleanupAuthority({
       commands: options.commands,
@@ -1086,7 +1094,15 @@ export async function stopExactProcess(options: {
     if (closeAuthority.ok) {
       browserCloseAttempted = true;
       try {
-        browserCloseOk = await browserCloseIfPossible(options.cdp, cleanup.signal);
+        const remaining = Math.max(0, deadline - Date.now());
+        browserCloseOk = remaining > 0
+          ? await (options.browserClose ?? (async ({ cdp, timeoutMs, signal }) =>
+              browserCloseIfPossible(cdp, timeoutMs, signal)))({
+                cdp: options.cdp,
+                timeoutMs: remaining,
+                signal: cleanup.signal,
+              })
+          : false;
       } catch {
         browserCloseOk = false;
       }
@@ -1095,7 +1111,11 @@ export async function stopExactProcess(options: {
     // Only wait on a successful Browser.close. When close is refused/failed, signal
     // immediately so the cleanup bound is not exhausted before SIGTERM.
     if (browserCloseOk) {
-      const closeWaitDeadline = Date.now() + Math.min(options.timeoutMs, 5_000);
+      const remainingForTermination = Math.max(0, deadline - Date.now());
+      const closeWaitDeadline = Math.min(
+        deadline,
+        Date.now() + Math.min(5_000, Math.floor(remainingForTermination / 2)),
+      );
       while (Date.now() < closeWaitDeadline) {
         const aliveAfterClose = await options.runtimeProcess.isAlive(
           options.pid,
@@ -1113,6 +1133,19 @@ export async function stopExactProcess(options: {
       { abortSignal: cleanup.signal },
     );
     if (stillAlive) {
+      if (Date.now() >= deadline) {
+        return {
+          stopped: false,
+          portReleased: false,
+          uncertain: true,
+          method: browserCloseOk
+            ? "browser-close-only"
+            : browserCloseAttempted
+              ? "browser-close-then-signal"
+              : "exact-signal-only",
+          reason: `Exact development PID ${options.pid} did not exit within the cleanup bound.`,
+        };
+      }
       const recheck = await revalidateProcessCleanupAuthority({
         commands: options.commands,
         runtimeProcess: options.runtimeProcess,
@@ -1146,7 +1179,7 @@ export async function stopExactProcess(options: {
           reason: "Exact SIGTERM failed after Browser.close; residual authority preserved.",
         };
       }
-      const signalDeadline = Date.now() + options.timeoutMs;
+      const signalDeadline = deadline;
       while (Date.now() < signalDeadline) {
         stillAlive = await options.runtimeProcess.isAlive(
           options.pid,

@@ -537,6 +537,77 @@ describe("read-only status and explicit recovery", () => {
     expect(runtime.heldLeaseCount()).toBe(0);
   });
 
+  test("recover resolves a failed pre-spawn record with no PID and no 9444 listener", async () => {
+    const root = "/tmp/recover-pre-spawn";
+    const failed: DevInstanceState = {
+      ...createInitialDevInstanceState({
+        layout: describeDevLayout(root),
+        appPath: HOST.bundlePath,
+        executablePath: HOST.executablePath,
+        launchMarker: "--explodex-dev-instance=plugin-dev",
+        frozenHost: HOST,
+        updatedAt: "2026-07-27T12:00:01.000Z",
+      }),
+      status: "failed",
+      appVersion: HOST.appVersion,
+      appBuild: HOST.appBuild,
+      lastError: {
+        code: "dev_launch_failed",
+        message: "spawn failed before PID assignment",
+        phase: "spawn",
+      },
+    };
+    const assessment = evaluateDevOwnership({
+      operation: "recover",
+      evidence: validEvidence({
+        requestedRoot: root,
+        state: failed,
+        paths: {
+          ok: true,
+          canonicalRoot: root,
+          failures: [],
+        },
+        process: null,
+        currentPidIdentity: null,
+        listeners: [],
+        endpoint: null,
+      }),
+    });
+    expect(assessment.recoveryEligibility).toBe("independently-dead");
+    const snapshot: DevStatusSnapshot = {
+      rootPath: root,
+      stateLoadStatus: "valid",
+      state: failed,
+      assessment,
+      readOnly: true,
+      activity: {
+        launched: false,
+        signaled: false,
+        evaluated: false,
+        wroteState: false,
+        fellBack: false,
+      },
+    };
+    const runtime = createFakeRuntimeHarness();
+    const saved: DevInstanceState[] = [];
+    let terminateCalls = 0;
+    const result = await recoverDevInstance({
+      rootPath: root,
+      runtimeAdapters: runtime.adapters,
+      readStatus: async () => snapshot,
+      saveState: async (next) => {
+        saved.push(next);
+      },
+      terminate: async () => {
+        terminateCalls += 1;
+        throw new Error("dead pre-spawn state must not terminate");
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(saved[0]?.status).toBe("stopped");
+    expect(terminateCalls).toBe(0);
+  });
+
   test("recover terminates only a fully owned live partial process", async () => {
     const root = "/tmp/recover-live";
     const failed = {
@@ -794,6 +865,7 @@ describe("strict recovery termination", () => {
     commands: ReadOnlyCommandRunner;
     cdp: CdpAdapter;
     signals: string[];
+    markExited(): void;
   } {
     let alive = true;
     const signals: string[] = [];
@@ -889,7 +961,15 @@ describe("strict recovery termination", () => {
         };
       },
     };
-    return { runtimeProcess, commands, cdp, signals };
+    return {
+      runtimeProcess,
+      commands,
+      cdp,
+      signals,
+      markExited() {
+        alive = false;
+      },
+    };
   }
 
   test("co-owned listener and target drift cause zero signal", async () => {
@@ -950,5 +1030,84 @@ describe("strict recovery termination", () => {
       method: "exact-signal-only",
     });
     expect(fixture.signals).toEqual(["SIGTERM"]);
+  });
+
+  test("attempts exact Browser.close before one revalidated graceful PID signal", async () => {
+    const fixture = terminationFixture({
+      listeners: [4242],
+      targetId: "target-1",
+      contextUniqueId: "context-1",
+    });
+    const events: string[] = [];
+    const runtimeProcess: RuntimeProcess = {
+      ...fixture.runtimeProcess,
+      async signalExact(identity, signal, options) {
+        events.push(`signal:${identity.pid}:${signal}`);
+        return fixture.runtimeProcess.signalExact(identity, signal, options);
+      },
+    };
+    const result = await stopExactProcess({
+      runtimeProcess,
+      commands: fixture.commands,
+      cdp: fixture.cdp,
+      pid: 4242,
+      processStartedAt: "4242-start",
+      executablePath:
+        "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
+      marker: "--explodex-instance=plugin-dev",
+      timeoutMs: 50,
+      pollMs: 1,
+      expectedTargetId: "target-1",
+      expectedContextUniqueId: "context-1",
+      requireCompleteEndpointOwnershipForSignal: true,
+      browserClose: async () => {
+        events.push("Browser.close");
+        return false;
+      },
+    });
+    expect(result).toMatchObject({
+      stopped: true,
+      portReleased: true,
+      uncertain: false,
+      method: "exact-signal-only",
+    });
+    expect(events).toEqual([
+      "Browser.close",
+      "signal:4242:SIGTERM",
+    ]);
+  });
+
+  test("successful exact Browser.close confirms exit without any PID signal", async () => {
+    const fixture = terminationFixture({
+      listeners: [4242],
+      targetId: "target-1",
+      contextUniqueId: "context-1",
+    });
+    const result = await stopExactProcess({
+      runtimeProcess: fixture.runtimeProcess,
+      commands: fixture.commands,
+      cdp: fixture.cdp,
+      pid: 4242,
+      processStartedAt: "4242-start",
+      executablePath:
+        "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
+      marker: "--explodex-instance=plugin-dev",
+      timeoutMs: 50,
+      pollMs: 1,
+      expectedTargetId: "target-1",
+      expectedContextUniqueId: "context-1",
+      requireCompleteEndpointOwnershipForSignal: true,
+      browserClose: async () => {
+        fixture.markExited();
+        return true;
+      },
+    });
+    expect(result).toMatchObject({
+      stopped: true,
+      portReleased: true,
+      uncertain: false,
+      method: "browser-close-only",
+    });
+    expect(fixture.signals).toEqual([]);
   });
 });

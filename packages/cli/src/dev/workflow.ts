@@ -462,6 +462,12 @@ export function evaluateDevOwnership(options: {
       alwaysUncertainForRecovery.has(failure.code)
     );
     if (
+      state.pid === null &&
+      evidence.listeners.length === 0 &&
+      !hasUncertainRecoveryFailure
+    ) {
+      recoveryEligibility = "independently-dead";
+    } else if (
       failureCodes.has("pid_dead") &&
       evidence.listeners.length === 0 &&
       !hasUncertainRecoveryFailure
@@ -715,6 +721,8 @@ export type DevTerminationResult =
         | "browser-close-only"
         | "exact-signal-only"
         | "browser-close-then-signal";
+      elapsedMs?: number;
+      boundMs?: number;
     }
   | {
       ok: false;
@@ -726,6 +734,8 @@ export type DevTerminationResult =
         | "exact-signal-only"
         | "browser-close-then-signal"
         | null;
+      elapsedMs?: number;
+      boundMs?: number;
     };
 
 export type DevRecoverSuccess = {

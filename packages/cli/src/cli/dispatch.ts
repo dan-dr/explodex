@@ -20,6 +20,7 @@ import { runPluginDisable } from "../commands/plugin-disable.ts";
 import { runPluginRemove } from "../commands/plugin-remove.ts";
 import { runDevStatus } from "../commands/dev-status.ts";
 import { runDevRecover } from "../commands/dev-recover.ts";
+import { runDevLifecycle } from "../commands/dev-lifecycle.ts";
 import type { CliIo } from "../output/write.ts";
 
 /** Operations that parse their own positional arguments. */
@@ -42,7 +43,11 @@ const IMPLEMENTED_RESERVED_OPERATIONS = new Set([
   "plugin.disable",
   "plugin.remove",
   "dev.status",
+  "dev.start",
+  "dev.ensure",
   "dev.recover",
+  "dev.restart",
+  "dev.stop",
 ]);
 
 export async function dispatch(options: {
@@ -226,6 +231,34 @@ export async function dispatch(options: {
       });
     case "dev.recover":
       return runDevRecover({
+        globals: parsed.globals,
+        env,
+        signal,
+      });
+    case "dev.start":
+      return runDevLifecycle({
+        kind: "start",
+        globals: parsed.globals,
+        env,
+        signal,
+      });
+    case "dev.ensure":
+      return runDevLifecycle({
+        kind: "ensure",
+        globals: parsed.globals,
+        env,
+        signal,
+      });
+    case "dev.restart":
+      return runDevLifecycle({
+        kind: "restart",
+        globals: parsed.globals,
+        env,
+        signal,
+      });
+    case "dev.stop":
+      return runDevLifecycle({
+        kind: "stop",
         globals: parsed.globals,
         env,
         signal,

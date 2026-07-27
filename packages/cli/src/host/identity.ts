@@ -23,6 +23,7 @@ import type {
  */
 export type InspectHostOptions = {
   adapters: HostAdapters;
+  signal?: AbortSignal;
 };
 
 type PlistFields = {
