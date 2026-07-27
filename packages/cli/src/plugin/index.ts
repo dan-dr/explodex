@@ -40,6 +40,14 @@ export {
 } from "./installer.ts";
 export { installLocalPluginArchive } from "./install.ts";
 export {
+  discoverInstalledPlugins,
+  reconcileInstalledPluginsUnlocked,
+} from "./discovery.ts";
+export {
+  DEFAULT_PLUGIN_STATE_LOCK_WAIT_MS,
+  withPluginStateLock,
+} from "./state-lock.ts";
+export {
   artifactProvenancePath,
   loadArtifactProvenance,
   parseArtifactProvenance,
@@ -87,6 +95,18 @@ export type {
   PluginInstallResult,
   PluginInstallSuccess,
 } from "./install.ts";
+export type {
+  InvalidInstalledArtifact,
+  PendingReviewArtifact,
+  PluginDiscoveryFailure,
+  PluginDiscoveryResult,
+  PluginDiscoverySuccess,
+  PluginDiscoveryTrigger,
+} from "./discovery.ts";
+export type {
+  PluginStateLockFailure,
+  PluginStateLockResult,
+} from "./state-lock.ts";
 export type { ArtifactProvenanceRecord } from "./install-provenance.ts";
 export type {
   ArtifactSource,
@@ -95,5 +115,6 @@ export type {
   PluginStateRecord,
   PluginsState,
   PluginsStateLoadResult,
+  PluginsStateWriteAdapters,
 } from "./install-state.ts";
 export type { EncodedArtifactIdentity } from "./identity-encode.ts";

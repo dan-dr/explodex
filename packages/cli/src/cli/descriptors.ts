@@ -223,7 +223,7 @@ export const GROUPS: readonly GroupDescriptor[] = [
         options: [
           {
             long: "target",
-            description: "Review target role (immutable local installation supports none only).",
+            description: "Review target role; unavailable targets leave the install disabled and pending.",
             valueName: "role",
           },
         ],
@@ -232,13 +232,23 @@ export const GROUPS: readonly GroupDescriptor[] = [
         path: ["status"],
         operation: "plugin.status",
         summary: "Show installed, pending, and enabled plugin state.",
-        availability: "reserved",
+        availability: "available",
+        arguments: [
+          { name: "id", description: "Optional exact plugin ID.", required: false },
+        ],
       },
       {
         path: ["refresh"],
         operation: "plugin.refresh",
         summary: "Discover installed plugins and present pending review when required.",
-        availability: "reserved",
+        availability: "available",
+        options: [
+          {
+            long: "target",
+            description: "Review target role; unavailable targets never force a renderer.",
+            valueName: "role",
+          },
+        ],
       },
       {
         path: ["review"],
@@ -250,7 +260,7 @@ export const GROUPS: readonly GroupDescriptor[] = [
         path: ["update", "check"],
         operation: "plugin.update.check",
         summary: "Check for available plugin updates without applying them.",
-        availability: "reserved",
+        availability: "available",
       },
       {
         path: ["update", "apply"],

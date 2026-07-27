@@ -112,7 +112,7 @@ describe("schemaVersion-1 JSON envelope", () => {
   });
 
   test("reserved commands return usage.command-unavailable without side effects", async () => {
-    const captured = await captureCli(["--json", "plugin", "status"]);
+    const captured = await captureCli(["--json", "plugin", "disable"]);
     expect(captured.exitCode).toBe(3);
     const parsed = assertSingleJsonValue(captured.stdout) as {
       ok: boolean;
@@ -120,7 +120,7 @@ describe("schemaVersion-1 JSON envelope", () => {
       error: { code: string };
     };
     expect(parsed.ok).toBe(false);
-    expect(parsed.operation).toBe("plugin.status");
+    expect(parsed.operation).toBe("plugin.disable");
     expect(parsed.error.code).toBe("usage.command-unavailable");
   });
 

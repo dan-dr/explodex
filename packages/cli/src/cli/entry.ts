@@ -8,6 +8,12 @@ import { createProcessIo, writeCliResult } from "../output/write.ts";
 import { EXIT_FAILURE, EXIT_INTERRUPTED } from "./exit-codes.ts";
 import { renderFailure } from "./errors.ts";
 
+const SIGNAL_AWARE_OPERATIONS = new Set([
+  "plugin.install",
+  "plugin.refresh",
+  "plugin.update.check",
+]);
+
 export type RunCliOptions = {
   argv?: readonly string[];
   env?: NodeJS.ProcessEnv;
@@ -29,9 +35,11 @@ export async function runCli(options: RunCliOptions = {}): Promise<RenderedCliRe
   let json = argvIncludesJson(argv);
   let initialized = false;
   let interrupted = false;
+  const operationAbort = new AbortController();
 
   const onInterrupt = (): void => {
     interrupted = true;
+    operationAbort.abort();
   };
   process.once("SIGINT", onInterrupt);
   process.once("SIGTERM", onInterrupt);
@@ -55,8 +63,17 @@ export async function runCli(options: RunCliOptions = {}): Promise<RenderedCliRe
       return rendered;
     }
 
-    const rendered = await dispatch({ parsed, env });
-    if (interrupted) {
+    const rendered = await dispatch({
+      parsed,
+      env,
+      signal: operationAbort.signal,
+    });
+    if (
+      interrupted &&
+      !SIGNAL_AWARE_OPERATIONS.has(
+        parsed.resolved?.command.operation ?? "",
+      )
+    ) {
       const interruptedRendered = interruptedResult(
         parsed.resolved?.command.operation ?? "cli.parse",
       );

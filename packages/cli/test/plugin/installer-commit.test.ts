@@ -3,6 +3,7 @@ import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs
 import { basename, join } from "node:path";
 import { buildPluginWorkspace } from "../../src/plugin/build.ts";
 import { packagePluginWorkspace } from "../../src/plugin/package.ts";
+import { discoverInstalledPlugins } from "../../src/plugin/discovery.ts";
 import {
   installLocalPluginArchive,
   type PluginInstallAdapters,
@@ -265,7 +266,7 @@ describe("M3-F02 immutable local installation", () => {
     }
   }, 180_000);
 
-  test("provenance failure after artifact rename leaves a complete rediscoverable artifact", async () => {
+  test("provenance failure occurs before immutable artifact publication", async () => {
     const { fixture, packaged } = await packagedFixture(
       "explodex-plugin-install-provenance-fault",
       "PROVENANCE_FAULT_SENTINEL",
@@ -284,8 +285,8 @@ describe("M3-F02 immutable local installation", () => {
       expect(failed.ok).toBe(false);
       if (failed.ok) throw new Error("expected provenance failure");
       expect(failed.code).toBe("plugin.install.provenance-failed");
-      expect(failed.artifactCommitted).toBe(true);
-      expect(await artifactDirectories(home, packaged.report.id)).toHaveLength(1);
+      expect(failed.artifactCommitted).toBe(false);
+      expect(await artifactDirectories(home, packaged.report.id)).toHaveLength(0);
       await expect(readFile(join(home, "state", "plugins.json"))).rejects.toThrow();
 
       const recovered = await installLocalPluginArchive({
@@ -294,7 +295,7 @@ describe("M3-F02 immutable local installation", () => {
       });
       expect(recovered.ok).toBe(true);
       if (!recovered.ok) throw new Error(recovered.message);
-      expect(recovered.outcome).toBe("rediscovered");
+      expect(recovered.outcome).toBe("installed");
       expect(recovered.enabled).toBe(false);
       expect(recovered.pendingReview).toBe(true);
     } finally {
@@ -302,7 +303,7 @@ describe("M3-F02 immutable local installation", () => {
     }
   }, 180_000);
 
-  test("post-rename state failure leaves a complete orphan that the next install rediscovers disabled", async () => {
+  test("post-rename state failure leaves a complete orphan that refresh rediscovers disabled", async () => {
     const { fixture, packaged } = await packagedFixture(
       "explodex-plugin-install-orphan",
       "ORPHAN_SENTINEL",
@@ -326,27 +327,127 @@ describe("M3-F02 immutable local installation", () => {
       expect(await artifactDirectories(home, packaged.report.id)).toHaveLength(1);
       await expect(readFile(join(home, "state", "plugins.json"))).rejects.toThrow();
 
-      const recovered = await installLocalPluginArchive({
-        archivePath: packaged.outputPath,
+      const recovered = await discoverInstalledPlugins({
         explodexHome: home,
+        trigger: "refresh",
         now: () => "2026-07-27T01:00:00.000Z",
       });
       expect(recovered.ok).toBe(true);
       if (!recovered.ok) throw new Error(recovered.message);
-      expect(recovered.outcome).toBe("rediscovered");
-      expect(recovered.enabled).toBe(false);
-      expect(recovered.pendingReview).toBe(true);
-      expect(await artifactDirectories(home, recovered.id)).toHaveLength(1);
+      expect(recovered.recovery).toBe("missing");
+      expect(recovered.newlyRecorded).toEqual([
+        {
+          id: packaged.report.id,
+          version: packaged.report.version,
+          payloadSha256: packaged.payloadSha256,
+        },
+      ]);
+      expect(await artifactDirectories(home, packaged.report.id)).toHaveLength(1);
 
       const state = await loadPluginsState({ explodexHome: home });
       expect(state.status).toBe("valid");
       if (state.status !== "valid") throw new Error("expected valid state");
-      expect(state.state.plugins[recovered.id]?.enabled).toBeNull();
-      expect(state.state.plugins[recovered.id]?.pendingReview).toEqual([
-        { version: recovered.version, payloadSha256: recovered.payloadSha256 },
+      expect(state.state.plugins[packaged.report.id]?.enabled).toBeNull();
+      expect(state.state.plugins[packaged.report.id]?.pendingReview).toEqual([
+        { version: packaged.report.version, payloadSha256: packaged.payloadSha256 },
       ]);
     } finally {
       await fixture.cleanup();
     }
   }, 180_000);
+
+  test("same-home installs serialize under the bounded plugins-state advisory lease", async () => {
+    const first = await packagedFixture(
+      "explodex-plugin-install-lock-first",
+      "LOCK_FIRST",
+    );
+    const second = await packagedFixture(
+      "explodex-plugin-install-lock-second",
+      "LOCK_SECOND",
+    );
+    try {
+      const home = join(first.fixture.root, "home");
+      let releaseFirst = (): void => {};
+      const firstAtState = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      let unblockFirst = (): void => {};
+      const firstMayFinish = new Promise<void>((resolve) => {
+        unblockFirst = resolve;
+      });
+
+      const firstInstall = installLocalPluginArchive({
+        archivePath: first.packaged.outputPath,
+        explodexHome: home,
+        lockWaitMs: 250,
+        adapters: {
+          async beforeStateMutation() {
+            releaseFirst();
+            await firstMayFinish;
+          },
+        },
+      });
+      await firstAtState;
+
+      const contended = await installLocalPluginArchive({
+        archivePath: second.packaged.outputPath,
+        explodexHome: home,
+        lockWaitMs: 25,
+      });
+      expect(contended.ok).toBe(false);
+      if (contended.ok) throw new Error("expected lock contention");
+      expect(contended.code).toBe("plugin.state.busy");
+      expect(contended.artifactCommitted).toBe(false);
+
+      const abort = new AbortController();
+      const interruptedInstall = installLocalPluginArchive({
+        archivePath: second.packaged.outputPath,
+        explodexHome: home,
+        lockWaitMs: 1_000,
+        signal: abort.signal,
+      });
+      setTimeout(() => abort.abort(), 25);
+      const interrupted = await interruptedInstall;
+      expect(interrupted.ok).toBe(false);
+      if (interrupted.ok) throw new Error("expected interruption");
+      expect(interrupted.code).toBe("operation.interrupted");
+      expect(interrupted.artifactCommitted).toBe(false);
+
+      unblockFirst();
+      const completed = await firstInstall;
+      expect(completed.ok).toBe(true);
+      if (!completed.ok) throw new Error(completed.message);
+
+      const retry = await installLocalPluginArchive({
+        archivePath: second.packaged.outputPath,
+        explodexHome: home,
+        lockWaitMs: 250,
+      });
+      expect(retry.ok).toBe(true);
+      if (!retry.ok) throw new Error(retry.message);
+
+      const state = await loadPluginsState({ explodexHome: home });
+      expect(state.status).toBe("valid");
+      if (state.status !== "valid") throw new Error("expected valid state");
+      expect(Object.keys(state.state.plugins).sort()).toEqual([
+        completed.id,
+        retry.id,
+      ].sort());
+      expect(state.state.plugins[completed.id]?.pendingReview).toEqual([
+        {
+          version: completed.version,
+          payloadSha256: completed.payloadSha256,
+        },
+      ]);
+      expect(state.state.plugins[retry.id]?.pendingReview).toEqual([
+        {
+          version: retry.version,
+          payloadSha256: retry.payloadSha256,
+        },
+      ]);
+    } finally {
+      await first.fixture.cleanup();
+      await second.fixture.cleanup();
+    }
+  }, 300_000);
 });

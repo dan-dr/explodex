@@ -44,6 +44,7 @@ export async function runPluginInstall(options: {
   env: NodeJS.ProcessEnv;
   rest: readonly string[];
   endOfOptions: readonly string[];
+  signal?: AbortSignal;
 }): Promise<RenderedCliResult> {
   const parsed = takeTarget([...options.rest, ...options.endOfOptions]);
   if (parsed.missing) {
@@ -67,19 +68,6 @@ export async function runPluginInstall(options: {
       details: { option: "--target", value: target },
     });
   }
-  if (target !== "none") {
-    return renderFailure({
-      operation: OPERATION,
-      code: "plugin.install.target-unavailable",
-      message: "Local installation is disabled and pending review; renderer review targets are introduced by later plugin-activation features.",
-      details: { target },
-      exitCode: 1,
-      humanStderr:
-        "Archive validation completed only with --target none in this release.\n" +
-        "error.code: plugin.install.target-unavailable\n",
-    });
-  }
-
   const unexpected = parsed.rest.filter((token) => token.startsWith("-"));
   if (unexpected.length > 0) {
     return usageFailure({
@@ -121,6 +109,7 @@ export async function runPluginInstall(options: {
   const result = await installLocalPluginArchive({
     archivePath,
     explodexHome,
+    signal: options.signal,
   });
   if (!result.ok) {
     return renderFailure({
@@ -130,6 +119,12 @@ export async function runPluginInstall(options: {
       details: {
         ...result.details,
         artifactCommitted: result.artifactCommitted,
+        ...(result.stateCommitted === undefined
+          ? {}
+          : { stateCommitted: result.stateCommitted }),
+        ...(result.completedMutation === undefined
+          ? {}
+          : { completedMutation: result.completedMutation }),
         ...(result.artifactPath === undefined ? {} : { artifactPath: result.artifactPath }),
       },
       exitCode: exitCodeForError(result.code),
@@ -157,9 +152,25 @@ export async function runPluginInstall(options: {
     activationChanged: result.activationChanged,
     enabled: result.enabled,
     pendingReview: result.pendingReview,
-    target: "none" as const,
+    target,
     transportTrust: "computed-local-archive-not-publisher-authenticated" as const,
   };
+  if (result.pendingReview && target !== "none") {
+    return renderFailure({
+      operation: OPERATION,
+      code: "plugin.review.unavailable",
+      message:
+        "The plugin is installed, disabled, pending review, and source-absent because renderer review is unavailable.",
+      details: payload,
+      exitCode: 3,
+      humanStderr: [
+        "Plugin installation completed disabled and pending review.",
+        "Renderer review is unavailable; no plugin source was delivered.",
+        "error.code: plugin.review.unavailable",
+        "",
+      ].join("\n"),
+    });
+  }
   const human = [
     `${result.outcome === "already-installed" ? "Already installed" : result.outcome === "rediscovered" ? "Rediscovered" : "Installed"} plugin: ${result.id}@${result.version}`,
     `  payloadSha256: ${result.payloadSha256}`,

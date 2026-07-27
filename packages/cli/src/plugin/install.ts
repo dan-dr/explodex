@@ -2,7 +2,10 @@ import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { chmod, mkdir, open, rename, rm, stat } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
+import type { RuntimeAdapters } from "../runtime/adapters.ts";
+import type { ResidualLockAuthority } from "../runtime/locks.ts";
 import { validateInstallablePayloadDir } from "./artifact-validate.ts";
+import { reconcileInstalledPluginsUnlocked } from "./discovery.ts";
 import { encodeArtifactIdentity } from "./identity-encode.ts";
 import { ingestLocalPluginArchive, type PluginIngestionAdapters } from "./installer.ts";
 import {
@@ -10,19 +13,18 @@ import {
   saveArtifactProvenanceOnce,
 } from "./install-provenance.ts";
 import {
-  createEmptyPluginsState,
   loadPluginsState,
   safeLocalArtifactSource,
-  savePluginsStateAtomic,
   sourceLabel,
   type ArtifactSource,
-  type InstalledArtifact,
   type PluginsState,
 } from "./install-state.ts";
+import { withPluginStateLock } from "./state-lock.ts";
 
 export type PluginInstallAdapters = PluginIngestionAdapters & {
   writeState?(options: { explodexHome: string; state: PluginsState }): Promise<void>;
   saveProvenance?(options: Parameters<typeof saveArtifactProvenanceOnce>[0]): Promise<void>;
+  runtimeAdapters?: RuntimeAdapters;
 };
 
 export type PluginInstallOutcome = "installed" | "already-installed" | "rediscovered";
@@ -57,7 +59,17 @@ export type PluginInstallFailure = {
   message: string;
   details?: Record<string, unknown>;
   artifactCommitted: boolean;
+  stateCommitted?: boolean;
   artifactPath?: string;
+  residualLockAuthority?: ResidualLockAuthority;
+  completedMutation?: {
+    id?: string;
+    version?: string;
+    payloadSha256?: string;
+    outcome?: PluginInstallOutcome;
+    artifactCommitted: boolean;
+    stateCommitted: boolean;
+  };
 };
 
 export type PluginInstallResult = PluginInstallSuccess | PluginInstallFailure;
@@ -68,7 +80,10 @@ function failure(
   options: {
     details?: Record<string, unknown>;
     artifactCommitted?: boolean;
+    stateCommitted?: boolean;
     artifactPath?: string;
+    residualLockAuthority?: ResidualLockAuthority;
+    completedMutation?: PluginInstallFailure["completedMutation"];
   } = {},
 ): PluginInstallFailure {
   return {
@@ -77,8 +92,28 @@ function failure(
     message,
     ...(options.details === undefined ? {} : { details: options.details }),
     artifactCommitted: options.artifactCommitted ?? false,
+    ...(options.stateCommitted === undefined
+      ? {}
+      : { stateCommitted: options.stateCommitted }),
     ...(options.artifactPath === undefined ? {} : { artifactPath: options.artifactPath }),
+    ...(options.residualLockAuthority === undefined
+      ? {}
+      : { residualLockAuthority: options.residualLockAuthority }),
+    ...(options.completedMutation === undefined
+      ? {}
+      : { completedMutation: options.completedMutation }),
   };
+}
+
+function interruptedFailure(options: {
+  artifactCommitted?: boolean;
+  artifactPath?: string;
+} = {}): PluginInstallFailure {
+  return failure(
+    "operation.interrupted",
+    "Plugin installation was interrupted before the next mutation boundary.",
+    options,
+  );
 }
 
 function identityEquals(
@@ -86,10 +121,6 @@ function identityEquals(
   right: { version: string; payloadSha256: string },
 ): boolean {
   return left.version === right.version && left.payloadSha256 === right.payloadSha256;
-}
-
-function cloneState(state: PluginsState): PluginsState {
-  return structuredClone(state);
 }
 
 function errorCode(error: unknown): string | null {
@@ -143,39 +174,7 @@ async function syncTree(root: string, files: readonly string[]): Promise<void> {
   }
 }
 
-function mergeInstalledState(options: {
-  prior: PluginsState;
-  id: string;
-  artifact: InstalledArtifact;
-  now: string;
-}): PluginsState {
-  const next = cloneState(options.prior);
-  const record = next.plugins[options.id] ?? {
-    installed: [],
-    enabled: null,
-    pendingReview: [],
-  };
-  if (!record.installed.some((item) => identityEquals(item, options.artifact))) {
-    record.installed.push(options.artifact);
-  }
-  const identity = {
-    version: options.artifact.version,
-    payloadSha256: options.artifact.payloadSha256,
-  };
-  if (!record.pendingReview.some((item) => identityEquals(item, identity)) &&
-    !identityEquals(record.enabled ?? { version: "", payloadSha256: "" }, identity)) {
-    record.pendingReview.push(identity);
-  }
-  record.installed.sort((left, right) => left.version < right.version ? -1 :
-    left.version > right.version ? 1 : left.payloadSha256.localeCompare(right.payloadSha256));
-  record.pendingReview.sort((left, right) => left.version < right.version ? -1 :
-    left.version > right.version ? 1 : left.payloadSha256.localeCompare(right.payloadSha256));
-  next.plugins[options.id] = record;
-  next.updatedAt = options.now;
-  return next;
-}
-
-export async function installLocalPluginArchive(options: {
+async function installLocalPluginArchiveLocked(options: {
   archivePath: string;
   explodexHome: string;
   signal?: AbortSignal;
@@ -193,6 +192,7 @@ export async function installLocalPluginArchive(options: {
   if (!ingested.ok) {
     return failure(ingested.code, ingested.message, { details: ingested.details });
   }
+  if (options.signal?.aborted) return interruptedFailure();
 
   const encoded = encodeArtifactIdentity({
     id: ingested.id,
@@ -206,6 +206,7 @@ export async function installLocalPluginArchive(options: {
   let artifactCommitted = false;
   let publishedNow = false;
   try {
+    if (options.signal?.aborted) return interruptedFailure();
     await mkdir(pluginRoot, { recursive: true, mode: 0o700 });
     await chmod(pluginRoot, 0o700);
     perIdStaging = join(pluginRoot, `.install-${process.pid}-${randomBytes(8).toString("hex")}`);
@@ -218,8 +219,67 @@ export async function installLocalPluginArchive(options: {
         artifactPath: finalPath,
       });
     }
+    if (destinationKind === "directory") {
+      const existing = await validateInstallablePayloadDir(finalPath, {
+        source: "directory",
+        expectedIdentity: {
+          id: ingested.id,
+          version: ingested.version,
+          payloadSha256: ingested.payloadSha256,
+        },
+      });
+      if (!existing.ok) {
+        return failure("plugin.install.identity-conflict", "Existing immutable plugin destination does not match the exact payload identity.", {
+          details: { validationCode: existing.code },
+          artifactPath: finalPath,
+        });
+      }
+    }
+
+    const loaded = await loadPluginsState({ explodexHome: home });
+    const now = options.now?.() ?? new Date().toISOString();
+    const existingRecord = loaded.status === "valid"
+      ? loaded.state.plugins[ingested.id]
+      : undefined;
+    const existingArtifact = existingRecord?.installed.find((item) => identityEquals(item, ingested));
+    const persistedProvenance = await loadArtifactProvenance({
+      explodexHome: home,
+      id: ingested.id,
+      installedDirectoryName: encoded.installedDirectoryName,
+    });
+    const source = existingArtifact?.source ?? persistedProvenance?.source ??
+      safeLocalArtifactSource(options.archivePath);
+    const provenanceArchiveSha256 = existingArtifact?.archiveSha256 ??
+      persistedProvenance?.archiveSha256 ?? ingested.archiveSha256;
+    const installedAt = existingArtifact?.installedAt ?? persistedProvenance?.installedAt ?? now;
+    if (persistedProvenance === null) {
+      if (options.signal?.aborted) return interruptedFailure();
+      try {
+        await (options.adapters?.saveProvenance ?? saveArtifactProvenanceOnce)({
+          explodexHome: home,
+          record: {
+            schemaVersion: 1,
+            id: ingested.id,
+            version: ingested.version,
+            payloadSha256: ingested.payloadSha256,
+            archiveSha256: provenanceArchiveSha256,
+            installedDirectoryName: encoded.installedDirectoryName,
+            source,
+            installedAt,
+          },
+        });
+      } catch (error: unknown) {
+        return failure("plugin.install.provenance-failed", error instanceof Error ? error.message : "Artifact provenance commit failed.", {
+          artifactCommitted,
+          artifactPath: finalPath,
+        });
+      }
+    }
+
     if (destinationKind === "missing") {
+      if (options.signal?.aborted) return interruptedFailure();
       await options.adapters?.beforeCommit?.();
+      if (options.signal?.aborted) return interruptedFailure();
       try {
         await rename(perIdStaging, finalPath);
         perIdStaging = null;
@@ -251,89 +311,26 @@ export async function installLocalPluginArchive(options: {
     }
     artifactCommitted = true;
 
-    const loaded = await loadPluginsState({ explodexHome: home });
-    if (loaded.status === "malformed") {
-      return failure("plugin.state.invalid", "Existing plugins.json is malformed or unsupported; refusing to import consent or overwrite state.", {
+    const alreadyRecorded = existingArtifact !== undefined;
+    if (options.signal?.aborted) {
+      return interruptedFailure({ artifactCommitted, artifactPath: finalPath });
+    }
+    const discovery = await reconcileInstalledPluginsUnlocked({
+      explodexHome: home,
+      trigger: "install",
+      now: () => now,
+      signal: options.signal,
+      beforeStateMutation: options.adapters?.beforeStateMutation,
+      writeState: options.adapters?.writeState,
+    });
+    if (!discovery.ok) {
+      return failure(discovery.code, discovery.message, {
+        details: discovery.details,
         artifactCommitted,
         artifactPath: finalPath,
       });
     }
-    const now = options.now?.() ?? new Date().toISOString();
-    const prior = loaded.status === "valid" ? loaded.state : createEmptyPluginsState(now);
-    const existingRecord = prior.plugins[ingested.id];
-    const existingArtifact = existingRecord?.installed.find((item) => identityEquals(item, ingested));
-    const persistedProvenance = await loadArtifactProvenance({
-      explodexHome: home,
-      id: ingested.id,
-      installedDirectoryName: encoded.installedDirectoryName,
-    });
-    const source = existingArtifact?.source ?? persistedProvenance?.source ??
-      safeLocalArtifactSource(options.archivePath);
-    const provenanceArchiveSha256 = existingArtifact?.archiveSha256 ??
-      persistedProvenance?.archiveSha256 ?? ingested.archiveSha256;
-    const installedAt = existingArtifact?.installedAt ?? persistedProvenance?.installedAt ?? now;
-    if (persistedProvenance === null) {
-      try {
-        await (options.adapters?.saveProvenance ?? saveArtifactProvenanceOnce)({
-          explodexHome: home,
-          record: {
-            schemaVersion: 1,
-            id: ingested.id,
-            version: ingested.version,
-            payloadSha256: ingested.payloadSha256,
-            archiveSha256: provenanceArchiveSha256,
-            installedDirectoryName: encoded.installedDirectoryName,
-            source,
-            installedAt,
-          },
-        });
-      } catch (error: unknown) {
-        return failure("plugin.install.provenance-failed", error instanceof Error ? error.message : "Artifact provenance commit failed.", {
-          artifactCommitted,
-          artifactPath: finalPath,
-        });
-      }
-    }
-    const alreadyRecorded = existingArtifact !== undefined;
-    if (!alreadyRecorded) {
-      const installedArtifact: InstalledArtifact = {
-        version: ingested.version,
-        payloadSha256: ingested.payloadSha256,
-        archiveSha256: provenanceArchiveSha256,
-        relativePath,
-        source,
-        installedAt,
-      };
-      const next = mergeInstalledState({ prior, id: ingested.id, artifact: installedArtifact, now });
-      try {
-        await options.adapters?.beforeStateMutation?.();
-        await (options.adapters?.writeState ?? savePluginsStateAtomic)({
-          explodexHome: home,
-          state: next,
-        });
-      } catch (error: unknown) {
-        return failure("plugin.state.write-failed", error instanceof Error ? error.message : "Plugin state commit failed.", {
-          artifactCommitted,
-          artifactPath: finalPath,
-        });
-      }
-    }
-
-    const effectiveRecord = alreadyRecorded
-      ? existingRecord
-      : mergeInstalledState({
-          prior,
-          id: ingested.id,
-          artifact: {
-            version: ingested.version,
-            payloadSha256: ingested.payloadSha256,
-            archiveSha256: provenanceArchiveSha256,
-            relativePath,
-            source,
-            installedAt,
-          },
-          now,
-        }).plugins[ingested.id];
+    const effectiveRecord = discovery.state.plugins[ingested.id];
     const enabled = effectiveRecord?.enabled !== null && effectiveRecord?.enabled !== undefined &&
       identityEquals(effectiveRecord.enabled, ingested);
     const pendingReview = effectiveRecord?.pendingReview.some((item) => identityEquals(item, ingested)) ?? false;
@@ -356,7 +353,7 @@ export async function installLocalPluginArchive(options: {
       sourceLabel: sourceLabel(source),
       outcome: alreadyRecorded ? "already-installed" : publishedNow ? "installed" : "rediscovered",
       artifactCommitted,
-      stateCommitted: !alreadyRecorded,
+      stateCommitted: discovery.stateChanged,
       activationChanged: false,
       enabled,
       pendingReview,
@@ -372,4 +369,56 @@ export async function installLocalPluginArchive(options: {
     }
     await ingested.cleanup().catch(() => undefined);
   }
+}
+
+export async function installLocalPluginArchive(options: {
+  archivePath: string;
+  explodexHome: string;
+  signal?: AbortSignal;
+  adapters?: PluginInstallAdapters;
+  now?: () => string;
+  lockWaitMs?: number;
+  operationId?: string;
+}): Promise<PluginInstallResult> {
+  const home = resolve(options.explodexHome);
+  const locked = await withPluginStateLock({
+    explodexHome: home,
+    operation: "plugin.install",
+    signal: options.signal,
+    waitBoundMs: options.lockWaitMs,
+    runtimeAdapters: options.adapters?.runtimeAdapters,
+    operationId: options.operationId,
+    work: () => installLocalPluginArchiveLocked({
+      ...options,
+      explodexHome: home,
+    }),
+  });
+  if (!locked.ok) {
+    const completed = locked.completedValue;
+    const completedMutation = completed === undefined
+      ? undefined
+      : {
+          ...(completed.ok
+            ? {
+                id: completed.id,
+                version: completed.version,
+                payloadSha256: completed.payloadSha256,
+                outcome: completed.outcome,
+              }
+            : {}),
+          artifactCommitted: completed.artifactCommitted,
+          stateCommitted: completed.ok
+            ? completed.stateCommitted
+            : completed.stateCommitted ?? false,
+        };
+    return failure(locked.code, locked.message, {
+      details: locked.details,
+      artifactCommitted: completedMutation?.artifactCommitted,
+      stateCommitted: completedMutation?.stateCommitted,
+      ...(completed?.ok === true ? { artifactPath: completed.artifactPath } : {}),
+      residualLockAuthority: locked.residual,
+      completedMutation,
+    });
+  }
+  return locked.value;
 }

@@ -12,6 +12,9 @@ import { runPluginBuild } from "../commands/plugin-build.ts";
 import { runPluginPackage } from "../commands/plugin-package.ts";
 import { runPluginArtifactValidate } from "../commands/plugin-artifact-validate.ts";
 import { runPluginInstall } from "../commands/plugin-install.ts";
+import { runPluginRefresh } from "../commands/plugin-refresh.ts";
+import { runPluginStatus } from "../commands/plugin-status.ts";
+import { runPluginUpdateCheck } from "../commands/plugin-update-check.ts";
 
 /** Operations that parse their own positional arguments. */
 const ACCEPTS_POSITIONALS = new Set([
@@ -21,13 +24,17 @@ const ACCEPTS_POSITIONALS = new Set([
   "plugin.package",
   "plugin.artifact.validate",
   "plugin.install",
+  "plugin.status",
+  "plugin.refresh",
+  "plugin.update.check",
 ]);
 
 export async function dispatch(options: {
   parsed: ParseSuccess;
   env: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
 }): Promise<RenderedCliResult> {
-  const { parsed, env } = options;
+  const { parsed, env, signal } = options;
 
   // --help > --version > command execution
   if (parsed.globals.help) {
@@ -139,6 +146,30 @@ export async function dispatch(options: {
         env,
         rest,
         endOfOptions,
+        signal,
+      });
+    case "plugin.status":
+      return runPluginStatus({
+        globals: parsed.globals,
+        env,
+        rest,
+        endOfOptions,
+      });
+    case "plugin.refresh":
+      return runPluginRefresh({
+        globals: parsed.globals,
+        env,
+        rest,
+        endOfOptions,
+        signal,
+      });
+    case "plugin.update.check":
+      return runPluginUpdateCheck({
+        globals: parsed.globals,
+        env,
+        rest,
+        endOfOptions,
+        signal,
       });
     default:
       return renderFailure({

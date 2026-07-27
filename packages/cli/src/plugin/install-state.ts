@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
-import { chmod, mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { pluginsStatePath } from "../home/paths.ts";
 
@@ -46,6 +46,14 @@ export type PluginsStateLoadResult =
   | { status: "missing" }
   | { status: "malformed" }
   | { status: "valid"; state: PluginsState };
+
+export type PluginsStateWriteAdapters = {
+  beforeSerialize?(): void | Promise<void>;
+  beforeTempWrite?(): void | Promise<void>;
+  beforeTempSync?(): void | Promise<void>;
+  beforeRename?(): void | Promise<void>;
+  beforeDirectorySync?(): void | Promise<void>;
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -203,6 +211,12 @@ export async function loadPluginsState(options: {
   const path = pluginsStatePath(options.explodexHome);
   let text: string;
   try {
+    const stateStat = await lstat(path);
+    if (!stateStat.isFile() || stateStat.isSymbolicLink() ||
+      (stateStat.mode & 0o777) !== PRIVATE_FILE_MODE ||
+      (typeof process.getuid === "function" && stateStat.uid !== process.getuid())) {
+      return { status: "malformed" };
+    }
     text = await readFile(path, "utf8");
   } catch (error: unknown) {
     if (errorCode(error) === "ENOENT") return { status: "missing" };
@@ -221,14 +235,25 @@ export async function loadPluginsState(options: {
 export async function savePluginsStateAtomic(options: {
   explodexHome: string;
   state: PluginsState;
+  adapters?: PluginsStateWriteAdapters;
 }): Promise<void> {
   const parsed = parsePluginsState(options.state);
   if (parsed === null) throw new Error("Refusing to persist malformed plugin state.");
+  await options.adapters?.beforeSerialize?.();
   const finalPath = pluginsStatePath(options.explodexHome);
   const parent = dirname(finalPath);
   const tempPath = join(parent, `.plugins-${process.pid}-${randomBytes(8).toString("hex")}.tmp`);
   await mkdir(parent, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
+  const initialParentStat = await lstat(parent);
+  if (!initialParentStat.isDirectory() || initialParentStat.isSymbolicLink() ||
+    (typeof process.getuid === "function" && initialParentStat.uid !== process.getuid())) {
+    throw new Error("Plugin state directory must be a private directory owned by the current user.");
+  }
   await chmod(parent, PRIVATE_DIRECTORY_MODE);
+  const parentStat = await lstat(parent);
+  if ((parentStat.mode & 0o777) !== PRIVATE_DIRECTORY_MODE) {
+    throw new Error("Plugin state directory must have mode 0700.");
+  }
   let handle = null as Awaited<ReturnType<typeof open>> | null;
   try {
     handle = await open(
@@ -236,12 +261,16 @@ export async function savePluginsStateAtomic(options: {
       constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
       PRIVATE_FILE_MODE,
     );
+    await options.adapters?.beforeTempWrite?.();
     await handle.writeFile(`${JSON.stringify(parsed, null, 2)}\n`, "utf8");
+    await options.adapters?.beforeTempSync?.();
     await handle.sync();
     await handle.close();
     handle = null;
+    await options.adapters?.beforeRename?.();
     await rename(tempPath, finalPath);
     await chmod(finalPath, PRIVATE_FILE_MODE);
+    await options.adapters?.beforeDirectorySync?.();
     await syncDirectory(parent);
     const finalStat = await stat(finalPath);
     if (!finalStat.isFile() || (finalStat.mode & 0o777) !== PRIVATE_FILE_MODE) {
