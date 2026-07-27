@@ -18,6 +18,16 @@ There is no daemon or supervisor. Surviving a Codex self-update restart is a low
 
 See [installation.md](./installation.md) for the full state table and recovery commands.
 
+Plugin-plus-SDK work uses only the explicit foreground
+`explodex plugin develop . --sdk-source <canonical-sdk-workspace>` path. SDK
+generation completes before its dependent plugin generation, local SDK
+authority remains target-scoped to the exact owned development renderer, and
+one classified post-evaluation contamination failure may restart only that
+owned instance once. Local-SDK output cannot be packaged, recommended, or
+transferred to main. Rebuild without the override and revalidate changed
+publishable bytes on development before graduation. See
+[development.md](./development.md#plugin-development).
+
 ## Source development
 
 ```sh

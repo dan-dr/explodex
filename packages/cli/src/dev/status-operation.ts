@@ -23,6 +23,7 @@ import {
   type VerifiedProcess,
 } from "../host/status.ts";
 import type { HostIdentity } from "../host/types.ts";
+import type { SdkRuntimeIdentity } from "../host/types.ts";
 import type { ProcessIdentity, RuntimeAdapters } from "../runtime/adapters.ts";
 import { DEV_CDP_PORT } from "./constants.ts";
 import {
@@ -63,6 +64,7 @@ export type DevStatusOperationOptions = {
   hostAdapters?: HostAdapters;
   statusAdapters?: HostStatusAdapters;
   cdp?: CdpAdapter;
+  sdkRuntime?: SdkRuntimeIdentity;
 };
 
 function normalized(path: string): string {
@@ -287,17 +289,19 @@ async function compatibilityEvidence(options: {
   explodexHome: string;
   host: HostIdentity | null;
   process: (ProcessObservation & ProcessIdentity) | null;
+  sdkRuntime?: SdkRuntimeIdentity;
 }): Promise<DevCompatibilityEvidence> {
   if (options.host === null) {
     return { status: "unproven", matched: false, reason: "host_invalid" };
   }
-  const [persisted, sdkRuntime] = await Promise.all([
+  const [persisted, resolvedSdkRuntime] = await Promise.all([
     loadCompatibilityRecord({
       adapters: options.adapters,
       explodexHome: options.explodexHome,
     }),
     resolveSdkRuntimeIdentityForCli(),
   ]);
+  const sdkRuntime = options.sdkRuntime ?? resolvedSdkRuntime;
   const report = evaluateCompatibility({
     host: options.host,
     sdkRuntime,
@@ -405,6 +409,7 @@ export async function inspectDevInstanceStatus(
     explodexHome: selection.explodexHome,
     host,
     process,
+    sdkRuntime: options.sdkRuntime,
   });
   const evidence: DevOwnershipEvidence = {
     requestedRoot: selection.rootPath,

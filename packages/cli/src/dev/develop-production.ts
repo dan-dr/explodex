@@ -1,4 +1,5 @@
 import { watch, type FSWatcher } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
 import type { CdpAdapter } from "../cdp/adapters.ts";
 import { createNodeCdpAdapter } from "../cdp/adapters.ts";
@@ -11,11 +12,15 @@ import {
 } from "../host/process-adapters.ts";
 import type { HostStatusAdapters } from "../host/status.ts";
 import { resolveSdkRuntimeIdentityForCli } from "../host/sdk-runtime-identity.ts";
+import { runCompatibilityProbe } from "../host/probe-operation.ts";
 import type { RuntimeApplicationResult } from "../plugin/application-operation.ts";
 import { buildPluginWorkspace } from "../plugin/build.ts";
 import { runDevInjectOperation } from "./injection-operation.ts";
 import { prepareOwnedDevTarget } from "./injection-operation.ts";
 import { frozenHostEquals } from "./phase0.ts";
+import { describeDevLayout } from "./layout.ts";
+import { runDevLifecycleOperation } from "./lifecycle-operation.ts";
+import { buildLocalSdkSource } from "./local-sdk.ts";
 import type {
   DevelopOwnedResource,
   DevelopRuntimeAdapters,
@@ -41,14 +46,19 @@ export function isDevelopWatchChangeIncluded(options: {
   preflight: Pick<
     ProductionDevelopPreflightSuccess,
     "workspacePath" | "excludedPaths"
-  >;
+  > & { watchedPaths?: string[] };
   fileName: string;
+  watchedRoot?: string;
 }): boolean {
   const changed = resolve(
-    options.preflight.workspacePath,
+    options.watchedRoot ?? options.preflight.workspacePath,
     options.fileName,
   );
-  if (!isWithin(options.preflight.workspacePath, changed)) return false;
+  if (
+    !(options.preflight.watchedPaths ?? [options.preflight.workspacePath]).some(
+      (root) => isWithin(root, changed),
+    )
+  ) return false;
   return !options.preflight.excludedPaths.some((path) =>
     isWithin(path, changed)
   );
@@ -59,21 +69,27 @@ function createWatcher(options: {
   onChange: () => void;
   onStop: () => void;
 }): DevelopOwnedResource {
-  const watcher = watch(
-    options.preflight.workspacePath,
-    { recursive: true, persistent: true },
-    (_eventType, fileName) => {
-      if (fileName === null) return;
-      if (!isDevelopWatchChangeIncluded({
-        preflight: options.preflight,
-        fileName: String(fileName),
-      })) return;
-      options.onChange();
-    },
-  );
-  watcher.once("error", options.onStop);
+  const watchers = options.preflight.watchedPaths.map((watchedRoot) => {
+    const watcher = watch(
+      watchedRoot,
+      { recursive: true, persistent: true },
+      (_eventType, fileName) => {
+        if (fileName === null) return;
+        if (!isDevelopWatchChangeIncluded({
+          preflight: options.preflight,
+          fileName: String(fileName),
+          watchedRoot,
+        })) return;
+        options.onChange();
+      },
+    );
+    watcher.once("error", options.onStop);
+    return watcher;
+  });
   return {
-    close: () => closeWatcher(watcher),
+    close: async () => {
+      await Promise.all(watchers.map(closeWatcher));
+    },
   };
 }
 
@@ -102,6 +118,7 @@ function createTargetMonitor(options: {
       hostAdapters: options.hostAdapters,
       statusAdapters: options.statusAdapters,
       cdp: options.cdp,
+      requireCompatibility: false,
     }).then((current) => {
       if (closed) return;
       if (
@@ -252,19 +269,131 @@ export async function createProductionDevelopAdapters(options: {
       });
     },
     buildGeneration: async ({ preflight, signal }) => {
+      let localSdkRuntime:
+        | {
+            version: string;
+            sha256: string;
+            declarationsSha256: string;
+            sourcePath: string;
+            source: string;
+          }
+        | null = null;
+      if (preflightValue?.localSdkSource !== undefined) {
+        const sdkBuilt = await buildLocalSdkSource({
+          source: preflightValue.localSdkSource,
+          timeoutMs: options.timeoutMs,
+          signal,
+        });
+        if (!sdkBuilt.ok) {
+          return {
+            ok: false,
+            code: sdkBuilt.code,
+            message: sdkBuilt.message,
+            failureKind: "sdk",
+            priorDistFingerprint: sdkBuilt.priorDistFingerprint,
+            distFingerprintAfter: sdkBuilt.distFingerprintAfter,
+          };
+        }
+        const source = await readFile(
+          sdkBuilt.source.runtime.runtimePath,
+          "utf8",
+        );
+        localSdkRuntime = {
+          version: sdkBuilt.source.runtime.version,
+          sha256: sdkBuilt.source.runtime.sha256,
+          declarationsSha256:
+            sdkBuilt.source.runtime.declarationsSha256,
+          sourcePath: sdkBuilt.source.runtime.runtimePath,
+          source,
+        };
+        const compatibility = await runCompatibilityProbe({
+          adapters: hostAdapters,
+          explodexHome: options.explodexHome,
+          phase0ContractPath: describeDevLayout(
+            preflightValue.prepared.snapshot.rootPath,
+          ).phase0ContractPath,
+          sdkRuntime: {
+            version: localSdkRuntime.version,
+            sha256: localSdkRuntime.sha256,
+          },
+          sdkSource: localSdkRuntime.source,
+          cdp,
+          acceptanceProcess: {
+            pid: preflightValue.prepared.process.pid,
+            processStartedAt:
+              preflightValue.prepared.process.processStartedAt,
+            executablePath:
+              preflightValue.prepared.process.executablePath,
+            targetId: preflightValue.target.targetId,
+          },
+          authoringMain: null,
+          signal,
+        });
+        if (!compatibility.ok || !compatibility.committed) {
+          const sdkEvaluationBegan =
+            compatibility.probe?.safety.hostSnapshots.preSdk !== null;
+          return {
+            ok: false,
+            code: sdkEvaluationBegan
+              ? "develop.sdk-contaminated"
+              : compatibility.ok
+                ? "compatibility.unproven"
+                : compatibility.error.code,
+            message: sdkEvaluationBegan
+              ? "Local SDK compatibility evaluation did not complete cleanly."
+              : compatibility.ok
+                ? "Local SDK compatibility proof did not commit."
+                : compatibility.error.message,
+            failureKind: "sdk",
+            sdkContamination: sdkEvaluationBegan,
+            priorDistFingerprint: sdkBuilt.distFingerprintAfter,
+            distFingerprintAfter: sdkBuilt.distFingerprintAfter,
+            details: {
+              status: compatibility.ok
+                ? compatibility.probe.status
+                : "failed",
+              reason: compatibility.ok
+                ? compatibility.probe.reason
+                : compatibility.error.code,
+            },
+          };
+        }
+        preflightValue.localSdkSource = sdkBuilt.source;
+        preflightValue.sdkRuntimeIdentity = {
+          version: localSdkRuntime.version,
+          sha256: localSdkRuntime.sha256,
+        };
+      }
       const built = await buildPluginWorkspace({
         workspacePath: preflight.workspacePath,
         timeoutMs: options.timeoutMs,
+        signal,
         shouldCommit: () => signal?.aborted !== true,
+        ...(localSdkRuntime === null
+          ? {}
+          : {
+              sdkSourcePath: preflightValue!.localSdkSource!.rootPath,
+              sdkInput: {
+                kind: "local-source" as const,
+                version: localSdkRuntime.version,
+                runtimeSha256: localSdkRuntime.sha256,
+                declarationsSha256:
+                  localSdkRuntime.declarationsSha256,
+              },
+            }),
       });
       if (!built.ok) {
         return {
           ok: false,
           code: built.code,
-          message: built.message,
+          message: localSdkRuntime === null
+            ? built.message
+            : "Plugin build against the local SDK failed.",
           priorDistFingerprint: built.priorDistFingerprint,
           distFingerprintAfter: built.distFingerprintAfter,
-          details: built.details,
+          ...(localSdkRuntime === null && built.details !== undefined
+            ? { details: built.details }
+            : {}),
         };
       }
       return {
@@ -274,12 +403,21 @@ export async function createProductionDevelopAdapters(options: {
           version: built.report.version,
           payloadSha256: built.payloadSha256,
         },
+        ...(localSdkRuntime === null
+          ? {}
+          : {
+              sdkRuntimeIdentity: {
+                version: localSdkRuntime.version,
+                sha256: localSdkRuntime.sha256,
+              },
+            }),
       };
     },
     applyGeneration: async ({
       generation,
       preflight,
       pluginIdentity,
+      sdkRuntimeIdentity,
       previousLastGood,
       signal,
     }) => {
@@ -300,6 +438,9 @@ export async function createProductionDevelopAdapters(options: {
         hostAdapters,
         statusAdapters,
         cdp,
+        ...(preflightValue.localSdkSource === undefined
+          ? {}
+          : { sdkRuntime: sdkRuntimeIdentity }),
       });
       if (
         !current.ok ||
@@ -325,10 +466,11 @@ export async function createProductionDevelopAdapters(options: {
           details: current.ok ? undefined : current.details,
         };
       }
-      const currentSdk = await resolveSdkRuntimeIdentityForCli();
+      const currentSdk = preflightValue.localSdkSource?.runtime ??
+        await resolveSdkRuntimeIdentityForCli();
       if (
-        currentSdk.version !== preflight.sdkRuntimeIdentity.version ||
-        currentSdk.sha256 !== preflight.sdkRuntimeIdentity.sha256
+        currentSdk.version !== sdkRuntimeIdentity.version ||
+        currentSdk.sha256 !== sdkRuntimeIdentity.sha256
       ) {
         return {
           ok: false,
@@ -351,6 +493,16 @@ export async function createProductionDevelopAdapters(options: {
         hostAdapters,
         statusAdapters,
         cdp,
+        ...(preflightValue.localSdkSource === undefined
+          ? {}
+          : {
+              sdkRuntimeOverride: {
+                version: currentSdk.version,
+                sha256: currentSdk.sha256,
+                sourcePath:
+                  preflightValue.localSdkSource.runtime.runtimePath,
+              },
+            }),
       });
       const requestedApplication = result.applications.find((application) =>
         application.id === pluginIdentity.id &&
@@ -379,6 +531,17 @@ export async function createProductionDevelopAdapters(options: {
             applications: result.applications,
           },
           ...classified,
+          sdkContamination:
+            preflightValue.localSdkSource !== undefined &&
+            result.sourceDelivered &&
+            (
+              requestedApplication?.error?.code ===
+                "plugin.application.runtime-unusable" ||
+              (
+                requestedApplication?.stage === "evaluation" &&
+                result.code.includes("evaluation")
+              )
+            ),
         };
       }
       if (
@@ -410,6 +573,12 @@ export async function createProductionDevelopAdapters(options: {
             applications: result.applications,
           },
           ...classified,
+          sdkContamination:
+            preflightValue.localSdkSource !== undefined &&
+            result.sourceDelivered &&
+            requestedApplication?.stage === "evaluation" &&
+            requestedApplication.error?.code ===
+              "plugin.application.runtime-unusable",
         };
       }
       return {
@@ -417,6 +586,67 @@ export async function createProductionDevelopAdapters(options: {
         pluginIdentity,
         target: result.target,
       };
+    },
+    recoverSdkContamination: async ({ preflight, signal }) => {
+      if (
+        preflightValue === null ||
+        preflightValue.localSdkSource === undefined
+      ) {
+        return {
+          ok: false,
+          code: "develop.sdk-recovery-unavailable",
+          message:
+            "SDK contamination recovery requires one validated local SDK source.",
+        };
+      }
+      const sdkRuntime = {
+        version: preflightValue.localSdkSource.runtime.version,
+        sha256: preflightValue.localSdkSource.runtime.sha256,
+      };
+      const restarted = await runDevLifecycleOperation({
+        kind: "restart",
+        osHome: options.osHome,
+        explodexHome: options.explodexHome,
+        explicitRoot: options.explicitRoot,
+        timeoutMs: options.timeoutMs,
+        signal,
+        hostAdapters,
+        statusAdapters,
+        cdp,
+        requiredHost: preflightValue.prepared.host,
+        sdkRuntime,
+      });
+      if (!restarted.ok) {
+        return {
+          ok: false,
+          code: restarted.code,
+          message: restarted.message,
+          details: restarted.details,
+        };
+      }
+      const prepared = await prepareOwnedDevTarget({
+        operation: "develop",
+        osHome: options.osHome,
+        explodexHome: options.explodexHome,
+        explicitRoot: options.explicitRoot,
+        signal,
+        hostAdapters,
+        statusAdapters,
+        cdp,
+        sdkRuntime,
+      });
+      if (!prepared.ok) {
+        return {
+          ok: false,
+          code: prepared.code,
+          message: prepared.message,
+          details: prepared.details,
+        };
+      }
+      preflightValue.prepared = prepared.value;
+      preflightValue.target = prepared.value.target;
+      preflight.target = prepared.value.target;
+      return { ok: true, target: prepared.value.target };
     },
     waitForStop: async ({ signal }) => {
       if (signal?.aborted) return "interrupted";

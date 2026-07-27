@@ -6,6 +6,7 @@ import {
   type HostAdapters,
 } from "../host/adapters.ts";
 import type { HostIdentity } from "../host/types.ts";
+import type { SdkRuntimeIdentity } from "../host/types.ts";
 import {
   evaluateCompatibility,
   loadCompatibilityRecord,
@@ -87,6 +88,7 @@ export type DevLifecycleSystemOptions = {
   commands?: ReadOnlyCommandRunner;
   spawn?: LaunchSpawnAdapter;
   requiredHost?: HostIdentity;
+  sdkRuntime?: SdkRuntimeIdentity;
   afterLockedTransition?: (
     result: Extract<DevLifecycleResult, { ok: true }>,
   ) => Promise<void>;
@@ -282,13 +284,14 @@ export async function runDevLifecycleOperation(
       details: gate.error,
     });
   }
-  const [persistedCompatibility, sdkRuntime] = await Promise.all([
+  const [persistedCompatibility, resolvedSdkRuntime] = await Promise.all([
     loadCompatibilityRecord({
       adapters: hostAdapters,
       explodexHome,
     }),
     resolveSdkRuntimeIdentityForCli(),
   ]);
+  const sdkRuntime = options.sdkRuntime ?? resolvedSdkRuntime;
   const compatibility = evaluateCompatibility({
     host: host.host,
     sdkRuntime,

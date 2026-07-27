@@ -16,9 +16,10 @@ export type DevelopPreflightSuccess = {
   lifecycle: "dynamic" | "renderer-start" | "app-start";
   route: DevArtifactRouteAction;
   target: TargetIdentity;
-  pluginIdentity: DevelopPluginIdentity;
+  pluginIdentity: DevelopPluginIdentity | null;
   sdkRuntimeIdentity: DevelopSdkRuntimeIdentity;
   distPath: string;
+  usesLocalSdk?: boolean;
 };
 
 export type DevelopPreflightResult =
@@ -43,6 +44,7 @@ export type DevelopBuildResult =
   | {
       ok: true;
       pluginIdentity: DevelopPluginIdentity;
+      sdkRuntimeIdentity?: DevelopSdkRuntimeIdentity;
     }
   | {
       ok: false;
@@ -50,6 +52,8 @@ export type DevelopBuildResult =
       message: string;
       priorDistFingerprint: string | null;
       distFingerprintAfter: string | null;
+      failureKind?: "plugin" | "sdk";
+      sdkContamination?: boolean;
       details?: unknown;
     };
 
@@ -67,6 +71,7 @@ export type DevelopApplyFailure = {
   liveIdentity?: DevelopPluginIdentity | null;
   stage?: "authorization" | "evaluation" | "setup" | "cleanup" | "none";
   possiblePartialEffects?: boolean;
+  sdkContamination?: boolean;
 };
 
 export type DevelopApplyResult =
@@ -99,9 +104,24 @@ export type DevelopRuntimeAdapters = {
     generation: number;
     preflight: DevelopPreflightSuccess;
     pluginIdentity: DevelopPluginIdentity;
+    sdkRuntimeIdentity: DevelopSdkRuntimeIdentity;
     previousLastGood: DevelopProtocolWriter["lastGood"];
     signal?: AbortSignal;
   }): Promise<DevelopApplyResult>;
+  recoverSdkContamination?(options: {
+    generation: number;
+    preflight: DevelopPreflightSuccess;
+    failure: DevelopApplyFailure;
+    signal?: AbortSignal;
+  }): Promise<
+    | { ok: true; target: TargetIdentity }
+    | {
+        ok: false;
+        code: string;
+        message: string;
+        details?: unknown;
+      }
+  >;
   waitForStop(options: {
     signal?: AbortSignal;
   }): Promise<"completed" | "interrupted">;
@@ -272,6 +292,8 @@ export async function runForegroundDevelop(options: {
   let queuedGeneration: number | null = null;
   let generationWake: (() => void) | null = null;
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  let sdkRecoveryAttempted = false;
+  let sdkRecoveryInProgress = false;
   let stopResolve: ((value: StopDisposition) => void) | null = null;
   const stop = new Promise<StopDisposition>((resolve) => {
     stopResolve = resolve;
@@ -307,6 +329,7 @@ export async function runForegroundDevelop(options: {
       type: "build-failed",
       details: {
         code: failure.code,
+        failureKind: failure.failureKind ?? "plugin",
         priorDistPreserved,
         priorDistFingerprint: failure.priorDistFingerprint,
         distFingerprintAfter: failure.distFingerprintAfter,
@@ -344,6 +367,7 @@ export async function runForegroundDevelop(options: {
         type: "build-started",
       });
       let pluginIdentity = input.pluginIdentity;
+      let sdkRuntimeIdentity = preflight.sdkRuntimeIdentity;
       if (pluginIdentity === undefined) {
         const built = await options.adapters.buildGeneration({
           generation: input.generation,
@@ -353,28 +377,113 @@ export async function runForegroundDevelop(options: {
         if (!generationIsCurrent(input.generation, controller)) return;
         if (!built.ok) {
           emitBuildFailure(input.generation, built);
+          if (
+            built.sdkContamination === true &&
+            preflight.usesLocalSdk === true
+          ) {
+            if (sdkRecoveryAttempted) {
+              protocol.event({
+                generation: input.generation,
+                type: "blocked",
+                target: preflight.target,
+                details: {
+                  code: "develop.sdk-recovery-exhausted",
+                  recoveryAttempted: true,
+                },
+              });
+              closing = true;
+              workAbort.abort();
+              stopResolve?.({
+                kind: "blocked",
+                error: {
+                  code: "develop.sdk-recovery-exhausted",
+                  message:
+                    "The one permitted SDK contamination restart was already used.",
+                },
+              });
+              return;
+            }
+            sdkRecoveryAttempted = true;
+            sdkRecoveryInProgress = true;
+            const recovery = options.adapters.recoverSdkContamination ===
+                undefined
+              ? {
+                  ok: false as const,
+                  code: "develop.sdk-recovery-unavailable",
+                  message:
+                    "SDK contamination recovery is unavailable for this develop operation.",
+                }
+              : await options.adapters.recoverSdkContamination({
+                  generation: input.generation,
+                  preflight,
+                  failure: {
+                    ok: false,
+                    code: built.code,
+                    message: built.message,
+                    blocked: false,
+                    sdkContamination: true,
+                    stage: "evaluation",
+                    possiblePartialEffects: true,
+                    details: built.details,
+                  },
+                  signal: controller.signal,
+                });
+            sdkRecoveryInProgress = false;
+            if (!generationIsCurrent(input.generation, controller)) return;
+            if (!recovery.ok) {
+              protocol.event({
+                generation: input.generation,
+                type: "blocked",
+                target: preflight.target,
+                details: {
+                  code: recovery.code,
+                  recoveryAttempted: true,
+                  ...(recovery.details === undefined
+                    ? {}
+                    : { cause: recovery.details }),
+                },
+              });
+              closing = true;
+              workAbort.abort();
+              stopResolve?.({
+                kind: "blocked",
+                error: {
+                  code: recovery.code,
+                  message: recovery.message,
+                  ...(recovery.details === undefined
+                    ? {}
+                    : { details: recovery.details }),
+                },
+              });
+              return;
+            }
+            preflight.target = recovery.target;
+          }
           return;
         }
         pluginIdentity = built.pluginIdentity;
+        sdkRuntimeIdentity =
+          built.sdkRuntimeIdentity ?? preflight.sdkRuntimeIdentity;
       }
       if (!generationIsCurrent(input.generation, controller)) return;
       protocol.event({
         generation: input.generation,
         type: "build-succeeded",
         pluginIdentity,
-        sdkRuntimeIdentity: preflight.sdkRuntimeIdentity,
+        sdkRuntimeIdentity,
       });
       protocol.event({
         generation: input.generation,
         type: "apply-started",
         pluginIdentity,
-        sdkRuntimeIdentity: preflight.sdkRuntimeIdentity,
+        sdkRuntimeIdentity,
         target: preflight.target,
       });
       const applied = await options.adapters.applyGeneration({
         generation: input.generation,
         preflight,
         pluginIdentity,
+        sdkRuntimeIdentity,
         previousLastGood: protocol.lastGood,
         signal: controller.signal,
       });
@@ -386,6 +495,79 @@ export async function runForegroundDevelop(options: {
           preflight,
           failure: applied,
         });
+        if (
+          applied.sdkContamination === true &&
+          preflight.usesLocalSdk === true
+        ) {
+          if (sdkRecoveryAttempted) {
+            protocol.event({
+              generation: input.generation,
+              type: "blocked",
+              target: preflight.target,
+              details: {
+                code: "develop.sdk-recovery-exhausted",
+                recoveryAttempted: true,
+              },
+            });
+            closing = true;
+            workAbort.abort();
+            stopResolve?.({
+              kind: "blocked",
+              error: {
+                code: "develop.sdk-recovery-exhausted",
+                message:
+                  "The one permitted SDK contamination restart was already used.",
+              },
+            });
+            return;
+          }
+          sdkRecoveryAttempted = true;
+          sdkRecoveryInProgress = true;
+          const recovery = options.adapters.recoverSdkContamination === undefined
+            ? {
+                ok: false as const,
+                code: "develop.sdk-recovery-unavailable",
+                message:
+                  "SDK contamination recovery is unavailable for this develop operation.",
+              }
+            : await options.adapters.recoverSdkContamination({
+                generation: input.generation,
+                preflight,
+                failure: applied,
+                signal: controller.signal,
+              });
+          sdkRecoveryInProgress = false;
+          if (!generationIsCurrent(input.generation, controller)) return;
+          if (!recovery.ok) {
+            protocol.event({
+              generation: input.generation,
+              type: "blocked",
+              target: preflight.target,
+              details: {
+                code: recovery.code,
+                recoveryAttempted: true,
+                ...(recovery.details === undefined
+                  ? {}
+                  : { cause: recovery.details }),
+              },
+            });
+            closing = true;
+            workAbort.abort();
+            stopResolve?.({
+              kind: "blocked",
+              error: {
+                code: recovery.code,
+                message: recovery.message,
+                ...(recovery.details === undefined
+                  ? {}
+                  : { details: recovery.details }),
+              },
+            });
+            return;
+          }
+          preflight.target = recovery.target;
+          return;
+        }
         if (applied.blocked) {
           closing = true;
           workAbort.abort();
@@ -451,7 +633,7 @@ export async function runForegroundDevelop(options: {
       protocol.applySucceeded({
         generation: input.generation,
         pluginIdentity: applied.pluginIdentity,
-        sdkRuntimeIdentity: preflight.sdkRuntimeIdentity,
+        sdkRuntimeIdentity,
         target: applied.target,
         appliedAt: options.adapters.nowIso(),
       });
@@ -491,6 +673,31 @@ export async function runForegroundDevelop(options: {
 
   const queueGeneration = (): void => {
     if (closing || targetLost || workAbort.signal.aborted) return;
+    if (sdkRecoveryInProgress) {
+      protocol.event({
+        generation: newestGeneration,
+        type: "blocked",
+        target: preflight.target,
+        details: {
+          code: "develop.sdk-recovery-superseded",
+          recoveryAttempted: true,
+        },
+      });
+      closing = true;
+      workAbort.abort();
+      for (const controller of generationControllers.values()) {
+        controller.abort();
+      }
+      stopResolve?.({
+        kind: "blocked",
+        error: {
+          code: "develop.sdk-recovery-superseded",
+          message:
+            "A corrected generation arrived before SDK recovery completed; start a new develop operation.",
+        },
+      });
+      return;
+    }
     for (const controller of generationControllers.values()) controller.abort();
     if (debounceTimer !== null) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
@@ -529,6 +736,7 @@ export async function runForegroundDevelop(options: {
     monitor = await options.adapters.openTargetMonitor({
       preflight,
       onTargetLost: () => {
+        if (sdkRecoveryInProgress) return;
         if (targetLost) return;
         targetLost = true;
         workAbort.abort();
@@ -551,9 +759,11 @@ export async function runForegroundDevelop(options: {
       },
     });
 
-    await startGeneration({
+    void startGeneration({
       generation: 1,
-      pluginIdentity: preflight.pluginIdentity,
+      ...(preflight.pluginIdentity === null
+        ? {}
+        : { pluginIdentity: preflight.pluginIdentity }),
       initial: true,
     });
 

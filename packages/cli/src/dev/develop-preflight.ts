@@ -1,4 +1,4 @@
-import { lstat, readFile, realpath } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { CdpAdapter } from "../cdp/adapters.ts";
 import { createNodeCdpAdapter } from "../cdp/adapters.ts";
@@ -23,13 +23,15 @@ import type {
   DevelopPreflightSuccess,
 } from "./develop-operation.ts";
 import { verifyDistGeneration } from "../plugin/generation.ts";
+import { validatePluginSource } from "../plugin/validate.ts";
+import {
+  validateLocalSdkSourceWorkspace,
+  type ValidatedLocalSdkSource,
+} from "./local-sdk.ts";
 
 export type ProductionDevelopPreflightSuccess = DevelopPreflightSuccess & {
   prepared: PreparedOwnedDevTarget;
-};
-
-type PackageIdentity = {
-  name?: unknown;
+  localSdkSource?: ValidatedLocalSdkSource;
 };
 
 function isWithin(parent: string, child: string): boolean {
@@ -66,58 +68,6 @@ async function canonicalDirectory(path: string): Promise<
         : "Development workspace is unavailable.",
     };
   }
-}
-
-async function validateSdkSource(path: string): Promise<
-  | { ok: true; path: string }
-  | { ok: false; code: string; message: string }
-> {
-  const canonical = await canonicalDirectory(path);
-  if (!canonical.ok) {
-    return {
-      ok: false,
-      code: "develop.sdk-source-invalid",
-      message: canonical.message,
-    };
-  }
-  let parsed: PackageIdentity;
-  try {
-    parsed = JSON.parse(
-      await readFile(join(canonical.path, "package.json"), "utf8"),
-    ) as PackageIdentity;
-  } catch {
-    return {
-      ok: false,
-      code: "develop.sdk-source-invalid",
-      message: "Local SDK source must contain a readable package.json.",
-    };
-  }
-  if (parsed.name !== "@explodex/sdk") {
-    return {
-      ok: false,
-      code: "develop.sdk-source-invalid",
-      message: "Local SDK source must be the canonical @explodex/sdk workspace.",
-    };
-  }
-  for (const relativePath of ["src", "package.json", "tsconfig.json"]) {
-    try {
-      const canonicalChild = await realpath(join(canonical.path, relativePath));
-      if (!isWithin(canonical.path, canonicalChild)) {
-        return {
-          ok: false,
-          code: "develop.sdk-source-invalid",
-          message: `Local SDK source path escapes its workspace: ${relativePath}.`,
-        };
-      }
-    } catch {
-      return {
-        ok: false,
-        code: "develop.sdk-source-invalid",
-        message: `Local SDK source is missing ${relativePath}.`,
-      };
-    }
-  }
-  return canonical;
 }
 
 async function requiredWorkspacePathsStayContained(
@@ -210,60 +160,78 @@ export async function runDevelopPreflight(options: {
     // Missing dist is classified below by generation verification.
   }
 
+  let localSdkSource: ValidatedLocalSdkSource | null = null;
+  let localPluginLifecycle:
+    | "dynamic"
+    | "renderer-start"
+    | "app-start"
+    | null = null;
   if (options.sdkSourcePath !== null && options.sdkSourcePath !== undefined) {
-    const sdkSource = await validateSdkSource(options.sdkSourcePath);
+    const sdkSource = await validateLocalSdkSourceWorkspace({
+      sdkSourcePath: options.sdkSourcePath,
+      pluginWorkspacePath: workspace.path,
+      explodexHome,
+      devRootPath: requestedDevRoot,
+    });
     if (!sdkSource.ok) return sdkSource;
-    if (pathsOverlap(workspace.path, sdkSource.path)) {
+    localSdkSource = sdkSource.value;
+    const pluginSource = await validatePluginSource({
+      workspacePath: workspace.path,
+      timeoutMs: options.timeoutMs,
+    });
+    if (!pluginSource.ok) {
       return {
         ok: false,
-        code: "develop.workspace-unsafe",
-        message: "Plugin workspace and local SDK source must not overlap.",
+        code: pluginSource.code,
+        message: pluginSource.message,
+        details: pluginSource.details,
       };
     }
-    return {
-      ok: false,
-      code: "develop.sdk-source-not-supported",
-      message:
-        "Local SDK development requires the dedicated ordered SDK generation workflow.",
-    };
+    localPluginLifecycle = pluginSource.report.lifecycle;
   }
 
-  const generation = await verifyDistGeneration({
-    workspacePath: workspace.path,
-    timeoutMs: options.timeoutMs,
-    signal: options.signal,
-  });
-  if (!generation.ok) {
-    return {
-      ok: false,
-      code: "develop.dist-stale",
-      message: generation.message,
-      details: generation.details,
-    };
-  }
-  const artifact = await captureEphemeralPluginArtifact({
-    artifactPath: join(workspace.path, "dist"),
-    signal: options.signal,
-  });
-  if (!artifact.ok) {
-    return {
-      ok: false,
-      code: artifact.code,
-      message: artifact.message,
-      details: artifact.details,
-    };
-  }
-  if (artifact.validation.payloadSha256 !== generation.payloadSha256) {
-    return {
-      ok: false,
-      code: "develop.dist-stale",
-      message: "Current dist identity changed during foreground preflight.",
-    };
+  let artifact:
+    | Awaited<ReturnType<typeof captureEphemeralPluginArtifact>>
+    | null = null;
+  if (localSdkSource === null) {
+    const generation = await verifyDistGeneration({
+      workspacePath: workspace.path,
+      timeoutMs: options.timeoutMs,
+      signal: options.signal,
+    });
+    if (!generation.ok) {
+      return {
+        ok: false,
+        code: "develop.dist-stale",
+        message: generation.message,
+        details: generation.details,
+      };
+    }
+    artifact = await captureEphemeralPluginArtifact({
+      artifactPath: join(workspace.path, "dist"),
+      signal: options.signal,
+    });
+    if (!artifact.ok) {
+      return {
+        ok: false,
+        code: artifact.code,
+        message: artifact.message,
+        details: artifact.details,
+      };
+    }
+    if (artifact.validation.payloadSha256 !== generation.payloadSha256) {
+      return {
+        ok: false,
+        code: "develop.dist-stale",
+        message: "Current dist identity changed during foreground preflight.",
+      };
+    }
   }
 
   let sdkRuntimeIdentity: DevelopPreflightSuccess["sdkRuntimeIdentity"];
   try {
-    const sdkRuntime = await resolveSdkRuntimeIdentityForCli();
+    const sdkRuntime = localSdkSource?.runtime ??
+      await resolveSdkRuntimeIdentityForCli();
     sdkRuntimeIdentity = {
       version: sdkRuntime.version,
       sha256: sdkRuntime.sha256,
@@ -288,32 +256,60 @@ export async function runDevelopPreflight(options: {
     statusAdapters:
       options.statusAdapters ?? await createDefaultHostStatusAdapters(),
     cdp: options.cdp ?? createNodeCdpAdapter(),
+    ...(localSdkSource === null
+      ? {}
+      : { sdkRuntime: localSdkSource.runtime }),
+    requireCompatibility: localSdkSource === null,
   });
   if (!prepared.ok) return prepared;
-  const lifecycle = artifact.validation.lifecycle;
+  const normalizedLifecycle = artifact?.ok === true
+    ? artifact.validation.lifecycle
+    : localPluginLifecycle;
+  if (normalizedLifecycle === null) {
+    return {
+      ok: false,
+      code: "develop.preflight-failed",
+      message: "Plugin lifecycle was not established during preflight.",
+    };
+  }
   return {
     ok: true,
     value: {
       workspacePath: workspace.path,
-      watchedPaths: [workspace.path],
+      watchedPaths: [
+        workspace.path,
+        ...(localSdkSource === null ? [] : [localSdkSource.rootPath]),
+      ],
       excludedPaths: [
         join(workspace.path, "dist"),
         join(workspace.path, "node_modules"),
-        ...(options.sdkSourcePath === null || options.sdkSourcePath === undefined
+        ...(localSdkSource === null
           ? []
-          : [resolve(options.sdkSourcePath, "dist")]),
+          : [
+              join(localSdkSource.rootPath, "dist"),
+              join(localSdkSource.rootPath, "dist-build"),
+              join(localSdkSource.rootPath, "node_modules"),
+            ]),
       ],
-      lifecycle,
-      route: routeDevArtifactLifecycle(lifecycle),
+      lifecycle: normalizedLifecycle,
+      route: routeDevArtifactLifecycle(normalizedLifecycle),
       target: prepared.value.target,
-      pluginIdentity: {
-        id: artifact.validation.id,
-        version: artifact.validation.version,
-        payloadSha256: artifact.validation.payloadSha256,
-      },
+      pluginIdentity: artifact?.ok === true
+        ? {
+            id: artifact.validation.id,
+            version: artifact.validation.version,
+            payloadSha256: artifact.validation.payloadSha256,
+          }
+        : null,
       sdkRuntimeIdentity,
       distPath: join(workspace.path, "dist"),
       prepared: prepared.value,
+      ...(localSdkSource === null
+        ? {}
+        : {
+            usesLocalSdk: true,
+            localSdkSource,
+          }),
     },
   };
 }

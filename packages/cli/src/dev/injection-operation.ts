@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { createNodeCdpAdapter, type CdpAdapter } from "../cdp/adapters.ts";
 import type { TargetIdentity } from "../cdp/types.ts";
@@ -15,6 +16,7 @@ import type {
   VerifiedProcess,
 } from "../host/status.ts";
 import type { HostIdentity } from "../host/types.ts";
+import type { SdkRuntimeIdentity } from "../host/types.ts";
 import { resolveExplodexHome } from "../home/paths.ts";
 import {
   runEnabledPluginApplicationOperation,
@@ -146,6 +148,8 @@ export async function prepareOwnedDevTarget(options: {
   hostAdapters: HostAdapters;
   statusAdapters: HostStatusAdapters;
   cdp: CdpAdapter;
+  sdkRuntime?: SdkRuntimeIdentity;
+  requireCompatibility?: boolean;
 }): Promise<
   | { ok: true; value: PreparedOwnedDevTarget }
   | { ok: false; code: string; message: string; details?: unknown }
@@ -171,20 +175,23 @@ export async function prepareOwnedDevTarget(options: {
     hostAdapters: options.hostAdapters,
     statusAdapters: options.statusAdapters,
     cdp: options.cdp,
+    sdkRuntime: options.sdkRuntime,
   });
   const state = snapshot.state;
   const target = snapshot.assessment.selectedTarget;
+  const requireCompatibility = options.requireCompatibility ?? true;
   if (
     state === null ||
     target === null ||
     state.pid === null ||
     state.processStartedAt === null ||
     !snapshot.assessment.owned ||
-    !snapshot.assessment.mutationAllowed
+    (requireCompatibility && !snapshot.assessment.mutationAllowed)
   ) {
     return {
       ok: false,
-      code: snapshot.assessment.failures.some((entry) =>
+      code: requireCompatibility &&
+          snapshot.assessment.failures.some((entry) =>
           entry.code === "compatibility_unproven"
         )
         ? "compatibility.unproven"
@@ -328,6 +335,7 @@ async function applySnapshot(options: {
       hostAdapters: options.hostAdapters,
       statusAdapters: options.statusAdapters,
       cdp: options.cdp,
+      sdkRuntime: options.sdkRuntime,
     });
     if (!current.ok) {
       throw Object.assign(new Error(current.message), {
@@ -440,6 +448,12 @@ export async function runDevInjectOperation(options: {
   statusAdapters?: HostStatusAdapters;
   runtimeAdapters?: RuntimeAdapters;
   cdp?: CdpAdapter;
+  sdkRuntimeOverride?: {
+    version: string;
+    sha256: string;
+    sourcePath: string;
+    source?: string;
+  };
 }): Promise<DevInjectResult> {
   const operationId = options.operationId ?? "dev-inject";
   const explodexHome = resolve(resolveExplodexHome({
@@ -464,17 +478,28 @@ export async function runDevInjectOperation(options: {
   const runtimeAdapters =
     options.runtimeAdapters ?? await createDefaultRuntimeAdapters();
   const cdp = options.cdp ?? createNodeCdpAdapter();
-  const sdkRuntime = await resolveSdkRuntimeIdentityForCli();
+  const sdkRuntime =
+    options.sdkRuntimeOverride ?? await resolveSdkRuntimeIdentityForCli();
   let sdkRuntimeSource: string;
   try {
-    sdkRuntimeSource = await readVerifiedSdkRuntimeSource(sdkRuntime);
+    sdkRuntimeSource = options.sdkRuntimeOverride?.source ??
+      await readVerifiedSdkRuntimeSource(sdkRuntime);
+    if (
+      createHash("sha256").update(sdkRuntimeSource).digest("hex") !==
+        sdkRuntime.sha256
+    ) {
+      throw new Error(
+        "Generated SDK runtime bytes do not match the requested local identity.",
+      );
+    }
   } catch (error: unknown) {
     return failure({
       operationId,
       code: "compatibility.unproven",
-      message: error instanceof Error
+      message: options.sdkRuntimeOverride === undefined &&
+          error instanceof Error
         ? error.message
-        : "The exact generated SDK runtime bytes are unavailable.",
+        : "The exact generated local SDK runtime bytes are unavailable or mismatched.",
     });
   }
   const enabled = await revalidateEnabledPluginArtifacts({
@@ -529,6 +554,7 @@ export async function runDevInjectOperation(options: {
           hostAdapters,
           statusAdapters,
           cdp,
+          sdkRuntime,
         });
         if (!initial.ok) throw Object.assign(new Error(initial.message), initial);
         const locked = await withDevInstanceLock({
@@ -548,6 +574,7 @@ export async function runDevInjectOperation(options: {
               hostAdapters,
               statusAdapters,
               cdp,
+              sdkRuntime,
             });
             if (!prepared.ok) {
               throw Object.assign(new Error(prepared.message), prepared);
@@ -596,6 +623,7 @@ export async function runDevInjectOperation(options: {
           hostAdapters,
           statusAdapters,
           cdp,
+          sdkRuntime,
         });
         if (!initial.ok) throw Object.assign(new Error(initial.message), initial);
         const locked = await withDevInstanceLock({
@@ -615,6 +643,7 @@ export async function runDevInjectOperation(options: {
               hostAdapters,
               statusAdapters,
               cdp,
+              sdkRuntime,
             });
             if (!prepared.ok) {
               throw Object.assign(new Error(prepared.message), prepared);
@@ -671,6 +700,7 @@ export async function runDevInjectOperation(options: {
           hostAdapters,
           statusAdapters,
           cdp,
+          sdkRuntime,
         });
         if (!initial.ok) throw Object.assign(new Error(initial.message), initial);
         let boundary:
@@ -706,6 +736,7 @@ export async function runDevInjectOperation(options: {
                 hostAdapters,
                 statusAdapters,
                 cdp,
+                sdkRuntime,
               });
               if (!prepared.ok) {
                 boundary = {

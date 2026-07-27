@@ -90,6 +90,29 @@ Checks shell syntax, Bun/TS syntax, JS entrypoints, JSON manifests, npm injector
 
 ## Plugin Development
 
+For a plugin that needs an unreleased SDK change, name the canonical SDK source
+workspace explicitly:
+
+```sh
+explodex --json plugin develop . \
+  --sdk-source /absolute/path/to/explodex/packages/sdk
+```
+
+The foreground operation builds and validates SDK generation N before starting
+plugin generation N. A newer SDK generation invalidates dependent older plugin
+work. Pre-evaluation SDK failures preserve the prior complete live pair without
+restarting; only classified post-evaluation SDK runtime contamination permits
+one exact owned-development restart attempt. Local SDK paths and authority do
+not enter JSONL events, maps, checksums, archives, plugin metadata, or persisted
+activation state.
+
+Local-SDK generations are dev-only. Packaging, registry recommendation, and
+authoring-main transfer remain blocked until the plugin is rebuilt without
+`--sdk-source` against publishable SDK inputs. If that clean rebuild changes
+the payload identity, validate the exact new artifact on owned development
+again before it can graduate to the separately authorized hot main path. The
+workflow never rewrites the plugin's `@explodex/sdk` peer range or lockfile.
+
 1. Create `plugins/<id>/plugin.json`.
 2. Create `plugins/<id>/index.js`.
 3. Register via `Explodex.plugins.register`.

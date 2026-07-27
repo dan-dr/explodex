@@ -13,7 +13,10 @@ import {
 } from "./archive.ts";
 import { validateInstallablePayloadDir } from "./artifact-validate.ts";
 import { listInstallableFiles } from "./dist-files.ts";
-import { verifyDistGeneration } from "./generation.ts";
+import {
+  readGenerationRecord,
+  verifyDistGeneration,
+} from "./generation.ts";
 import type { NormalizedSourceReport } from "./types.ts";
 import { validatePluginSource } from "./validate.ts";
 
@@ -52,6 +55,17 @@ export async function packagePluginWorkspace(options: {
 }): Promise<PluginPackageResult> {
   const workspacePath = resolve(options.workspacePath);
   const outputDir = resolve(options.outputDir);
+  const recordedGeneration = await readGenerationRecord(
+    join(workspacePath, "dist"),
+  );
+  if (recordedGeneration?.sdkInput?.kind === "local-source") {
+    return {
+      ok: false,
+      code: "develop.local-sdk-not-publishable",
+      message:
+        "This generation was built with a local SDK source and is dev-only. Rebuild against publishable SDK inputs before packaging.",
+    };
+  }
 
   const verified = await verifyDistGeneration({
     workspacePath,
@@ -64,6 +78,14 @@ export async function packagePluginWorkspace(options: {
       code: verified.code,
       message: verified.message,
       details: verified.details,
+    };
+  }
+  if (verified.generation.sdkInput?.kind !== "publishable") {
+    return {
+      ok: false,
+      code: "develop.local-sdk-not-publishable",
+      message:
+        "This generation was built with a local SDK source and is dev-only. Rebuild against publishable SDK inputs before packaging.",
     };
   }
 

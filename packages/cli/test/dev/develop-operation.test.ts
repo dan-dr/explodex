@@ -98,7 +98,11 @@ function harness(options?: {
     },
     buildGeneration: async () => ({
       ok: true,
-      pluginIdentity: PREFLIGHT.pluginIdentity,
+      pluginIdentity: {
+        id: "sample",
+        version: "dev-1",
+        payloadSha256: "a".repeat(64),
+      },
     }),
     applyGeneration: options?.apply ?? (async () => {
       calls.push("apply");

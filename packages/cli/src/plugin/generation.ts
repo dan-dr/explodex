@@ -16,6 +16,7 @@ import {
   readChecksums,
   verifyDistAgainstChecksums,
 } from "./checksums.ts";
+import { resolveSdkRuntimeIdentityForCli } from "../host/sdk-runtime-identity.ts";
 import type { NormalizedSourceReport } from "./types.ts";
 import { validatePluginSource } from "./validate.ts";
 
@@ -25,6 +26,12 @@ export type GenerationRecord = {
   pluginId: string;
   version: string;
   mapMode: "required";
+  sdkInput?: {
+    kind: "publishable" | "local-source";
+    version: string;
+    runtimeSha256: string;
+    declarationsSha256?: string;
+  };
   /** Sorted input path → sha256 of tracked source/config bytes. */
   inputDigests: Record<string, string>;
   /** Sorted installable path → sha256 (mirrors checksums, excludes private generation file). */
@@ -47,6 +54,24 @@ export type GenerationVerifyFailure = {
 
 export type GenerationVerifyResult = GenerationVerifySuccess | GenerationVerifyFailure;
 
+function validSdkInput(
+  value: GenerationRecord["sdkInput"],
+): value is NonNullable<GenerationRecord["sdkInput"]> {
+  return value !== undefined &&
+    (value.kind === "publishable" || value.kind === "local-source") &&
+    typeof value.version === "string" &&
+    value.version.length > 0 &&
+    /^[a-f0-9]{64}$/u.test(value.runtimeSha256) &&
+    (
+      value.declarationsSha256 === undefined ||
+      /^[a-f0-9]{64}$/u.test(value.declarationsSha256)
+    ) &&
+    (
+      value.kind !== "local-source" ||
+      value.declarationsSha256 !== undefined
+    );
+}
+
 async function digestFile(absolute: string): Promise<string> {
   const bytes = await readFile(absolute);
   return sha256Hex(bytes);
@@ -59,6 +84,7 @@ async function digestFile(absolute: string): Promise<string> {
 export async function collectInputDigests(options: {
   workspacePath: string;
   report: NormalizedSourceReport;
+  sdkInput?: GenerationRecord["sdkInput"];
 }): Promise<Record<string, string>> {
   const workspacePath = resolve(options.workspacePath);
   const digests: Record<string, string> = {};
@@ -96,6 +122,11 @@ export async function collectInputDigests(options: {
     mapMode: "required",
   };
   digests["__explodex__/authority.json"] = sha256Hex(`${JSON.stringify(authority)}\n`);
+  if (options.sdkInput !== undefined) {
+    digests["__explodex__/sdk-input.json"] = sha256Hex(
+      `${JSON.stringify(options.sdkInput)}\n`,
+    );
+  }
 
   const ordered: Record<string, string> = {};
   for (const key of Object.keys(digests).sort(compareBytewise)) {
@@ -116,6 +147,7 @@ export function buildGenerationRecord(options: {
   report: NormalizedSourceReport;
   inputDigests: Record<string, string>;
   checksums: ChecksumsManifest;
+  sdkInput?: GenerationRecord["sdkInput"];
   /** Optional actual staged digests (preferred; includes checksums.json bytes). */
   outputDigests?: Record<string, string>;
 }): GenerationRecord {
@@ -137,6 +169,7 @@ export function buildGenerationRecord(options: {
     pluginId: options.report.id,
     version: options.report.version,
     mapMode: "required",
+    ...(options.sdkInput === undefined ? {} : { sdkInput: options.sdkInput }),
     inputDigests: options.inputDigests,
     outputDigests: orderedOutputs,
     payloadSha256: computePayloadSha256(options.checksums),
@@ -154,6 +187,7 @@ export async function writeGenerationRecord(
     pluginId: record.pluginId,
     version: record.version,
     mapMode: record.mapMode,
+    ...(record.sdkInput === undefined ? {} : { sdkInput: record.sdkInput }),
     inputDigests: Object.fromEntries(
       Object.keys(record.inputDigests)
         .sort(compareBytewise)
@@ -205,6 +239,28 @@ export async function verifyDistGeneration(options: {
       code: "plugin.package.stale",
       message: "dist/ is missing a build generation record; rebuild before packaging.",
     };
+  }
+  if (!validSdkInput(generation.sdkInput)) {
+    return {
+      ok: false,
+      code: "plugin.package.stale",
+      message:
+        "dist/ build generation is missing a valid SDK input identity; rebuild before packaging.",
+    };
+  }
+  if (generation.sdkInput.kind === "publishable") {
+    const currentSdkRuntime = await resolveSdkRuntimeIdentityForCli();
+    if (
+      generation.sdkInput.version !== currentSdkRuntime.version ||
+      generation.sdkInput.runtimeSha256 !== currentSdkRuntime.sha256
+    ) {
+      return {
+        ok: false,
+        code: "plugin.package.stale",
+        message:
+          "dist/ was not built against the exact current publishable SDK runtime; rebuild before packaging.",
+      };
+    }
   }
 
   let checksums: ChecksumsManifest;
@@ -274,6 +330,7 @@ export async function verifyDistGeneration(options: {
   const inputDigests = await collectInputDigests({
     workspacePath,
     report: source.report,
+    sdkInput: generation.sdkInput,
   });
   const expectedGenerationId = computeGenerationId(inputDigests);
   if (expectedGenerationId !== generation.generationId) {

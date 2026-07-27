@@ -4,10 +4,19 @@
  */
 
 import { spawn } from "node:child_process";
-import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInertRegistrationHarness } from "@explodex/sdk/testing";
+import { resolveSdkRuntimeIdentityForCli } from "../host/sdk-runtime-identity.ts";
 import { normalizeDeclaredAssets, stageDeclaredAssets } from "./assets.ts";
 import {
   bundlePluginIife,
@@ -69,6 +78,33 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
+async function localSdkInput(
+  sdkSourcePath: string,
+): Promise<NonNullable<Parameters<typeof buildGenerationRecord>[0]["sdkInput"]>> {
+  const packageJson = JSON.parse(
+    await readFile(join(sdkSourcePath, "package.json"), "utf8"),
+  ) as { name?: unknown; version?: unknown };
+  if (
+    packageJson.name !== "@explodex/sdk" ||
+    typeof packageJson.version !== "string" ||
+    packageJson.version.length === 0
+  ) {
+    throw new Error("Local SDK source identity is invalid.");
+  }
+  const runtime = await readFile(
+    join(sdkSourcePath, "dist", "runtime", "explodex-runtime.iife.js"),
+  );
+  const declarations = await readFile(
+    join(sdkSourcePath, "dist", "index.d.ts"),
+  );
+  return {
+    kind: "local-source",
+    version: packageJson.version,
+    runtimeSha256: sha256Hex(runtime),
+    declarationsSha256: sha256Hex(declarations),
+  };
+}
+
 async function resolveTsc(workspacePath: string): Promise<string | null> {
   const fromEnv = process.env.EXPLODEX_TSC;
   if (fromEnv !== undefined && fromEnv.length > 0 && (await pathExists(fromEnv))) {
@@ -92,7 +128,15 @@ async function resolveTsc(workspacePath: string): Promise<string | null> {
 async function typecheckWorkspace(options: {
   workspacePath: string;
   timeoutMs: number;
-}): Promise<{ ok: true } | { ok: false; message: string; details?: Record<string, unknown> }> {
+  signal?: AbortSignal;
+  sdkSourcePath?: string;
+}): Promise<
+  { ok: true } |
+  { ok: false; code?: string; message: string; details?: Record<string, unknown> }
+> {
+  if (options.signal?.aborted) {
+    return { ok: false, code: "operation.interrupted", message: "Plugin typecheck was interrupted." };
+  }
   const tsc = await resolveTsc(options.workspacePath);
   if (tsc === null) {
     return {
@@ -106,6 +150,33 @@ async function typecheckWorkspace(options: {
     return { ok: false, message: "tsconfig.json is missing" };
   }
 
+  let temporaryConfigRoot: string | null = null;
+  let effectiveTsconfigPath = tsconfigPath;
+  if (options.sdkSourcePath !== undefined) {
+    temporaryConfigRoot = await mkdtemp(
+      join(tmpdir(), "explodex-plugin-local-sdk-tsconfig-"),
+    );
+    effectiveTsconfigPath = join(temporaryConfigRoot, "tsconfig.json");
+    await writeFile(
+      effectiveTsconfigPath,
+      `${JSON.stringify({
+        extends: tsconfigPath,
+        compilerOptions: {
+          baseUrl: options.workspacePath,
+          paths: {
+            "@explodex/sdk": [
+              join(options.sdkSourcePath, "dist", "index.d.ts"),
+            ],
+            "@explodex/sdk/*": [
+              join(options.sdkSourcePath, "dist", "*"),
+            ],
+          },
+        },
+      }, null, 2)}\n`,
+      "utf8",
+    );
+  }
+
   const result = await new Promise<{
     exitCode: number;
     stdout: string;
@@ -114,7 +185,7 @@ async function typecheckWorkspace(options: {
     let stdout = "";
     let stderr = "";
     let settled = false;
-    const child = spawn(tsc, ["-p", tsconfigPath, "--noEmit"], {
+    const child = spawn(tsc, ["-p", effectiveTsconfigPath, "--noEmit"], {
       cwd: options.workspacePath,
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"],
@@ -126,6 +197,15 @@ async function typecheckWorkspace(options: {
         // ignore
       }
     }, options.timeoutMs);
+    const onAbort = (): void => {
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        // Child close/error still determines settlement.
+      }
+    };
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+    if (options.signal?.aborted) onAbort();
     child.stdout.on("data", (chunk: Buffer | string) => {
       stdout += typeof chunk === "string" ? chunk : chunk.toString("utf8");
     });
@@ -136,17 +216,30 @@ async function typecheckWorkspace(options: {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      options.signal?.removeEventListener("abort", onAbort);
       resolvePromise({ exitCode: 1, stdout, stderr: `${stderr}\n${error.message}` });
     });
     child.on("close", (code) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      options.signal?.removeEventListener("abort", onAbort);
       resolvePromise({ exitCode: code ?? 1, stdout, stderr });
     });
   });
 
+  if (temporaryConfigRoot !== null) {
+    await rm(temporaryConfigRoot, { recursive: true, force: true });
+  }
+
   if (result.exitCode !== 0) {
+    if (options.signal?.aborted) {
+      return {
+        ok: false,
+        code: "operation.interrupted",
+        message: "Plugin typecheck was interrupted.",
+      };
+    }
     return {
       ok: false,
       message: "Plugin TypeScript typecheck failed",
@@ -187,7 +280,15 @@ export async function buildPluginWorkspace(options: {
   workspacePath: string;
   timeoutMs: number;
   env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
   shouldCommit?: () => boolean;
+  sdkSourcePath?: string;
+  sdkInput?: {
+    kind: "publishable" | "local-source";
+    version: string;
+    runtimeSha256: string;
+    declarationsSha256?: string;
+  };
 }): Promise<PluginBuildResult> {
   const workspacePath = resolve(options.workspacePath);
   const priorDistFingerprint = await fingerprintDistTree(workspacePath);
@@ -214,6 +315,8 @@ export async function buildPluginWorkspace(options: {
   const typechecked = await typecheckWorkspace({
     workspacePath,
     timeoutMs: options.timeoutMs,
+    signal: options.signal,
+    sdkSourcePath: options.sdkSourcePath,
   });
   if (!typechecked.ok) {
     const after = await fingerprintDistTree(workspacePath);
@@ -237,7 +340,7 @@ export async function buildPluginWorkspace(options: {
       });
     }
     return failResult({
-      code: "plugin.source.invalid",
+      code: typechecked.code ?? "plugin.source.invalid",
       message:
         compilerText.length > 0
           ? `${typechecked.message}: ${compilerText.split("\n")[0]}`
@@ -253,6 +356,15 @@ export async function buildPluginWorkspace(options: {
     workspacePath,
     declared: report.assets,
   });
+  if (options.signal?.aborted) {
+    const after = await fingerprintDistTree(workspacePath);
+    return failResult({
+      code: "operation.interrupted",
+      message: "Plugin build was interrupted.",
+      priorDistFingerprint,
+      distFingerprintAfter: after,
+    });
+  }
   if (!assetsNormalized.ok) {
     const after = await fingerprintDistTree(workspacePath);
     return failResult({
@@ -279,6 +391,7 @@ export async function buildPluginWorkspace(options: {
       stagingDir,
       writeOutputs: true,
     });
+    throwIfBuildAborted(options.signal);
 
     if (!bundled.ok) {
       await rm(stagingDir, { recursive: true, force: true });
@@ -317,6 +430,7 @@ export async function buildPluginWorkspace(options: {
       stagingDir,
       assets: assetsNormalized.assets,
     });
+    throwIfBuildAborted(options.signal);
     if (!stagedAssets.ok) {
       await rm(stagingDir, { recursive: true, force: true });
       const after = await fingerprintDistTree(workspacePath);
@@ -340,6 +454,7 @@ export async function buildPluginWorkspace(options: {
       assets: assetsNormalized.installablePaths,
     });
     await writePluginManifest(stagingDir, manifest);
+    throwIfBuildAborted(options.signal);
 
     // Definition registration must succeed before commit.
     const harness = createInertRegistrationHarness();
@@ -347,6 +462,7 @@ export async function buildPluginWorkspace(options: {
       expectedPluginId: report.id,
       source: stagedJsText,
     });
+    throwIfBuildAborted(options.signal);
     if (!registration.ok) {
       await rm(stagingDir, { recursive: true, force: true });
       const after = await fingerprintDistTree(workspacePath);
@@ -364,7 +480,21 @@ export async function buildPluginWorkspace(options: {
     await writeChecksums(stagingDir, checksums);
     const payloadSha256 = computePayloadSha256(checksums);
 
-    const inputDigests = await collectInputDigests({ workspacePath, report });
+    const sdkInput = options.sdkInput ??
+      (
+        options.sdkSourcePath === undefined
+          ? await resolveSdkRuntimeIdentityForCli().then((runtime) => ({
+              kind: "publishable" as const,
+              version: runtime.version,
+              runtimeSha256: runtime.sha256,
+            }))
+          : await localSdkInput(options.sdkSourcePath)
+      );
+    const inputDigests = await collectInputDigests({
+      workspacePath,
+      report,
+      sdkInput,
+    });
     // Actual staged digests (includes true checksums.json bytes).
     const installable = await listInstallableFiles(stagingDir);
     const outputDigests: Record<string, string> = {};
@@ -377,13 +507,16 @@ export async function buildPluginWorkspace(options: {
       inputDigests,
       checksums,
       outputDigests,
+      sdkInput,
     });
     await writeGenerationRecord(stagingDir, generation);
+    throwIfBuildAborted(options.signal);
 
     // Final staging inventory: installable set + generation record only.
     await commitBundleDist({
       workspacePath,
       stagingDir,
+      signal: options.signal,
       shouldCommit: options.shouldCommit,
     });
 
@@ -415,7 +548,9 @@ export async function buildPluginWorkspace(options: {
     await rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
     const after = await fingerprintDistTree(workspacePath);
     const coded = error as { code?: unknown };
-    const interrupted = coded.code === "operation.interrupted";
+    const interrupted =
+      options.signal?.aborted ||
+      coded.code === "operation.interrupted";
     return failResult({
       code: interrupted ? "operation.interrupted" : "plugin.source.invalid",
       message: interrupted
@@ -426,6 +561,12 @@ export async function buildPluginWorkspace(options: {
       priorDistFingerprint,
       distFingerprintAfter: after,
     });
+  }
+}
+
+function throwIfBuildAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw new Error("Plugin build was interrupted.");
   }
 }
 

@@ -110,18 +110,16 @@ describe("M4-F04 develop preflight", () => {
 
       const sdkResult = await runDevelopPreflight({
         workspacePath: fixture.workspace,
-        sdkSourcePath: SDK_PACKAGE_ROOT,
+        sdkSourcePath: join(SDK_PACKAGE_ROOT, "dist"),
         osHome: join(fixture.root, "home"),
         explodexHome: join(fixture.root, "home", ".explodex"),
         explicitRoot: join(fixture.root, "dev-root"),
         timeoutMs: 60_000,
         ...adapters,
       });
-      expect(sdkResult).toEqual({
+      expect(sdkResult).toMatchObject({
         ok: false,
-        code: "develop.sdk-source-not-supported",
-        message:
-          "Local SDK development requires the dedicated ordered SDK generation workflow.",
+        code: "develop.sdk-source-invalid",
       });
     } finally {
       await fixture.cleanup();
