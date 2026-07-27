@@ -15,12 +15,15 @@ import { runPluginInstall } from "../commands/plugin-install.ts";
 import { runPluginRefresh } from "../commands/plugin-refresh.ts";
 import { runPluginStatus } from "../commands/plugin-status.ts";
 import { runPluginUpdateCheck } from "../commands/plugin-update-check.ts";
+import { runPluginUpdateApply } from "../commands/plugin-update-apply.ts";
 import { runPluginReview } from "../commands/plugin-review.ts";
 import { runPluginDisable } from "../commands/plugin-disable.ts";
 import { runPluginRemove } from "../commands/plugin-remove.ts";
 import { runDevStatus } from "../commands/dev-status.ts";
 import { runDevRecover } from "../commands/dev-recover.ts";
 import { runDevLifecycle } from "../commands/dev-lifecycle.ts";
+import { runDevInject } from "../commands/dev-inject.ts";
+import { runDevFocus } from "../commands/dev-focus.ts";
 import type { CliIo } from "../output/write.ts";
 
 /** Operations that parse their own positional arguments. */
@@ -35,8 +38,10 @@ const ACCEPTS_POSITIONALS = new Set([
   "plugin.refresh",
   "plugin.review",
   "plugin.update.check",
+  "plugin.update.apply",
   "plugin.disable",
   "plugin.remove",
+  "dev.inject",
 ]);
 
 const IMPLEMENTED_RESERVED_OPERATIONS = new Set([
@@ -48,6 +53,9 @@ const IMPLEMENTED_RESERVED_OPERATIONS = new Set([
   "dev.recover",
   "dev.restart",
   "dev.stop",
+  "dev.inject",
+  "dev.focus",
+  "plugin.update.apply",
 ]);
 
 export async function dispatch(options: {
@@ -207,6 +215,15 @@ export async function dispatch(options: {
         endOfOptions,
         signal,
       });
+    case "plugin.update.apply":
+      return runPluginUpdateApply({
+        globals: parsed.globals,
+        env,
+        io,
+        rest,
+        endOfOptions,
+        signal,
+      });
     case "plugin.disable":
       return runPluginDisable({
         globals: parsed.globals,
@@ -259,6 +276,20 @@ export async function dispatch(options: {
     case "dev.stop":
       return runDevLifecycle({
         kind: "stop",
+        globals: parsed.globals,
+        env,
+        signal,
+      });
+    case "dev.inject":
+      return runDevInject({
+        globals: parsed.globals,
+        env,
+        rest,
+        endOfOptions,
+        signal,
+      });
+    case "dev.focus":
+      return runDevFocus({
         globals: parsed.globals,
         env,
         signal,

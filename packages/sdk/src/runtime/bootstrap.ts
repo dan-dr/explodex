@@ -3,6 +3,7 @@ import {
   createPluginApplicationController,
   PRIVATE_APPLICATION_STATUS,
   PRIVATE_APPLY_APPROVED,
+  PRIVATE_DISABLE_RECONCILIATION,
   PRIVATE_FINALIZE_APPROVED,
   PRIVATE_RECONCILE_ENABLED,
   PRIVATE_UNLOAD_PLUGIN,
@@ -26,10 +27,12 @@ const RUNTIME_INSTANCE = "__explodexSdkRuntimeInstance";
 const RUNTIME_REQUEST_IDENTITY = "__explodexSdkRuntimeRequestIdentity";
 const RUNTIME_REQUEST_MARK = "__explodexSdkRuntimeRequestMark";
 const PRIVATE_DESTROY_AND_WAIT = "__explodexDestroyRuntimeAndWait";
+const PRIVATE_ADOPT_REQUEST = "__explodexAdoptRuntimeRequest";
 
 type InternalExplodexRuntime = ExplodexRuntime & {
   readonly [RUNTIME_MARK]: string;
-  readonly [RUNTIME_REQUEST_MARK]: string;
+  [RUNTIME_REQUEST_MARK]: string;
+  readonly [PRIVATE_ADOPT_REQUEST]: (requestIdentity: string) => boolean;
   readonly [PRIVATE_APPLY_APPROVED]: (
     input: unknown,
     evaluate: unknown,
@@ -39,10 +42,11 @@ type InternalExplodexRuntime = ExplodexRuntime & {
     operationId: string,
     nonce: string,
   ) => void;
-  readonly [PRIVATE_RECONCILE_ENABLED]: (
+  [PRIVATE_RECONCILE_ENABLED]: (
     input: unknown,
     evaluate: unknown,
   ) => Promise<ApprovedPluginApplicationResult>;
+  readonly [PRIVATE_DISABLE_RECONCILIATION]: () => void;
   readonly [PRIVATE_APPLICATION_STATUS]: (
     pluginId: string,
   ) => ReturnType<PluginApplicationController["status"]>;
@@ -142,6 +146,9 @@ export function installRuntime(global: RuntimeHost): InternalExplodexRuntime {
     throw new Error("Explodex enabled reconciliation capability was unavailable.");
   }
   let managementHandle: PluginManagementRenderHandle | null = null;
+  const runtimeSourceDigest = /^[a-f0-9]{64}:/u.test(requestIdentity)
+    ? requestIdentity.slice(0, 64)
+    : null;
   async function destroyAndWait(options?: { reason?: string }): Promise<void> {
     if (destroyed) return;
     destroyed = true;
@@ -162,6 +169,21 @@ export function installRuntime(global: RuntimeHost): InternalExplodexRuntime {
   const runtime: InternalExplodexRuntime = {
     version: RUNTIME_VERSION,
     [RUNTIME_REQUEST_MARK]: requestIdentity,
+    [PRIVATE_ADOPT_REQUEST]: (nextRequestIdentity) => {
+      if (
+        typeof nextRequestIdentity !== "string" ||
+        nextRequestIdentity.length === 0 ||
+        runtimeSourceDigest === null ||
+        !nextRequestIdentity.startsWith(`${runtimeSourceDigest}:`)
+      ) return false;
+      runtime[RUNTIME_REQUEST_MARK] = nextRequestIdentity;
+      global[RUNTIME_REQUEST_IDENTITY] = nextRequestIdentity;
+      application.enableEnabledReconciliation();
+      const nextReconciliation = application.claimEnabledReconciliation();
+      if (nextReconciliation === null) return false;
+      runtime[PRIVATE_RECONCILE_ENABLED] = nextReconciliation;
+      return true;
+    },
     log,
     review: {
       open: (request) => {
@@ -209,6 +231,8 @@ export function installRuntime(global: RuntimeHost): InternalExplodexRuntime {
     [PRIVATE_FINALIZE_APPROVED]: (operationId, nonce) =>
       application.finalizeApproved(operationId, nonce),
     [PRIVATE_RECONCILE_ENABLED]: reconcileEnabled,
+    [PRIVATE_DISABLE_RECONCILIATION]: () =>
+      application.disableEnabledReconciliation(),
     [PRIVATE_APPLICATION_STATUS]: (pluginId) =>
       application.status(pluginId),
     [PRIVATE_UNLOAD_PLUGIN]: (pluginId) =>

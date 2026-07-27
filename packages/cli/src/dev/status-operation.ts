@@ -52,6 +52,7 @@ import {
   type DevStatusSnapshot,
   type DevTerminationResult,
 } from "./workflow.ts";
+import { classifyOwnedListenerAuthority } from "./listener-authority.ts";
 
 export type DevStatusOperationOptions = {
   osHome: string;
@@ -240,6 +241,7 @@ async function safeEndpointInspection(options: {
   state: DevStatusSnapshot["state"];
   process: (ProcessObservation & ProcessIdentity) | null;
   listeners: ListenerObservation[];
+  operationOwnedCompanionPids: readonly number[];
   host: HostIdentity | null;
   cdp: CdpAdapter;
   signal?: AbortSignal;
@@ -263,7 +265,13 @@ async function safeEndpointInspection(options: {
     listener.host === "127.0.0.1" &&
     listener.port === 9444
   );
-  if (options.listeners.length !== 1 || exact.length !== 1) return null;
+  const companions = new Set(options.operationOwnedCompanionPids);
+  if (
+    exact.length !== 1 ||
+    options.listeners.some((listener) =>
+      listener.pid !== state.pid && !companions.has(listener.pid)
+    )
+  ) return null;
   return inspectCompatibleEndpoint({
     role: "development",
     endpoint: roleEndpoint("development"),
@@ -366,10 +374,28 @@ export async function inspectDevInstanceStatus(
     : await statusAdapters.process.identify(state.pid, {
         signal: options.signal,
       });
+  const listenerAuthority =
+    state?.pid === null ||
+      state?.pid === undefined ||
+      state.processStartedAt === null
+      ? null
+      : classifyOwnedListenerAuthority({
+          rootPid: state.pid,
+          rootProcessStartedAt: state.processStartedAt,
+          listeners: observedListeners,
+          processes: processInventory.verified,
+          privateRoots: [
+            state.electronUserDataPath,
+            state.codexHomePath,
+            state.explodexStatePath,
+          ],
+        });
+  const companionPids = listenerAuthority?.companionPids ?? [];
   const endpoint = await safeEndpointInspection({
     state,
     process,
     listeners: observedListeners,
+    operationOwnedCompanionPids: companionPids,
     host,
     cdp,
     signal: options.signal,
@@ -400,6 +426,7 @@ export async function inspectDevInstanceStatus(
     currentPidIdentity,
     paths,
     listeners: observedListeners,
+    operationOwnedCompanionPids: companionPids,
     endpoint,
     compatibility,
     protectedMainOverlap:

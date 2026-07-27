@@ -13,6 +13,7 @@ function input(id: string, digest: string) {
     version: "opaque-v1",
     payloadSha256: digest,
     lifecycle: "dynamic",
+    boundary: "current",
     assets: [],
   };
 }

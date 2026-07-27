@@ -14,6 +14,7 @@ import {
   selectPendingReviewArtifacts,
   type ReviewArtifact,
 } from "../plugin/review-protocol.ts";
+import { openPostOperationManagement } from "./post-operation-management.ts";
 
 const OPERATION = "plugin.review";
 
@@ -351,8 +352,19 @@ export async function runPluginReview(options: {
     mutations: result.mutations,
     ...(result.protocol === undefined ? {} : { protocol: result.protocol }),
   };
+  const management = await openPostOperationManagement({
+    globals: options.globals,
+    env: options.env,
+    explodexHome: home,
+    target: result.target,
+    signal: options.signal,
+  });
   return {
-    envelope: successEnvelope(OPERATION, payload),
+    envelope: successEnvelope(
+      OPERATION,
+      { ...payload, management },
+      management.warning === null ? [] : [management.warning],
+    ),
     exitCode: 0,
     humanStdout: result.status === "not-required"
       ? "No pending plugin identities require review.\n"
@@ -360,11 +372,13 @@ export async function runPluginReview(options: {
         ? [
             `Plugin approval committed: ${result.selected.length} selected`,
             `Application results: ${result.applications.length}`,
+            management.humanLine,
             "",
           ].join("\n")
         : [
             "Plugin review submitted with an empty selection.",
             "No activation authority changed.",
+            management.humanLine,
             "",
           ].join("\n"),
     humanStderr: "",

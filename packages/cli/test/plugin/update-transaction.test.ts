@@ -316,6 +316,29 @@ describe("M3-F07 exact selected plugin updates", () => {
         beforeTree,
       );
 
+      let staleFetches = 0;
+      const stale = await applySelectedPluginUpdates({
+        explodexHome: home,
+        recommendations,
+        selected: [{
+          id: b.packaged.report.id,
+          version: b.packaged.report.version,
+          payloadSha256: b.packaged.payloadSha256,
+        }],
+        expectedEnabledPluginIdentities: [],
+        async fetchArchive() {
+          staleFetches += 1;
+          return readFile(b.packaged.outputPath);
+        },
+      });
+      expect(stale).toMatchObject({
+        ok: false,
+        code: "plugin.update.stale-selection",
+        stateCommitted: false,
+        downloaded: [],
+      });
+      expect(staleFetches).toBe(0);
+
       const applied = await applySelectedPluginUpdates({
         explodexHome: home,
         recommendations,
@@ -324,6 +347,11 @@ describe("M3-F07 exact selected plugin updates", () => {
           version: b.packaged.report.version,
           payloadSha256: b.packaged.payloadSha256,
         }],
+        expectedEnabledPluginIdentities: [{
+          id: installedA.id,
+          version: installedA.version,
+          payloadSha256: installedA.payloadSha256,
+        }],
         now: () => "2026-07-27T16:02:00.000Z",
         async fetchArchive(candidate) {
           fetches += 1;
@@ -331,6 +359,17 @@ describe("M3-F07 exact selected plugin updates", () => {
             recommendation(b.packaged).artifactUrl,
           );
           return readFile(b.packaged.outputPath);
+        },
+        async afterStateCommit({ snapshots }) {
+          expect(snapshots).toHaveLength(1);
+          const committed = await loadPluginsState({ explodexHome: home });
+          if (committed.status !== "valid") {
+            throw new Error("expected committed update state");
+          }
+          expect(committed.state.plugins[installedA.id]!.enabled).toEqual({
+            version: b.packaged.report.version,
+            payloadSha256: b.packaged.payloadSha256,
+          });
         },
       });
       expect(applied.ok).toBe(true);

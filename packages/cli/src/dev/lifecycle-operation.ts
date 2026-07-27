@@ -5,6 +5,7 @@ import {
   createDefaultHostAdapters,
   type HostAdapters,
 } from "../host/adapters.ts";
+import type { HostIdentity } from "../host/types.ts";
 import {
   evaluateCompatibility,
   loadCompatibilityRecord,
@@ -85,6 +86,10 @@ export type DevLifecycleSystemOptions = {
   cdp?: CdpAdapter;
   commands?: ReadOnlyCommandRunner;
   spawn?: LaunchSpawnAdapter;
+  requiredHost?: HostIdentity;
+  afterLockedTransition?: (
+    result: Extract<DevLifecycleResult, { ok: true }>,
+  ) => Promise<void>;
 };
 
 function mutationFor(
@@ -226,6 +231,31 @@ export async function runDevLifecycleOperation(
       message: host.error.message,
       state: currentState.state,
       details: host.error,
+    });
+  }
+  if (
+    options.requiredHost !== undefined &&
+    !frozenHostEquals(
+      freezeHostIdentity(options.requiredHost),
+      host.host,
+    )
+  ) {
+    return refused({
+      code: options.kind === "stop"
+        ? "dev.stop-refused"
+        : options.kind === "restart"
+          ? "dev.restart-refused"
+          : options.kind === "ensure"
+            ? "dev.ensure-refused"
+            : "dev.start-refused",
+      message:
+        "Canonical host identity drifted after the active operation freeze.",
+      state: currentState.state,
+      details: {
+        code: "compatibility.drifted",
+        activeOperationAborted: true,
+        reconnectAttempted: false,
+      },
     });
   }
   const frozenHost = freezeHostIdentity(host.host);
@@ -424,31 +454,40 @@ export async function runDevLifecycleOperation(
         operationId,
         lockAlreadyHeld: true,
       };
+      let transition: DevLifecycleResult;
       switch (options.kind) {
         case "start":
-          return startDevInstance({
+          transition = await startDevInstance({
             ...common,
             launch,
             terminate,
           });
+          break;
         case "ensure":
-          return ensureDevInstance({
+          transition = await ensureDevInstance({
             ...common,
             launch,
             terminate,
           });
+          break;
         case "restart":
-          return restartDevInstance({
+          transition = await restartDevInstance({
             ...common,
             launch,
             terminate,
           });
+          break;
         case "stop":
-          return stopDevInstance({
+          transition = await stopDevInstance({
             ...common,
             terminate,
           });
+          break;
       }
+      if (transition.ok) {
+        await options.afterLockedTransition?.(transition);
+      }
+      return transition;
     },
   });
   if (!outer.ok) {

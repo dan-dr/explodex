@@ -59,6 +59,7 @@ export type PluginApplicationOperationResult =
       details?: Record<string, unknown>;
       applications: RuntimeApplicationResult[];
       sourceDelivered: boolean;
+      target?: TargetIdentity;
       residualInventory?: {
         callbacks: number;
         sessions: number;
@@ -298,9 +299,11 @@ export function buildApprovedApplicationExpression(options: {
   activationSecret: string;
   snapshots: readonly PluginPayloadSnapshot[];
   mode?: "approved" | "enabled";
+  lifecycleBoundary?: "current" | "renderer" | "app";
   observedPluginIds?: readonly string[];
 }): string {
   const mode = options.mode ?? "approved";
+  const lifecycleBoundary = options.lifecycleBoundary ?? "current";
   const operations = options.snapshots.map((snapshot) => ({
     input: {
       schemaVersion: 1,
@@ -310,6 +313,7 @@ export function buildApprovedApplicationExpression(options: {
       version: snapshot.identity.version,
       payloadSha256: snapshot.identity.payloadSha256,
       lifecycle: snapshot.manifest.lifecycle,
+      boundary: lifecycleBoundary,
       assets: snapshot.manifest.assets.map((path) => ({
         path,
         bytes: [...snapshot.read(path)],
@@ -399,7 +403,11 @@ ${operation.source}
   }`
     : `
   } finally {
-    // Enabled reconciliation is one-shot and holds no renderer callback grant.
+    const disableReconciliation =
+      runtime && runtime["__explodexDisableEnabledReconciliation"];
+    if (typeof disableReconciliation === "function") {
+      disableReconciliation();
+    }
   }`;
   const observedPluginIds = options.observedPluginIds ?? [];
   const sdkRequestIdentity = `${
@@ -414,11 +422,16 @@ if (
     JSON.stringify(sdkRequestIdentity)
   }
 ) {
-  const destroyAndWait = previousRuntime["__explodexDestroyRuntimeAndWait"];
-  if (typeof destroyAndWait !== "function") {
-    throw new Error("Previous Explodex runtime cannot be replaced safely");
+  const adoptRequest = previousRuntime["__explodexAdoptRuntimeRequest"];
+  const adopted = typeof adoptRequest === "function" &&
+    adoptRequest(${JSON.stringify(sdkRequestIdentity)}) === true;
+  if (!adopted) {
+    const destroyAndWait = previousRuntime["__explodexDestroyRuntimeAndWait"];
+    if (typeof destroyAndWait !== "function") {
+      throw new Error("Previous Explodex runtime cannot be replaced safely");
+    }
+    await destroyAndWait({ reason: "operation-replacement" });
   }
-  await destroyAndWait({ reason: "operation-replacement" });
 }
 globalThis.__explodexSdkRuntimeRequestIdentity = ${
     JSON.stringify(sdkRequestIdentity)
@@ -470,6 +483,7 @@ export async function runApprovedPluginApplicationOperation(options: {
   timeoutMs: number;
   signal?: AbortSignal;
   mode?: "approved" | "enabled";
+  lifecycleBoundary?: "current" | "renderer" | "app";
 }): Promise<PluginApplicationOperationResult> {
   if (options.signal?.aborted) {
     return {
@@ -481,12 +495,17 @@ export async function runApprovedPluginApplicationOperation(options: {
       sourceDelivered: false,
     };
   }
-  const dynamicSnapshots = options.snapshots.filter((snapshot) =>
-    snapshot.manifest.lifecycle === "dynamic"
+  const lifecycleBoundary = options.lifecycleBoundary ?? "current";
+  const runnableSnapshots = options.snapshots.filter((snapshot) =>
+    snapshot.manifest.lifecycle === "dynamic" ||
+    (snapshot.manifest.lifecycle === "renderer-start" &&
+      (lifecycleBoundary === "renderer" || lifecycleBoundary === "app")) ||
+    (snapshot.manifest.lifecycle === "app-start" &&
+      lifecycleBoundary === "app")
   );
   const boundarySnapshots = [
     ...options.snapshots.flatMap((snapshot) =>
-      snapshot.manifest.lifecycle === "dynamic"
+      runnableSnapshots.includes(snapshot)
         ? []
         : [{
             identity: snapshot.identity,
@@ -495,7 +514,7 @@ export async function runApprovedPluginApplicationOperation(options: {
     ),
     ...(options.observedBoundaries ?? []),
   ];
-  const expectedIdentities = dynamicSnapshots.map((snapshot) => ({
+  const expectedIdentities = runnableSnapshots.map((snapshot) => ({
     ...snapshot.identity,
   }));
   const notAttempted = (
@@ -516,6 +535,7 @@ export async function runApprovedPluginApplicationOperation(options: {
       error: { code, message },
     }));
   let deliveryStarted = false;
+  let evaluatedTarget: TargetIdentity | null = null;
   const operation = await runExactTargetOperation({
     runtime: options.runtime,
     operationId: options.operationId,
@@ -545,14 +565,15 @@ export async function runApprovedPluginApplicationOperation(options: {
             { code: "context_identity_drift" as const },
           );
         }
-        if (dynamicSnapshots.length > 0) {
+        if (runnableSnapshots.length > 0) {
           return buildApprovedApplicationExpression({
             sdkRuntimeSource: options.sdkRuntimeSource,
             operationId: options.operationId,
             nonce: options.nonce,
             activationSecret: options.activationSecret,
-            snapshots: dynamicSnapshots,
+            snapshots: runnableSnapshots,
             mode: options.mode,
+            lifecycleBoundary: options.lifecycleBoundary,
             observedPluginIds: boundarySnapshots.map((boundary) =>
               boundary.identity.id
             ),
@@ -591,8 +612,9 @@ export async function runApprovedPluginApplicationOperation(options: {
   };
 })()`;
       },
-      onBeforeEvaluation() {
-        if (dynamicSnapshots.length > 0) deliveryStarted = true;
+      onBeforeEvaluation(input) {
+        evaluatedTarget = input.target;
+        if (runnableSnapshots.length > 0) deliveryStarted = true;
       },
       ...(options.mode === "enabled"
         ? {}
@@ -605,6 +627,13 @@ export async function runApprovedPluginApplicationOperation(options: {
   return true;
 })()` }),
     },
+    ...(options.lifecycleBoundary === "renderer"
+      ? {
+          rendererBoundary: {
+            timeoutMs: options.timeoutMs,
+          },
+        }
+      : {}),
     stageBounds: {
       cdpEvaluationMs: options.timeoutMs,
     },
@@ -625,6 +654,7 @@ export async function runApprovedPluginApplicationOperation(options: {
         deliveryStarted,
       ),
       sourceDelivered: deliveryStarted,
+      ...(evaluatedTarget === null ? {} : { target: evaluatedTarget }),
       residualInventory: operation.residualInventory,
     };
   }
@@ -644,6 +674,7 @@ export async function runApprovedPluginApplicationOperation(options: {
         deliveryStarted,
       ),
       sourceDelivered: deliveryStarted,
+      target: operation.result.target,
       residualInventory: operation.residualInventory,
     };
   }
@@ -663,6 +694,7 @@ export async function runApprovedPluginApplicationOperation(options: {
         deliveryStarted,
       ),
       sourceDelivered: deliveryStarted,
+      target: operation.result.target,
       residualInventory: operation.residualInventory,
     };
   }
@@ -716,6 +748,7 @@ export function runEnabledPluginApplicationOperation(options: {
   }[];
   timeoutMs: number;
   signal?: AbortSignal;
+  lifecycleBoundary?: "current" | "renderer" | "app";
 }): Promise<PluginApplicationOperationResult> {
   return runApprovedPluginApplicationOperation({
     ...options,

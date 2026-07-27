@@ -12,6 +12,7 @@ import {
   removeInstalledPlugin,
   type PluginMutationIdentity,
 } from "../plugin/mutation-transaction.ts";
+import { openPostOperationManagement } from "./post-operation-management.ts";
 
 const OPERATION = "plugin.remove";
 
@@ -214,21 +215,34 @@ export async function runPluginRemove(options: {
       exitCode: exitCodeForError(result.code),
     });
   }
+  const management = await openPostOperationManagement({
+    globals: options.globals,
+    env: options.env,
+    explodexHome: home,
+    target: parsed.target,
+    signal: options.signal,
+  });
   return {
-    envelope: successEnvelope(OPERATION, {
-      target: parsed.target,
-      removed: result.removed,
-      stateCommitted: result.stateCommitted,
-      authorityChanged: result.authorityChanged,
-      artifactDeleted: result.artifactDeleted,
-      orphanedDirectory: result.orphanedDirectory,
-      mutation: result.mutation,
-    }),
+    envelope: successEnvelope(
+      OPERATION,
+      {
+        target: parsed.target,
+        removed: result.removed,
+        stateCommitted: result.stateCommitted,
+        authorityChanged: result.authorityChanged,
+        artifactDeleted: result.artifactDeleted,
+        orphanedDirectory: result.orphanedDirectory,
+        mutation: result.mutation,
+        management,
+      },
+      management.warning === null ? [] : [management.warning],
+    ),
     exitCode: 0,
     humanStdout: [
       `Removed plugin '${parsed.id}' ${result.removed.version} ${result.removed.payloadSha256}.`,
       `Application: ${result.mutation.application.status}`,
       result.mutation.application.message ?? "",
+      management.humanLine,
       "",
     ].filter((line, index, lines) =>
       line.length > 0 || index === lines.length - 1

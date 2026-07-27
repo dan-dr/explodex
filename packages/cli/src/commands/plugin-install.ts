@@ -11,6 +11,7 @@ import { resolveExplodexHome } from "../home/paths.ts";
 import { installLocalPluginArchive } from "../plugin/install.ts";
 import { performPendingPluginReview } from "./plugin-review.ts";
 import type { CliIo } from "../output/write.ts";
+import { openPostOperationManagement } from "./post-operation-management.ts";
 
 const OPERATION = "plugin.install";
 
@@ -129,6 +130,9 @@ export async function runPluginInstall(options: {
           ? {}
           : { completedMutation: result.completedMutation }),
         ...(result.artifactPath === undefined ? {} : { artifactPath: result.artifactPath }),
+        ...(result.residualLockAuthority === undefined
+          ? {}
+          : { residualLockAuthority: result.residualLockAuthority }),
       },
       exitCode: exitCodeForError(result.code),
       humanStderr: `${result.message}\nerror.code: ${result.code}\n`,
@@ -201,11 +205,23 @@ export async function runPluginInstall(options: {
         ].join("\n"),
       });
     }
+    const management = await openPostOperationManagement({
+      globals: options.globals,
+      env: options.env,
+      explodexHome,
+      target,
+      signal: options.signal,
+    });
     return {
-      envelope: successEnvelope(OPERATION, {
-        ...payload,
-        review,
-      }),
+      envelope: successEnvelope(
+        OPERATION,
+        {
+          ...payload,
+          review,
+          management,
+        },
+        management.warning === null ? [] : [management.warning],
+      ),
       exitCode: EXIT_SUCCESS,
       humanStdout: [
         `Installed plugin: ${result.id}@${result.version}`,
@@ -215,6 +231,7 @@ export async function runPluginInstall(options: {
         review.status === "approved"
           ? `Application results: ${review.applications.length}`
           : "Activation authority was unchanged.",
+        management.humanLine,
         "",
       ].join("\n"),
       humanStderr: "",

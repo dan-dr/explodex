@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { createHash } from "node:crypto";
 import type { TargetIdentity } from "../cdp/types.ts";
 import type { RuntimeAdapters } from "../runtime/adapters.ts";
 import {
@@ -67,6 +68,7 @@ export type EnabledPluginRevalidationResult =
       stateCommitted: false;
       results: PluginMutationResult[];
       snapshots: PluginPayloadSnapshot[];
+      authorityFingerprint: string;
       residualLockAuthority?: ResidualLockAuthority;
     }
   | {
@@ -78,6 +80,7 @@ export type EnabledPluginRevalidationResult =
       stateCommitted: false;
       results: PluginMutationResult[];
       snapshots: PluginPayloadSnapshot[];
+      authorityFingerprint: string | null;
       residualLockAuthority?: ResidualLockAuthority;
     };
 
@@ -103,6 +106,7 @@ function failure(options: {
     stateCommitted: false,
     results: [],
     snapshots: [],
+    authorityFingerprint: null,
     ...(options.residualLockAuthority === undefined
       ? {}
       : { residualLockAuthority: options.residualLockAuthority }),
@@ -190,11 +194,17 @@ function mapLockFailure(
  */
 export async function revalidateEnabledPluginArtifacts(options: {
   explodexHome: string;
+  boundary?: "current" | "renderer" | "app";
   operationId?: string;
   signal?: AbortSignal;
   lockWaitMs?: number;
   runtimeAdapters?: RuntimeAdapters;
   adapters?: EnabledPluginReconciliationAdapters;
+  afterRevalidation?(input: {
+    results: readonly PluginMutationResult[];
+    snapshots: readonly PluginPayloadSnapshot[];
+    authorityFingerprint: string;
+  }): Promise<void>;
 }): Promise<EnabledPluginRevalidationResult> {
   const home = resolve(options.explodexHome);
   const operationId = options.operationId ?? "plugin-reconciliation";
@@ -239,6 +249,7 @@ export async function revalidateEnabledPluginArtifacts(options: {
             stateCommitted: false,
             results,
             snapshots,
+            authorityFingerprint: pluginAuthorityFingerprint(loaded.state),
           };
         }
         if (enabled.artifactPath === null) {
@@ -273,7 +284,15 @@ export async function revalidateEnabledPluginArtifacts(options: {
           continue;
         }
         await options.adapters?.afterArtifactRevalidation?.(enabled.id);
-        if (validated.lifecycle !== "dynamic") {
+        const boundary = options.boundary ?? "current";
+        const applicable =
+          validated.lifecycle === "dynamic" ||
+          (
+            validated.lifecycle === "renderer-start" &&
+            (boundary === "renderer" || boundary === "app")
+          ) ||
+          (validated.lifecycle === "app-start" && boundary === "app");
+        if (!applicable) {
           results.push({
             id: enabled.id,
             previousIntent: copyIntent(enabled.intent),
@@ -325,14 +344,27 @@ export async function revalidateEnabledPluginArtifacts(options: {
           },
         });
       }
+      const authorityFingerprint = pluginAuthorityFingerprint(loaded.state);
+      await options.afterRevalidation?.({
+        results,
+        snapshots,
+        authorityFingerprint,
+      });
       return {
         ok: true,
         operationId,
         stateCommitted: false,
         results,
         snapshots,
+        authorityFingerprint,
       };
     },
   });
   return locked.ok ? locked.value : mapLockFailure(locked, operationId);
+}
+
+export function pluginAuthorityFingerprint(state: PluginsState): string {
+  return createHash("sha256")
+    .update(JSON.stringify(state))
+    .digest("hex");
 }

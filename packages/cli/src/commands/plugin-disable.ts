@@ -9,6 +9,7 @@ import {
 } from "../output/envelope.ts";
 import { disableInstalledPlugin } from "../plugin/mutation-transaction.ts";
 import { createDeclaredTargetPluginTeardown } from "../plugin/mutation-target.ts";
+import { openPostOperationManagement } from "./post-operation-management.ts";
 
 const OPERATION = "plugin.disable";
 
@@ -145,13 +146,25 @@ export async function runPluginDisable(options: {
       exitCode: exitCodeForError(result.code),
     });
   }
+  const management = await openPostOperationManagement({
+    globals: options.globals,
+    env: options.env,
+    explodexHome: home,
+    target: parsed.target,
+    signal: options.signal,
+  });
   return {
-    envelope: successEnvelope(OPERATION, {
-      target: parsed.target,
-      stateCommitted: result.stateCommitted,
-      authorityChanged: result.authorityChanged,
-      mutation: result.mutation,
-    }),
+    envelope: successEnvelope(
+      OPERATION,
+      {
+        target: parsed.target,
+        stateCommitted: result.stateCommitted,
+        authorityChanged: result.authorityChanged,
+        mutation: result.mutation,
+        management,
+      },
+      management.warning === null ? [] : [management.warning],
+    ),
     exitCode: 0,
     humanStdout: [
       result.authorityChanged
@@ -159,6 +172,7 @@ export async function runPluginDisable(options: {
         : `Plugin '${parsed.id}' was already disabled.`,
       `Application: ${result.mutation.application.status}`,
       result.mutation.application.message ?? "",
+      management.humanLine,
       "",
     ].filter((line, index, lines) =>
       line.length > 0 || index === lines.length - 1

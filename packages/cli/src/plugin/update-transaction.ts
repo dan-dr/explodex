@@ -26,6 +26,7 @@ import {
   type PreparedUpdateArtifact,
 } from "./update-artifact.ts";
 import {
+  compareUpdateIdentity,
   fullUpdateIdentityKey,
   listPluginUpdateRecommendations,
   normalizeUpdateRecommendations,
@@ -384,6 +385,7 @@ export async function applySelectedPluginUpdates(options: {
   explodexHome: string;
   recommendations: readonly unknown[];
   selected: readonly ReviewSelectionTuple[];
+  expectedEnabledPluginIdentities?: readonly PluginPayloadIdentity[];
   fetchArchive(
     recommendation: PluginUpdateRecommendation,
     signal?: AbortSignal,
@@ -394,6 +396,10 @@ export async function applySelectedPluginUpdates(options: {
   lockWaitMs?: number;
   runtimeAdapters?: RuntimeAdapters;
   adapters?: PluginUpdateAdapters;
+  afterStateCommit?(input: {
+    snapshots: readonly PluginPayloadSnapshot[];
+    mutations: readonly PluginMutationResult[];
+  }): Promise<void>;
 }): Promise<PluginUpdateResult> {
   const operationId = options.operationId ?? "plugin-update";
   const normalized = normalizeUpdateRecommendations(options.recommendations);
@@ -454,6 +460,32 @@ export async function applySelectedPluginUpdates(options: {
             "Update Selected requires a valid authoritative plugins.json state.",
           selected: selection.values,
         });
+      }
+      if (options.expectedEnabledPluginIdentities !== undefined) {
+        const currentEnabled = Object.keys(loaded.state.plugins)
+          .flatMap((id) => {
+            const enabled = loaded.state.plugins[id]!.enabled;
+            return enabled === null ? [] : [{ id, ...enabled }];
+          })
+          .sort(compareUpdateIdentity);
+        const expectedEnabled = options.expectedEnabledPluginIdentities
+          .map((identity) => ({ ...identity }))
+          .sort(compareUpdateIdentity);
+        if (
+          currentEnabled.length !== expectedEnabled.length ||
+          currentEnabled.some((identity, index) =>
+            fullUpdateIdentityKey(identity) !==
+              fullUpdateIdentityKey(expectedEnabled[index]!)
+          )
+        ) {
+          return failure({
+            operationId,
+            code: "plugin.update.stale-selection",
+            message:
+              "Enabled plugin intent changed after update consent and before download.",
+            selected: selection.values,
+          });
+        }
       }
       for (const identity of selection.values) {
         const recommendation = recommendationByIdentity.get(
@@ -643,6 +675,10 @@ export async function applySelectedPluginUpdates(options: {
           mutations,
         });
       }
+      await options.afterStateCommit?.({
+        snapshots,
+        mutations,
+      });
       return {
         ok: true,
         operationId,

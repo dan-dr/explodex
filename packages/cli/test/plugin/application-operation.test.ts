@@ -90,6 +90,7 @@ class ApplicationCdpAdapter implements CdpAdapter {
   closed = false;
   evaluations = 0;
   expressions: string[] = [];
+  currentContext = { ...CONTEXT };
 
   constructor(readonly outcome: unknown) {}
 
@@ -113,11 +114,19 @@ class ApplicationCdpAdapter implements CdpAdapter {
     const session: CdpTargetSession = {
       targetId: TARGET.id,
       isOpen: () => !this.closed,
-      listExecutionContexts: async () => [{ ...CONTEXT }],
+      listExecutionContexts: async () => [{ ...this.currentContext }],
       evaluate: async (request) => {
         this.evaluations += 1;
         this.expressions.push(request.expression);
         return { value: this.outcome };
+      },
+      reloadRenderer: async () => {
+        this.currentContext = {
+          ...CONTEXT,
+          id: CONTEXT.id + 1,
+          uniqueId: "context-after-renderer-boundary",
+        };
+        return { ...this.currentContext };
       },
       close: async () => {
         this.closed = true;
@@ -569,5 +578,69 @@ globalThis.Explodex = {
     expect(adapter.expressions.join("\n")).not.toContain(
       "__explodexFinalizeApprovedOperation",
     );
+  });
+});
+
+describe("M4-F03 exact owned renderer boundary", () => {
+  test("reloads the selected target and evaluates restart source only in the new context", async () => {
+    const adapter = new ApplicationCdpAdapter({
+      schemaVersion: 1,
+      applications: [{
+        schemaVersion: 1,
+        id: "alpha",
+        version: "opaque-v1",
+        payloadSha256: DIGEST,
+        status: "applied",
+        boundary: "none",
+        setupCount: 1,
+        previousAppliedIdentity: null,
+        appliedIdentity: {
+          id: "alpha",
+          version: "opaque-v1",
+          payloadSha256: DIGEST,
+        },
+        stage: "setup",
+        possiblePartialEffects: false,
+      }],
+      observed: [],
+    });
+    const runtime = createFakeRuntimeHarness({
+      startMs: 10_000,
+      self: { pid: 8001, processStartedAt: "renderer-boundary-operation" },
+    });
+    runtime.setProcessAlive(PROCESS.pid, PROCESS.processStartedAt, true);
+    const operation = runEnabledPluginApplicationOperation({
+      runtime: runtime.adapters,
+      operationId: "renderer-boundary-operation",
+      role: "development",
+      homeIdentity: "/tmp/renderer-boundary-home",
+      host: HOST,
+      process: PROCESS,
+      endpoint: { host: "127.0.0.1", port: 9444 },
+      cdp: adapter,
+      expectedTargetId: TARGET.id,
+      revalidate: async () => ({
+        host: HOST,
+        process: PROCESS,
+        listener: LISTENER,
+      }),
+      sdkRuntimeSource: "globalThis.Explodex = globalThis.Explodex;",
+      snapshots: [snapshot("renderer-start")],
+      lifecycleBoundary: "renderer",
+      timeoutMs: 1_000,
+    });
+    const result = await runWithClockPump(runtime, operation);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.target.targetId).toBe(TARGET.id);
+    expect(result.target.executionContextUniqueId).toBe(
+      "context-after-renderer-boundary",
+    );
+    expect(result.applications).toMatchObject([{
+      status: "applied",
+      setupCount: 1,
+    }]);
+    expect(adapter.expressions.at(-1)).toContain('"boundary":"renderer"');
+    expect(adapter.closed).toBe(true);
   });
 });

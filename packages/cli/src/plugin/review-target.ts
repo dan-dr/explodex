@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { createNodeCdpAdapter } from "../cdp/adapters.ts";
 import { createHash } from "node:crypto";
 import { resolveDefaultDevRoot, describeDevLayout } from "../dev/layout.ts";
+import { classifyOwnedListenerAuthority } from "../dev/listener-authority.ts";
 import { loadDevInstanceState } from "../dev/state.ts";
 import { createDefaultHostAdapters } from "../host/adapters.ts";
 import {
@@ -83,6 +84,7 @@ export type PreparedPluginApplicationTarget = {
   listener: ListenerObservation;
   expectedTargetId?: string;
   expectedLaunchMarker?: string;
+  privateRoots?: string[];
 };
 
 function unavailable(options: {
@@ -220,37 +222,37 @@ export async function preparePluginApplicationTarget(options: {
         : null,
     });
   }
-  if (listeners.length !== 1) {
-    return {
-      ok: false,
-      code: "plugin.review.unavailable",
-      message:
-        `The declared ${options.role} review endpoint is unavailable or ambiguous.`,
-      details: {
-        endpoint,
-        listenerCount: listeners.length,
-      },
-    };
-  }
-  const listener = listeners[0]!;
   const processes = await statusAdapters.process.list();
-  const observed = processes.filter((candidate) =>
-    candidate.pid === listener.pid &&
-    candidate.executablePath === options.host.executablePath
-  );
-  if (observed.length !== 1 || listener.processStartedAt === null) {
-    return {
-      ok: false,
-      code: "cdp.identity-mismatch",
-      message:
-        "The declared review endpoint owner did not match one exact canonical ChatGPT process.",
-    };
-  }
-  const process: VerifiedProcess = {
-    ...observed[0]!,
-    processStartedAt: listener.processStartedAt,
-  };
   if (options.role === "main") {
+    if (listeners.length !== 1) {
+      return {
+        ok: false,
+        code: "plugin.review.unavailable",
+        message:
+          "The declared main review endpoint is unavailable or ambiguous.",
+        details: {
+          endpoint,
+          listenerCount: listeners.length,
+        },
+      };
+    }
+    const listener = listeners[0]!;
+    const observed = processes.filter((candidate) =>
+      candidate.pid === listener.pid &&
+      candidate.executablePath === options.host.executablePath
+    );
+    if (observed.length !== 1 || listener.processStartedAt === null) {
+      return {
+        ok: false,
+        code: "cdp.identity-mismatch",
+        message:
+          "The declared review endpoint owner did not match one exact canonical ChatGPT process.",
+      };
+    }
+    const process: VerifiedProcess = {
+      ...observed[0]!,
+      processStartedAt: listener.processStartedAt,
+    };
     return {
       ok: true,
       target: { role: "main", process, listener },
@@ -267,9 +269,44 @@ export async function preparePluginApplicationTarget(options: {
     adapters,
     statePath: layout.statePath,
   });
+  const observed = state?.pid === null || state?.pid === undefined
+    ? undefined
+    : processes.find((candidate) =>
+        candidate.pid === state.pid &&
+        candidate.executablePath === options.host.executablePath
+      );
+  const authority =
+    state?.pid === null ||
+      state?.pid === undefined ||
+      state.processStartedAt === null
+      ? null
+      : classifyOwnedListenerAuthority({
+          rootPid: state.pid,
+          rootProcessStartedAt: state.processStartedAt,
+          listeners,
+          processes,
+          privateRoots: [
+            state.electronUserDataPath,
+            state.codexHomePath,
+            state.explodexStatePath,
+          ],
+        });
+  const listener = authority?.rootListener ?? null;
+  const process: VerifiedProcess | null =
+    observed === undefined ||
+      listener === null ||
+      listener.processStartedAt === null
+      ? null
+      : {
+          ...observed,
+          processStartedAt: listener.processStartedAt,
+        };
   if (
     state === null ||
     state.status !== "ready" ||
+    process === null ||
+    listener === null ||
+    authority?.ok !== true ||
     state.pid !== process.pid ||
     state.processStartedAt !== process.processStartedAt ||
     state.executablePath !== process.executablePath ||
@@ -296,6 +333,11 @@ export async function preparePluginApplicationTarget(options: {
       listener,
       expectedTargetId: state.targetId,
       expectedLaunchMarker: state.launchMarker,
+      privateRoots: [
+        state.electronUserDataPath,
+        state.codexHomePath,
+        state.explodexStatePath,
+      ],
     },
   };
 }
@@ -377,6 +419,128 @@ export async function readVerifiedSdkRuntimeSource(
     );
   }
   return source;
+}
+
+export function createPluginTargetRevalidator(options: {
+  role: HostRole;
+  explodexHome: string;
+  expectedHost: HostIdentity;
+  expected: PreparedPluginApplicationTarget;
+  hostAdapters: Awaited<ReturnType<typeof createDefaultHostAdapters>>;
+  statusAdapters: Awaited<ReturnType<typeof createDefaultHostStatusAdapters>>;
+  sdkRuntime: Awaited<ReturnType<typeof resolveSdkRuntimeIdentityForCli>>;
+}) {
+  return async () => {
+    const currentInspection = await inspectHost({
+      adapters: options.hostAdapters,
+    });
+    if (!currentInspection.ok || currentInspection.host === null) {
+      throw Object.assign(new Error("Canonical host identity became invalid."), {
+        code: "host_identity_drift" as const,
+      });
+    }
+    const currentPersisted = await loadCompatibilityRecord({
+      adapters: options.hostAdapters,
+      explodexHome: options.explodexHome,
+    });
+    const currentSdkRuntime = await resolveSdkRuntimeIdentityForCli();
+    if (
+      currentSdkRuntime.version !== options.sdkRuntime.version ||
+      currentSdkRuntime.sha256 !== options.sdkRuntime.sha256 ||
+      currentSdkRuntime.sourcePath !== options.sdkRuntime.sourcePath
+    ) {
+      throw Object.assign(
+        new Error("Generated SDK runtime identity changed during approval."),
+        { code: "host_identity_drift" as const },
+      );
+    }
+    const currentCompatibility = evaluateCompatibility({
+      host: currentInspection.host,
+      sdkRuntime: {
+        version: currentSdkRuntime.version,
+        sha256: currentSdkRuntime.sha256,
+      },
+      persisted: currentPersisted,
+      runningProcess: null,
+    });
+    if (
+      !currentCompatibility.matched ||
+      !currentCompatibility.allowsCompatibilityDependentWork
+    ) {
+      throw Object.assign(
+        new Error("Compatibility authority changed during plugin approval."),
+        { code: "host_identity_drift" as const },
+      );
+    }
+    const identity = await options.statusAdapters.process.identify(
+      options.expected.process.pid,
+    );
+    const listeners = await options.statusAdapters.port.listenersFor(
+      roleEndpoint(options.role).port,
+    );
+    const rawProcesses = await options.statusAdapters.process.list();
+    const rawProcess = rawProcesses.find((candidate) =>
+      candidate.pid === options.expected.process.pid
+    );
+    const verifiedListeners: ListenerObservation[] = [];
+    for (const candidate of listeners) {
+      const candidateIdentity =
+        await options.statusAdapters.process.identify(candidate.pid);
+      verifiedListeners.push({
+        ...candidate,
+        processStartedAt: candidateIdentity?.processStartedAt ?? null,
+      });
+    }
+    const authority = options.role === "development"
+      ? classifyOwnedListenerAuthority({
+          rootPid: options.expected.process.pid,
+          rootProcessStartedAt: options.expected.process.processStartedAt,
+          listeners: verifiedListeners,
+          processes: rawProcesses,
+          privateRoots: options.expected.privateRoots ?? [],
+        })
+      : {
+          ok: verifiedListeners.length === 1 &&
+            verifiedListeners[0]?.pid === options.expected.process.pid &&
+            verifiedListeners[0]?.processStartedAt ===
+              options.expected.process.processStartedAt,
+          rootListener: verifiedListeners.length === 1
+            ? verifiedListeners[0]!
+            : null,
+        };
+    const listener = authority.rootListener;
+    if (
+      identity === null ||
+      identity.processStartedAt !==
+        options.expected.process.processStartedAt ||
+      !authority.ok ||
+      listener === null ||
+      rawProcess === undefined ||
+      rawProcess.executablePath !== options.expected.process.executablePath ||
+      (
+        options.expected.expectedLaunchMarker !== undefined &&
+        !rawProcess.arguments.includes(
+          options.expected.expectedLaunchMarker,
+        )
+      )
+    ) {
+      throw Object.assign(
+        new Error("Approval process or endpoint identity changed."),
+        { code: "process_identity_drift" as const },
+      );
+    }
+    return {
+      host: currentInspection.host,
+      process: {
+        ...rawProcess,
+        processStartedAt: identity.processStartedAt,
+      },
+      listener: {
+        ...listener,
+        processStartedAt: identity.processStartedAt,
+      },
+    };
+  };
 }
 
 export async function runReviewOnDeclaredTarget(options: {
@@ -526,17 +690,43 @@ export async function runReviewOnDeclaredTarget(options: {
     const listeners = await statusAdapters.port.listenersFor(
       roleEndpoint(options.role).port,
     );
-    const listener = listeners.find((candidate) =>
-      candidate.pid === expected.process.pid
-    );
     const rawProcesses = await statusAdapters.process.list();
     const rawProcess = rawProcesses.find((candidate) =>
       candidate.pid === expected.process.pid
     );
+    const verifiedListeners: ListenerObservation[] = [];
+    for (const candidate of listeners) {
+      const candidateIdentity = await statusAdapters.process.identify(
+        candidate.pid,
+      );
+      verifiedListeners.push({
+        ...candidate,
+        processStartedAt: candidateIdentity?.processStartedAt ?? null,
+      });
+    }
+    const authority = options.role === "development"
+      ? classifyOwnedListenerAuthority({
+          rootPid: expected.process.pid,
+          rootProcessStartedAt: expected.process.processStartedAt,
+          listeners: verifiedListeners,
+          processes: rawProcesses,
+          privateRoots: expected.privateRoots ?? [],
+        })
+      : {
+          ok: verifiedListeners.length === 1 &&
+            verifiedListeners[0]?.pid === expected.process.pid &&
+            verifiedListeners[0]?.processStartedAt ===
+              expected.process.processStartedAt,
+          rootListener: verifiedListeners.length === 1
+            ? verifiedListeners[0]!
+            : null,
+        };
+    const listener = authority.rootListener;
     if (
       identity === null ||
       identity.processStartedAt !== expected.process.processStartedAt ||
-      listener === undefined ||
+      !authority.ok ||
+      listener === null ||
       rawProcess === undefined ||
       rawProcess.executablePath !== expected.process.executablePath ||
       (expected.expectedLaunchMarker !== undefined &&

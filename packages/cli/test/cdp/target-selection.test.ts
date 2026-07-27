@@ -992,7 +992,7 @@ describe("cross-operation target isolation", () => {
       contextUniqueId: "unique-DEV-PAGE-202",
     });
     expect(mainAdapter.evaluations[1]?.expression).toContain(
-      'review.cancelExact(operationId, callbackName, "operation-terminal")',
+      'controller.cancelExact(operationId, callbackName, "operation-terminal")',
     );
     expect(mainAdapter.evaluations[1]?.expression).toContain('"main-op"');
     expect(mainAdapter.evaluations[1]?.expression).toContain('"callback-main"');

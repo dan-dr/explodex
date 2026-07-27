@@ -45,7 +45,11 @@ describe("M3-F07 exact update callback protocol", () => {
     const expression = buildMetadataUpdateExpression({
       sdkRuntimeSource: "globalThis.Explodex = globalThis.Explodex;",
       context,
-      enabledPluginIds: ["alpha", "alpha"],
+      enabledPluginIdentities: [{
+        id: "alpha",
+        version: "opaque-A",
+        payloadSha256: "c".repeat(64),
+      }],
       activationCommitment: "b".repeat(64),
       applicationTtlMs: 1_000,
     });
@@ -53,7 +57,10 @@ describe("M3-F07 exact update callback protocol", () => {
     expect(expression).toContain("Update");
     expect(expression).toContain(context.callbackName);
     expect(expression).toContain("trusted unsandboxed");
-    expect(expression).toContain('"enabledPluginIds":["alpha"]');
+    expect(expression).toContain(
+      `"enabledPluginIdentities":[{"id":"alpha","version":"opaque-A","payloadSha256":"${"c".repeat(64)}"}]`,
+    );
+    expect(expression).toContain("__explodexAdoptRuntimeRequest");
     expect(expression).not.toContain("BUNDLE_SOURCE_SENTINEL");
     expect(Object.keys(context.artifacts[0]!).sort()).toEqual([
       "description",

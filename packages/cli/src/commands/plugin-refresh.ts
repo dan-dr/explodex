@@ -10,6 +10,7 @@ import {
 import { discoverInstalledPlugins } from "../plugin/discovery.ts";
 import { performPendingPluginReview } from "./plugin-review.ts";
 import type { CliIo } from "../output/write.ts";
+import { openPostOperationManagement } from "./post-operation-management.ts";
 
 const OPERATION = "plugin.refresh";
 
@@ -168,12 +169,24 @@ export async function runPluginRefresh(options: {
         humanStderr: `${review.message}\nerror.code: ${review.code}\n`,
       });
     }
+    const management = await openPostOperationManagement({
+      globals: options.globals,
+      env: options.env,
+      explodexHome: home,
+      target: parsed.target,
+      signal: options.signal,
+    });
     return {
-      envelope: successEnvelope(OPERATION, {
-        ...payload,
-        reconciliation,
-        review,
-      }),
+      envelope: successEnvelope(
+        OPERATION,
+        {
+          ...payload,
+          reconciliation,
+          review,
+          management,
+        },
+        management.warning === null ? [] : [management.warning],
+      ),
       exitCode: 0,
       humanStdout: [
         `Plugin refresh: ${result.pending.length} pending, ${result.invalid.length} invalid`,
@@ -186,16 +199,29 @@ export async function runPluginRefresh(options: {
         reconciliation === null
           ? "Enabled reconciliation was not requested."
           : `Enabled reconciliation results: ${reconciliation.results.length}`,
+        management.humanLine,
         "",
       ].join("\n"),
       humanStderr: "",
     };
   }
+  const management = await openPostOperationManagement({
+    globals: options.globals,
+    env: options.env,
+    explodexHome: home,
+    target: parsed.target,
+    signal: options.signal,
+  });
   return {
-    envelope: successEnvelope(OPERATION, {
-      ...payload,
-      reconciliation,
-    }),
+    envelope: successEnvelope(
+      OPERATION,
+      {
+        ...payload,
+        reconciliation,
+        management,
+      },
+      management.warning === null ? [] : [management.warning],
+    ),
     exitCode: 0,
     humanStdout: [
       `Plugin refresh: ${result.pending.length} pending, ${result.invalid.length} invalid`,
@@ -205,6 +231,7 @@ export async function runPluginRefresh(options: {
       reconciliation === null
         ? "Enabled reconciliation was not requested."
         : `Enabled reconciliation results: ${reconciliation.results.length}`,
+      management.humanLine,
       "",
     ].join("\n"),
     humanStderr: "",

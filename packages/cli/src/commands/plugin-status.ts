@@ -4,6 +4,9 @@ import { renderFailure, usageFailure } from "../cli/errors.ts";
 import { resolveExplodexHome } from "../home/paths.ts";
 import { successEnvelope, type RenderedCliResult } from "../output/envelope.ts";
 import { loadPluginsState } from "../plugin/install-state.ts";
+import {
+  inspectPluginManagementOnDevelopmentTarget,
+} from "../plugin/management-target.ts";
 
 const OPERATION = "plugin.status";
 
@@ -12,6 +15,7 @@ export async function runPluginStatus(options: {
   env: NodeJS.ProcessEnv;
   rest: readonly string[];
   endOfOptions: readonly string[];
+  signal?: AbortSignal;
 }): Promise<RenderedCliResult> {
   const tokens = [...options.rest, ...options.endOfOptions];
   const option = tokens.find((token) => token.startsWith("-"));
@@ -51,7 +55,13 @@ export async function runPluginStatus(options: {
     });
   }
 
+  if (options.signal?.aborted) {
+    return interruptedStatus();
+  }
   const loaded = await loadPluginsState({ explodexHome: home });
+  if (options.signal?.aborted) {
+    return interruptedStatus();
+  }
   if (loaded.status === "malformed") {
     return renderFailure({
       operation: OPERATION,
@@ -68,6 +78,20 @@ export async function runPluginStatus(options: {
     : plugins[id] === undefined
       ? {}
       : { [id]: plugins[id] };
+  const devRoot = options.globals.devRoot ?? options.env.EXPLODEX_DEV_ROOT;
+  const observed = devRoot === undefined
+    ? null
+    : await inspectPluginManagementOnDevelopmentTarget({
+        osHome: options.env.HOME ?? "",
+        explodexHome: home,
+        explicitRoot: devRoot,
+        timeoutMs: options.globals.timeoutMs,
+        openUi: false,
+        signal: options.signal,
+      });
+  const observedById = new Map(
+    observed?.plugins.map((plugin) => [plugin.id, plugin.application]) ?? [],
+  );
   const payload = {
     stateStatus: loaded.status,
     schemaVersion: loaded.status === "valid" ? loaded.state.schemaVersion : 1,
@@ -75,7 +99,7 @@ export async function runPluginStatus(options: {
     applications: Object.fromEntries(
       Object.keys(selected).sort().map((pluginId) => [
         pluginId,
-        {
+        observedById.get(pluginId) ?? {
           status: "unknown" as const,
           lifecycle: null,
           boundary: "none" as const,
@@ -88,18 +112,43 @@ export async function runPluginStatus(options: {
     ),
     discovered: false,
     stateChanged: false,
+    inspectedTarget: observed?.ok === true ? observed.target : null,
+    inspection: observed === null
+      ? "not-requested" as const
+      : observed.ok
+        ? "completed" as const
+        : "unavailable" as const,
   };
   const lines = [
     `Plugin state: ${loaded.status}`,
     ...Object.entries(selected).map(([pluginId, record]) =>
-      `${pluginId}: ${record.enabled === null ? "disabled" : `enabled ${record.enabled.version} ${record.enabled.payloadSha256}`} (${record.pendingReview.length} pending), application unknown`
+      `${pluginId}: ${record.enabled === null ? "disabled" : `enabled ${record.enabled.version} ${record.enabled.payloadSha256}`} (${record.pendingReview.length} pending), application ${observedById.get(pluginId)?.status ?? "unknown"}`
     ),
     "",
   ];
   return {
-    envelope: successEnvelope(OPERATION, payload),
+    envelope: successEnvelope(
+      OPERATION,
+      payload,
+      observed !== null && !observed.ok
+        ? [{
+            code: observed.code,
+            message: observed.message,
+          }]
+        : [],
+    ),
     exitCode: 0,
     humanStdout: lines.join("\n"),
-    humanStderr: "",
+    humanStderr: observed !== null && !observed.ok
+      ? `Application inspection unavailable: ${observed.message}\n`
+      : "",
   };
+}
+
+function interruptedStatus(): RenderedCliResult {
+  return renderFailure({
+    operation: OPERATION,
+    code: "operation.interrupted",
+    message: "Plugin status was interrupted.",
+  });
 }

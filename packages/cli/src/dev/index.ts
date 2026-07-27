@@ -12,3 +12,6 @@ export * from "./phase0.ts";
 export * from "./lifecycle-gate.ts";
 export * from "./launch-adapters.ts";
 export * from "./phase0-operation.ts";
+export * from "./ephemeral-artifact.ts";
+export * from "./injection-routing.ts";
+export * from "./injection-operation.ts";

@@ -286,7 +286,14 @@ export const GROUPS: readonly GroupDescriptor[] = [
         path: ["update", "apply"],
         operation: "plugin.update.apply",
         summary: "Apply selected plugin updates after review.",
-        availability: "reserved",
+        availability: "available",
+        options: [
+          {
+            long: "target",
+            description: "Review/application target role.",
+            valueName: "role",
+          },
+        ],
       },
       {
         path: ["disable"],
@@ -322,10 +329,18 @@ export const GROUPS: readonly GroupDescriptor[] = [
       { path: ["start"], operation: "dev.start", summary: "Start the exact owned development instance.", availability: "reserved" },
       { path: ["ensure"], operation: "dev.ensure", summary: "Ensure the exact owned development instance is ready.", availability: "reserved" },
       { path: ["recover"], operation: "dev.recover", summary: "Recover from uncertain development ownership.", availability: "reserved" },
-      { path: ["inject"], operation: "dev.inject", summary: "Inject an artifact into the owned development instance.", availability: "reserved" },
+      {
+        path: ["inject"],
+        operation: "dev.inject",
+        summary: "Inject an artifact into the owned development instance.",
+        availability: "available",
+        arguments: [
+          { name: "artifact", description: "Path to a validated plugin artifact.", required: true },
+        ],
+      },
       { path: ["restart"], operation: "dev.restart", summary: "Restart only the exact owned development process.", availability: "reserved" },
       { path: ["stop"], operation: "dev.stop", summary: "Stop only the exact owned development process.", availability: "reserved" },
-      { path: ["focus"], operation: "dev.focus", summary: "Focus the owned development instance.", availability: "reserved" },
+      { path: ["focus"], operation: "dev.focus", summary: "Focus the owned development instance when exact process-specific activation is supported.", availability: "available" },
     ],
   },
   {

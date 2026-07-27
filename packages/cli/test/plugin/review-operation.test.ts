@@ -104,7 +104,7 @@ class ReviewCdpAdapter implements CdpAdapter {
       isOpen: () => !this.closed,
       listExecutionContexts: async () => [{ ...CONTEXT }],
       evaluate: async (request) => {
-        if (request.expression.includes("review.cancelExact(")) {
+        if (request.expression.includes("controller.cancelExact(")) {
           this.cleanupEvaluations += 1;
           return { value: true };
         }

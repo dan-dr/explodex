@@ -23,4 +23,23 @@ describe("development lifecycle CLI dispatch", () => {
       });
     }
   });
+
+  test("inject and focus dispatch through public operations", async () => {
+    for (const [tokens, operation] of [
+      [["dev", "inject", "/tmp/plugin.tgz", "--json"], "dev.inject"],
+      [["dev", "focus", "--json"], "dev.focus"],
+    ] as const) {
+      const captured = await captureCli(tokens, { PATH: process.env.PATH });
+      expect(captured.exitCode).toBe(2);
+      expect(captured.stderr).toContain("HOME is required");
+      expect(assertSingleJsonValue(captured.stdout)).toMatchObject({
+        schemaVersion: 1,
+        ok: false,
+        operation,
+        error: {
+          code: "config.invalid-environment",
+        },
+      });
+    }
+  });
 });

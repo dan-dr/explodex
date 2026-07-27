@@ -20,6 +20,12 @@ export type CdpTargetSession = {
     expression: string;
     signal?: AbortSignal;
   }): Promise<CdpEvaluationResult>;
+  reloadRenderer?(input: {
+    previousExecutionContextUniqueId: string;
+    timeoutMs: number;
+    signal?: AbortSignal;
+  }): Promise<CdpExecutionContext>;
+  bringToFront?(input: { signal?: AbortSignal }): Promise<void>;
   close(options?: { timeoutMs?: number }): Promise<void>;
 };
 
@@ -239,6 +245,17 @@ class NodeCdpTargetSession implements CdpTargetSession {
       return;
     }
     const method = parsed["method"];
+    if (method === "Runtime.executionContextsCleared") {
+      this.contexts.clear();
+      return;
+    }
+    if (method === "Runtime.executionContextDestroyed") {
+      const params = parsed["params"];
+      if (isRecord(params) && Number.isInteger(params["executionContextId"])) {
+        this.contexts.delete(Number(params["executionContextId"]));
+      }
+      return;
+    }
     if (method !== "Runtime.executionContextCreated") return;
     const params = parsed["params"];
     if (!isRecord(params) || !isRecord(params["context"])) return;
@@ -384,6 +401,50 @@ class NodeCdpTargetSession implements CdpTargetSession {
       throw new Error(`CDP Runtime.evaluate returned unsupported remote type ${remoteType}`);
     }
     return { value };
+  }
+
+  async reloadRenderer(input: {
+    previousExecutionContextUniqueId: string;
+    timeoutMs: number;
+    signal?: AbortSignal;
+  }): Promise<CdpExecutionContext> {
+    if (!Number.isFinite(input.timeoutMs) || input.timeoutMs <= 0) {
+      throw new Error("Renderer reload timeout must be a finite positive number");
+    }
+    if (!this.runtimeEnabled) {
+      await this.listExecutionContexts({ signal: input.signal });
+    }
+    await this.request("Page.enable", {}, input.signal);
+    await this.request("Page.reload", { ignoreCache: false }, input.signal);
+    const deadline = Date.now() + input.timeoutMs;
+    while (Date.now() < deadline) {
+      if (input.signal?.aborted) {
+        throw Object.assign(new Error("Renderer reload was interrupted"), {
+          code: "ABORT_ERR",
+        });
+      }
+      if (this.contextError !== null) throw this.contextError;
+      const defaults = [...this.contexts.values()].filter(
+        (context) =>
+          context.isDefault &&
+          context.uniqueId !== input.previousExecutionContextUniqueId,
+      );
+      if (defaults.length === 1) return { ...defaults[0]! };
+      if (defaults.length > 1) {
+        throw new Error("Renderer reload produced multiple default contexts");
+      }
+      await new Promise<void>((resolve) => {
+        globalThis.setTimeout(resolve, 25);
+      });
+    }
+    throw Object.assign(
+      new Error(`Renderer reload timed out after ${input.timeoutMs}ms`),
+      { code: "operation_timeout" as const, boundMs: input.timeoutMs },
+    );
+  }
+
+  async bringToFront(input: { signal?: AbortSignal }): Promise<void> {
+    await this.request("Page.bringToFront", {}, input.signal);
   }
 
   isOpen(): boolean {

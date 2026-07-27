@@ -63,6 +63,7 @@ export type DevOwnershipEvidence = {
   currentPidIdentity: ProcessIdentity | null;
   paths: DevPathEvidence;
   listeners: ListenerObservation[];
+  operationOwnedCompanionPids?: number[];
   endpoint: EndpointInspectionResult | null;
   compatibility: DevCompatibilityEvidence;
   protectedMainOverlap: boolean;
@@ -370,12 +371,16 @@ export function evaluateDevOwnership(options: {
     listener.pid === state.pid &&
     listener.processStartedAt === state.processStartedAt
   );
+  const companionPids = new Set(evidence.operationOwnedCompanionPids ?? []);
+  const foreignListeners = evidence.listeners.filter((listener) =>
+    listener.pid !== state.pid && !companionPids.has(listener.pid)
+  );
   if (state.pid !== null) {
     if (evidence.listeners.length === 0) {
       add(failures, "port_owner_missing", "Declared development port has no listener.");
     } else if (
-      evidence.listeners.length !== 1 ||
-      matchingListeners.length !== 1
+      matchingListeners.length !== 1 ||
+      foreignListeners.length > 0
     ) {
       add(
         failures,

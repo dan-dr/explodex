@@ -30,12 +30,12 @@ type PluginReviewRequestBase = {
 
 export type PluginReviewRequest = PluginReviewRequestBase & {
   surface?: never;
-  enabledPluginIds?: never;
+  enabledPluginIdentities?: never;
 };
 
 export type PluginUpdateReviewRequest = PluginReviewRequestBase & {
   surface: "update";
-  enabledPluginIds: string[];
+  enabledPluginIdentities: ReviewSelectionTuple[];
 };
 
 type AnyReviewRequest = PluginReviewRequest | PluginUpdateReviewRequest;
@@ -168,6 +168,24 @@ function parseArtifact(value: unknown): ReviewArtifact | null {
   };
 }
 
+function parseIdentity(value: unknown): ReviewSelectionTuple | null {
+  if (
+    !isRecord(value) ||
+    !exactKeys(value, ["id", "version", "payloadSha256"]) ||
+    typeof value.id !== "string" ||
+    value.id.length === 0 ||
+    typeof value.version !== "string" ||
+    value.version.length === 0 ||
+    typeof value.payloadSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(value.payloadSha256)
+  ) return null;
+  return {
+    id: value.id,
+    version: value.version,
+    payloadSha256: value.payloadSha256,
+  };
+}
+
 function parseRequest(
   value: unknown,
   expectedSurface: ReviewSurface,
@@ -185,16 +203,18 @@ function parseRequest(
   const expectedKeys = expectedSurface === "pending"
     ? [keysWithoutWarning, [...keysWithoutWarning, "warning"]]
     : [
-        [...keysWithoutWarning, "surface", "enabledPluginIds"],
-        [...keysWithoutWarning, "surface", "enabledPluginIds", "warning"],
+        [...keysWithoutWarning, "surface", "enabledPluginIdentities"],
+        [...keysWithoutWarning, "surface", "enabledPluginIdentities", "warning"],
       ];
   if (
     !isRecord(value) ||
     !expectedKeys.some((keys) => exactKeys(value, keys)) ||
     value.schemaVersion !== 1 ||
     (expectedSurface === "pending"
-      ? value.surface !== undefined || value.enabledPluginIds !== undefined
-      : value.surface !== "update" || !Array.isArray(value.enabledPluginIds)) ||
+      ? value.surface !== undefined ||
+        value.enabledPluginIdentities !== undefined
+      : value.surface !== "update" ||
+        !Array.isArray(value.enabledPluginIdentities)) ||
     typeof value.operationId !== "string" ||
     value.operationId.length === 0 ||
     typeof value.nonce !== "string" ||
@@ -215,17 +235,15 @@ function parseRequest(
   ) {
     return null;
   }
-  const enabledPluginIds = new Set<string>();
+  const enabledPluginIdentities = new Map<string, ReviewSelectionTuple>();
   if (expectedSurface === "update") {
-    for (const candidate of value.enabledPluginIds as unknown[]) {
+    for (const candidate of value.enabledPluginIdentities as unknown[]) {
+      const identity = parseIdentity(candidate);
       if (
-        typeof candidate !== "string" ||
-        candidate.length === 0 ||
-        enabledPluginIds.has(candidate)
-      ) {
-        return null;
-      }
-      enabledPluginIds.add(candidate);
+        identity === null ||
+        enabledPluginIdentities.has(identity.id)
+      ) return null;
+      enabledPluginIdentities.set(identity.id, identity);
     }
   }
   const artifacts: ReviewArtifact[] = [];
@@ -253,7 +271,14 @@ function parseRequest(
     ? {
         ...base,
         surface: "update",
-        enabledPluginIds: [...enabledPluginIds].sort(),
+        enabledPluginIdentities: [...enabledPluginIdentities.values()].sort(
+          (left, right) =>
+            left.id < right.id ? -1 : left.id > right.id ? 1 :
+            left.version < right.version ? -1 :
+            left.version > right.version ? 1 :
+            left.payloadSha256 < right.payloadSha256 ? -1 :
+            left.payloadSha256 > right.payloadSha256 ? 1 : 0,
+        ),
       }
     : base;
 }
@@ -401,7 +426,9 @@ export function createPluginReviewController(options: {
             selected: false,
             ...(surface === "update"
               ? {
-                  disposition: request.enabledPluginIds?.includes(artifact.id)
+                  disposition: request.enabledPluginIdentities?.some(
+                    (identity) => identity.id === artifact.id
+                  )
                     ? "will-replace-enabled" as const
                     : "will-remain-disabled" as const,
                 }

@@ -8,6 +8,13 @@ import {
   type RenderedCliResult,
 } from "../output/envelope.ts";
 import { discoverInstalledPlugins } from "../plugin/discovery.ts";
+import {
+  listPluginUpdateRecommendations,
+  type PluginUpdateMetadata,
+} from "../plugin/update-transaction.ts";
+import {
+  loadPluginUpdateRecommendations,
+} from "../plugin/update-source.ts";
 
 const OPERATION = "plugin.update.check";
 
@@ -64,6 +71,50 @@ export async function runPluginUpdateCheck(options: {
       exitCode: exitCodeForError(discovery.code),
     });
   }
+  const configured = options.env.EXPLODEX_PLUGIN_UPDATE_RECOMMENDATIONS;
+  let updates: PluginUpdateMetadata[] = [];
+  if (configured !== undefined && configured.length > 0) {
+    try {
+      const recommendations = await loadPluginUpdateRecommendations(resolve(
+        options.env.PWD ?? process.cwd(),
+        configured,
+      ));
+      const listing = await listPluginUpdateRecommendations({
+        explodexHome: home,
+        recommendations,
+        signal: options.signal,
+      });
+      if (!listing.ok) {
+        return renderFailure({
+          operation: OPERATION,
+          code: listing.code,
+          message: listing.message,
+          details: {
+            completedDiscovery: discovery,
+            stateChanged: false,
+            sourceDelivered: false,
+            downloaded: false,
+          },
+          exitCode: exitCodeForError(listing.code),
+        });
+      }
+      updates = listing.recommendations;
+    } catch (error: unknown) {
+      return renderFailure({
+        operation: OPERATION,
+        code: "plugin.update.invalid-recommendation",
+        message: error instanceof Error
+          ? error.message
+          : "Unable to load update recommendations.",
+        details: {
+          completedDiscovery: discovery,
+          stateChanged: false,
+          sourceDelivered: false,
+          downloaded: false,
+        },
+      });
+    }
+  }
   const payload = {
     trigger: discovery.trigger,
     localDiscovery: {
@@ -75,8 +126,13 @@ export async function runPluginUpdateCheck(options: {
       rendererRequested: discovery.rendererRequested,
       sourceDelivered: discovery.sourceDelivered,
     },
-    updates: [],
-    remoteRegistry: "not-configured" as const,
+    updates,
+    remoteRegistry: configured === undefined || configured.length === 0
+      ? "not-configured" as const
+      : "configured-snapshot" as const,
+    stateChanged: false,
+    sourceDelivered: false,
+    downloaded: false,
     review: {
       status: discovery.pending.length === 0
         ? "not-required"
@@ -88,8 +144,10 @@ export async function runPluginUpdateCheck(options: {
     envelope: successEnvelope(OPERATION, payload),
     exitCode: 0,
     humanStdout: [
-      `Plugin update check: 0 updates, ${discovery.pending.length} pending review`,
-      "Remote registry recommendations are not configured in this release.",
+      `Plugin update check: ${updates.length} updates, ${discovery.pending.length} pending review`,
+      configured === undefined || configured.length === 0
+        ? "Remote registry recommendations are not configured in this release."
+        : "Update recommendation metadata was listed without downloading artifacts.",
       "",
     ].join("\n"),
     humanStderr: "",

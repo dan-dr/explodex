@@ -29,11 +29,22 @@ export function createUpdateReviewProtocolContext(options: {
 export function buildMetadataUpdateExpression(options: {
   sdkRuntimeSource: string;
   context: UpdateReviewProtocolContext;
-  enabledPluginIds: readonly string[];
+  enabledPluginIdentities: readonly {
+    id: string;
+    version: string;
+    payloadSha256: string;
+  }[];
   activationCommitment: string;
   applicationTtlMs: number;
 }): string {
-  const enabledPluginIds = [...new Set(options.enabledPluginIds)].sort();
+  const enabledPluginIdentities = options.enabledPluginIdentities
+    .map((identity) => ({ ...identity }))
+    .sort((left, right) =>
+      left.id < right.id ? -1 : left.id > right.id ? 1 :
+      left.version < right.version ? -1 : left.version > right.version ? 1 :
+      left.payloadSha256 < right.payloadSha256 ? -1 :
+      left.payloadSha256 > right.payloadSha256 ? 1 : 0
+    );
   const request = {
     schemaVersion: 1,
     surface: "update",
@@ -45,7 +56,7 @@ export function buildMetadataUpdateExpression(options: {
     applicationTtlMs: options.applicationTtlMs,
     warning:
       "Enabled plugins are trusted unsandboxed renderer code that can read or modify UI and authenticated renderer state. Confirmation and checksums do not provide sandboxing or publisher authentication.",
-    enabledPluginIds,
+    enabledPluginIdentities,
     artifacts: options.context.artifacts,
   };
   const sdkRequestIdentity = `${
@@ -60,11 +71,16 @@ if (
     JSON.stringify(sdkRequestIdentity)
   }
 ) {
-  const destroyAndWait = previousRuntime["__explodexDestroyRuntimeAndWait"];
-  if (typeof destroyAndWait !== "function") {
-    throw new Error("Previous Explodex runtime cannot be replaced safely");
+  const adoptRequest = previousRuntime["__explodexAdoptRuntimeRequest"];
+  const adopted = typeof adoptRequest === "function" &&
+    adoptRequest(${JSON.stringify(sdkRequestIdentity)}) === true;
+  if (!adopted) {
+    const destroyAndWait = previousRuntime["__explodexDestroyRuntimeAndWait"];
+    if (typeof destroyAndWait !== "function") {
+      throw new Error("Previous Explodex runtime cannot be replaced safely");
+    }
+    await destroyAndWait({ reason: "operation-replacement" });
   }
-  await destroyAndWait({ reason: "operation-replacement" });
 }
 globalThis.__explodexSdkRuntimeRequestIdentity = ${
     JSON.stringify(sdkRequestIdentity)

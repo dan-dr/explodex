@@ -18,6 +18,8 @@ export const PRIVATE_FINALIZE_APPROVED =
   "__explodexFinalizeApprovedOperation" as const;
 export const PRIVATE_RECONCILE_ENABLED =
   "__explodexReconcileEnabledPayload" as const;
+export const PRIVATE_DISABLE_RECONCILIATION =
+  "__explodexDisableEnabledReconciliation" as const;
 export const PRIVATE_APPLICATION_STATUS =
   "__explodexPluginApplicationStatus" as const;
 export const PRIVATE_UNLOAD_PLUGIN =
@@ -36,6 +38,7 @@ export type ApprovedPluginInput = {
   version: string;
   payloadSha256: string;
   lifecycle: "dynamic" | "renderer-start" | "app-start";
+  boundary: "current" | "renderer" | "app";
   assets: ApprovedAssetInput[];
 };
 
@@ -87,6 +90,7 @@ export type PluginApplicationController = {
       evaluate: unknown,
     ) => Promise<ApprovedPluginApplicationResult>
   ) | null;
+  enableEnabledReconciliation(): void;
   disableEnabledReconciliation(): void;
   finalizeApproved(operationId: string, nonce: string): void;
   status(pluginId: string): {
@@ -117,6 +121,7 @@ function parseInput(value: unknown): ApprovedPluginInput | null {
   const keys = Object.keys(value).sort();
   const expected = [
     "assets",
+    "boundary",
     "id",
     "lifecycle",
     "nonce",
@@ -142,6 +147,9 @@ function parseInput(value: unknown): ApprovedPluginInput | null {
     (value.lifecycle !== "dynamic" &&
       value.lifecycle !== "renderer-start" &&
       value.lifecycle !== "app-start") ||
+    (value.boundary !== "current" &&
+      value.boundary !== "renderer" &&
+      value.boundary !== "app") ||
     !Array.isArray(value.assets)
   ) {
     return null;
@@ -176,6 +184,7 @@ function parseInput(value: unknown): ApprovedPluginInput | null {
     version: value.version,
     payloadSha256: value.payloadSha256,
     lifecycle: value.lifecycle,
+    boundary: value.boundary,
     assets,
   };
 }
@@ -278,6 +287,7 @@ export function createPluginApplicationController(options: {
     activateByMs: number;
     applicationTtlMs: number;
     applicationExpiresAtMs: number | null;
+    allowedBoundary: ApprovedPluginInput["boundary"];
     selected: Set<string>;
   }>();
   let enabledReconciliationAvailable = true;
@@ -307,6 +317,7 @@ export function createPluginApplicationController(options: {
         activateByMs: Date.now() + request.applicationTtlMs * 4,
         applicationTtlMs: request.applicationTtlMs,
         applicationExpiresAtMs: null,
+        allowedBoundary: "current",
         selected: remaining,
       });
     },
@@ -364,6 +375,17 @@ export function createPluginApplicationController(options: {
           },
         );
       }
+      if (input.boundary !== grant.allowedBoundary) {
+        return failed(
+          input,
+          "plugin.application.wrong-boundary",
+          "Plugin application capability was not issued for this lifecycle boundary.",
+          {
+            previousAppliedIdentity: previousIdentity,
+            appliedIdentity: previousIdentity,
+          },
+        );
+      }
       if (grant.applicationExpiresAtMs === null) {
         grant.applicationExpiresAtMs = Date.now() + grant.applicationTtlMs;
       }
@@ -383,7 +405,12 @@ export function createPluginApplicationController(options: {
         );
       }
       if (grant.selected.size === 0) pending.delete(key);
-      if (input.lifecycle !== "dynamic") {
+      const boundarySatisfied =
+        input.lifecycle === "dynamic" ||
+        (input.lifecycle === "renderer-start" &&
+          (input.boundary === "renderer" || input.boundary === "app")) ||
+        (input.lifecycle === "app-start" && input.boundary === "app");
+      if (!boundarySatisfied) {
         return {
           schemaVersion: 1,
           id: input.id,
@@ -550,6 +577,7 @@ export function createPluginApplicationController(options: {
         activateByMs: Date.now() + 60_000,
         applicationTtlMs: 60_000,
         applicationExpiresAtMs: null,
+        allowedBoundary: input.boundary,
         selected: new Set([identityKey(input)]),
       });
       return controller.applyApproved(input, evaluate, activationCapability);
@@ -557,9 +585,22 @@ export function createPluginApplicationController(options: {
     claimEnabledReconciliation() {
       if (!enabledReconciliationAvailable) return null;
       enabledReconciliationAvailable = false;
-      let used = false;
+      let operationId: string | null = null;
+      let nonce: string | null = null;
+      const consumed = new Set<string>();
       return (input, evaluate) => {
-        if (used) {
+        const parsed = parseInput(input);
+        if (
+          parsed === null ||
+          (
+            operationId !== null &&
+            (
+              parsed.operationId !== operationId ||
+              parsed.nonce !== nonce
+            )
+          ) ||
+          consumed.has(identityKey(parsed))
+        ) {
           return Promise.resolve(failed(
             {
               schemaVersion: 1,
@@ -569,15 +610,21 @@ export function createPluginApplicationController(options: {
               version: "invalid",
               payloadSha256: "0".repeat(64),
               lifecycle: "dynamic",
+              boundary: "current",
               assets: [],
             },
             "plugin.application.unauthorized",
-            "Enabled reconciliation capability has already been consumed.",
+            "Enabled reconciliation capability was malformed, cross-operation, or replayed.",
           ));
         }
-        used = true;
+        operationId ??= parsed.operationId;
+        nonce ??= parsed.nonce;
+        consumed.add(identityKey(parsed));
         return controller.reconcileEnabled(input, evaluate);
       };
+    },
+    enableEnabledReconciliation() {
+      enabledReconciliationAvailable = true;
     },
     disableEnabledReconciliation() {
       enabledReconciliationAvailable = false;

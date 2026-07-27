@@ -115,6 +115,11 @@ export async function runDevRecover(options: {
         expectedTargetId: state.targetId,
         expectedContextUniqueId: state.executionContextUniqueId,
         requireCompleteEndpointOwnershipForSignal: true,
+        privateRoots: [
+          state.electronUserDataPath,
+          state.codexHomePath,
+          state.explodexStatePath,
+        ],
         signal: options.signal,
       });
       if (

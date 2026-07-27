@@ -249,6 +249,35 @@ describe("exact development ownership matrix", () => {
     expect(result.failures).toEqual([]);
   });
 
+  test("accepts only explicitly classified private-root listener companions", () => {
+    const companion = {
+      pid: 4343,
+      processStartedAt: "2026-07-27T12:00:02.000001Z",
+      host: "127.0.0.1",
+      port: 9444 as const,
+      family: "ipv4" as const,
+    };
+    const accepted = evaluateDevOwnership({
+      operation: "inject",
+      evidence: validEvidence({
+        listeners: [...validEvidence().listeners, companion],
+        operationOwnedCompanionPids: [companion.pid],
+      }),
+    });
+    expect(accepted.owned).toBe(true);
+    expect(accepted.failures).toEqual([]);
+
+    const refused = evaluateDevOwnership({
+      operation: "inject",
+      evidence: validEvidence({
+        listeners: [...validEvidence().listeners, companion],
+      }),
+    });
+    expect(refused.failures.map((failure) => failure.code)).toContain(
+      "foreign_9444_owner",
+    );
+  });
+
   test("every failed predicate blocks all lifecycle and renderer effects", () => {
     const failures: Array<
       [DevOwnershipFailureCode, Partial<DevOwnershipEvidence>]
@@ -860,6 +889,7 @@ describe("strict recovery termination", () => {
     endpointFails?: boolean;
     targetId?: string;
     contextUniqueId?: string;
+    privateCompanion?: boolean;
   }): {
     runtimeProcess: RuntimeProcess;
     commands: ReadOnlyCommandRunner;
@@ -874,8 +904,12 @@ describe("strict recovery termination", () => {
         return { pid: 9999, processStartedAt: "self-start" };
       },
       async identify(pid) {
-        return alive && pid === 4242
-          ? { pid, processStartedAt: "4242-start" }
+        if (!alive) return null;
+        if (pid === 4242) {
+          return { pid, processStartedAt: "4242-start" };
+        }
+        return options.privateCompanion && pid === 4343
+          ? { pid, processStartedAt: "4343-start" }
           : null;
       },
       async isAlive(pid, processStartedAt) {
@@ -896,7 +930,15 @@ describe("strict recovery termination", () => {
         if (file === "/bin/ps") {
           return {
             stdout:
-              "4242 1 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT --explodex-instance=plugin-dev\n",
+              [
+                "4242 1 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT --explodex-instance=plugin-dev",
+                ...(options.privateCompanion
+                  ? [
+                      "4343 4242 /tmp/private/codex-home/ComputerUseService /tmp/private/codex-home",
+                    ]
+                  : []),
+                "",
+              ].join("\n"),
             stderr: "",
             exitCode: 0,
           };
@@ -1022,6 +1064,39 @@ describe("strict recovery termination", () => {
       pollMs: 1,
       expectedTargetId: "target-1",
       requireCompleteEndpointOwnershipForSignal: true,
+    });
+    expect(result).toMatchObject({
+      stopped: true,
+      portReleased: true,
+      uncertain: false,
+      method: "exact-signal-only",
+    });
+    expect(fixture.signals).toEqual(["SIGTERM"]);
+  });
+
+  test("private-root descendant listener companion preserves exact cleanup authority", async () => {
+    const fixture = terminationFixture({
+      listeners: [4242, 4343],
+      targetId: "target-1",
+      contextUniqueId: "context-1",
+      privateCompanion: true,
+    });
+    const result = await stopExactProcess({
+      runtimeProcess: fixture.runtimeProcess,
+      commands: fixture.commands,
+      cdp: fixture.cdp,
+      pid: 4242,
+      processStartedAt: "4242-start",
+      executablePath:
+        "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
+      marker: "--explodex-instance=plugin-dev",
+      timeoutMs: 50,
+      pollMs: 1,
+      expectedTargetId: "target-1",
+      expectedContextUniqueId: "context-1",
+      requireCompleteEndpointOwnershipForSignal: true,
+      privateRoots: ["/tmp/private/codex-home"],
+      browserClose: async () => false,
     });
     expect(result).toMatchObject({
       stopped: true,

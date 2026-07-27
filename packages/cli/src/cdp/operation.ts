@@ -351,6 +351,9 @@ export async function runExactTargetOperation(options: {
       operationId: string;
     }) => void;
   };
+  rendererBoundary?: {
+    timeoutMs: number;
+  };
   stageBounds?: {
     cdpDiscoveryMs?: number;
     cdpEvaluationMs?: number;
@@ -456,8 +459,11 @@ export async function runExactTargetOperation(options: {
   const callbackName = ${callbackLiteral};
   const operationId = ${operationLiteral};
   const runtime = globalThis.Explodex;
-  if (runtime && runtime.review && typeof runtime.review.cancelExact === "function") {
-    runtime.review.cancelExact(operationId, callbackName, "operation-terminal");
+  const controller = callbackName.startsWith("__explodexUpdate_")
+    ? runtime && runtime.updates
+    : runtime && runtime.review;
+  if (controller && typeof controller.cancelExact === "function") {
+    controller.cancelExact(operationId, callbackName, "operation-terminal");
   }
   try {
     delete globalThis[callbackName];
@@ -477,6 +483,7 @@ export async function runExactTargetOperation(options: {
         });
       }
 
+      let finalTarget = discovery.target;
       const evaluation = await ctx.runExternalWait("cdp-evaluation", async (control) => {
         try {
           const current = await options.revalidate();
@@ -535,11 +542,123 @@ export async function runExactTargetOperation(options: {
               stage: "cdp-evaluation" as const,
             });
           }
-          options.evaluate.onBeforeEvaluation?.(expressionInput);
+          if (options.rendererBoundary !== undefined) {
+            if (typeof discovery.session.reloadRenderer !== "function") {
+              throw Object.assign(
+                new Error("CDP adapter does not support an exact renderer boundary."),
+                { code: "target_identity_drift" as const },
+              );
+            }
+            const nextContext = await discovery.session.reloadRenderer({
+              previousExecutionContextUniqueId:
+                discovery.target.executionContextUniqueId,
+              timeoutMs: options.rendererBoundary.timeoutMs,
+              signal: control.signal,
+            });
+            const boundaryCurrent = await options.revalidate();
+            const boundaryInspection = await inspectCompatibleEndpoint({
+              role: options.role,
+              endpoint: options.endpoint,
+              process: boundaryCurrent.process,
+              host: boundaryCurrent.host,
+              cdp: options.cdp,
+              signal: control.signal,
+            });
+            if (boundaryInspection.kind !== "available") {
+              throw targetingFailureFromInspection(
+                boundaryInspection,
+                "cdp-evaluation",
+              );
+            }
+            const details = {
+              pointOfUse: pointOfUseDetails({
+                expectedHost: options.host,
+                expectedProcess: options.process,
+                expectedEndpoint: options.endpoint,
+                expectedTarget: discovery.target,
+                current: boundaryCurrent,
+                currentTarget: boundaryInspection.target,
+              }),
+            };
+            if (!hostMatches(options.host, boundaryCurrent.host)) {
+              throw new TargetingError(
+                "host_identity_drift",
+                "Canonical host/build identity changed across renderer boundary",
+                details,
+              );
+            }
+            if (!processMatches(options.process, boundaryCurrent.process)) {
+              throw new TargetingError(
+                "process_identity_drift",
+                "Process identity changed across renderer boundary",
+                details,
+              );
+            }
+            if (
+              !listenerMatches(
+                options.endpoint,
+                options.process,
+                boundaryCurrent.listener,
+              )
+            ) {
+              throw new TargetingError(
+                "port_owner_drift",
+                "Declared port ownership changed across renderer boundary",
+                details,
+              );
+            }
+            if (
+              boundaryInspection.target.browserIdentity !==
+                discovery.target.browserIdentity
+            ) {
+              throw new TargetingError(
+                "browser_identity_drift",
+                "Browser identity changed across renderer boundary",
+                details,
+              );
+            }
+            if (
+              boundaryInspection.target.targetId !== discovery.target.targetId ||
+              boundaryInspection.target.targetType !==
+                discovery.target.targetType ||
+              boundaryInspection.target.targetUrl !== discovery.target.targetUrl
+            ) {
+              throw new TargetingError(
+                "target_identity_drift",
+                "Renderer boundary replaced the selected target",
+                details,
+              );
+            }
+            if (
+              boundaryInspection.target.executionContextUniqueId !==
+                nextContext.uniqueId ||
+              boundaryInspection.target.executionContextId !== nextContext.id ||
+              boundaryInspection.target.frameId !== nextContext.frameId ||
+              boundaryInspection.target.executionContextUniqueId ===
+                discovery.target.executionContextUniqueId
+            ) {
+              throw new TargetingError(
+                "context_identity_drift",
+                "Renderer boundary did not produce one exact new default context",
+                details,
+              );
+            }
+            finalTarget = boundaryInspection.target;
+          }
+          const finalExpressionInput = {
+            target: finalTarget,
+            operationId: ctx.identity.operationId,
+          };
+          const finalExpression =
+            typeof options.evaluate.expression === "function"
+              ? options.evaluate.expression(finalExpressionInput)
+              : expression;
+          options.evaluate.onBeforeEvaluation?.(finalExpressionInput);
           return await discovery.session.evaluate({
-            executionContextId: discovery.target.executionContextId,
-            executionContextUniqueId: discovery.target.executionContextUniqueId,
-            expression,
+            executionContextId: finalTarget.executionContextId,
+            executionContextUniqueId:
+              finalTarget.executionContextUniqueId,
+            expression: finalExpression,
             signal: control.signal,
           });
         } catch (error: unknown) {
@@ -549,7 +668,7 @@ export async function runExactTargetOperation(options: {
       ctx.markStageComplete("cdp-evaluation");
 
       return {
-        target: discovery.target,
+        target: finalTarget,
         evaluation,
         operationBinding: {
           operationId: ctx.identity.operationId,

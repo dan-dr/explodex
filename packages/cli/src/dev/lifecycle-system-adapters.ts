@@ -376,6 +376,11 @@ export function createProductionDevTermination(options: {
       expectedTargetId: state.targetId,
       expectedContextUniqueId: state.executionContextUniqueId,
       requireCompleteEndpointOwnershipForSignal: true,
+      privateRoots: [
+        state.electronUserDataPath,
+        state.codexHomePath,
+        state.explodexStatePath,
+      ],
       signal: options.signal,
     });
     const elapsedMs = Date.now() - started;

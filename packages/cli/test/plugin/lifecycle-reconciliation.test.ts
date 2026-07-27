@@ -229,6 +229,34 @@ describe("M3-F06 exact enabled lifecycle reconciliation", () => {
           },
         }],
       });
+      const rendererBoundary = await revalidateEnabledPluginArtifacts({
+        explodexHome: renderer.home,
+        boundary: "renderer",
+      });
+      const appBoundary = await revalidateEnabledPluginArtifacts({
+        explodexHome: app.home,
+        boundary: "app",
+      });
+      expect(rendererBoundary).toMatchObject({
+        ok: true,
+        snapshots: [{ manifest: { lifecycle: "renderer-start" } }],
+        results: [{
+          application: {
+            status: "apply-pending",
+            lifecycle: "renderer-start",
+          },
+        }],
+      });
+      expect(appBoundary).toMatchObject({
+        ok: true,
+        snapshots: [{ manifest: { lifecycle: "app-start" } }],
+        results: [{
+          application: {
+            status: "apply-pending",
+            lifecycle: "app-start",
+          },
+        }],
+      });
     } finally {
       await renderer.fixture.cleanup();
       await app.fixture.cleanup();

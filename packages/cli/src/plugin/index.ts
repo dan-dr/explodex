@@ -71,6 +71,10 @@ export {
   buildMetadataUpdateExpression,
   createUpdateReviewProtocolContext,
 } from "./update-review-protocol.ts";
+export { runPluginUpdateReviewOperation } from "./update-review-operation.ts";
+export {
+  finalizeSelectedPluginUpdatesOnDeclaredTarget,
+} from "./update-target.ts";
 export {
   runReconciliationOnDeclaredTarget,
 } from "./reconciliation-target.ts";

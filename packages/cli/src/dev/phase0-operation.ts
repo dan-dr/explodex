@@ -801,15 +801,18 @@ async function revalidateProcessCleanupAuthority(options: {
 
 /**
  * Endpoint/port revalidation required before Browser.close.
- * Unique-owner contract: any additional 9444 listener refuses Browser.close.
+ * Exact-owner contract: additional listeners are accepted only when every one
+ * is a freshly inventoried private-root descendant of the exact ChatGPT PID.
  * Exact-PID SIGTERM of a still-verified process remains separately allowed for
  * legacy Phase 0 cleanup. Strict lifecycle callers can forbid that fallback
  * when endpoint ownership, target, or context identity has drifted.
  */
 async function revalidateEndpointCleanupAuthority(options: {
   commands: ReadOnlyCommandRunner;
+  runtimeProcess: RuntimeProcess;
   cdp: CdpAdapter;
   pid: number;
+  privateRoots?: readonly string[];
   expectedTargetId?: string | null;
   expectedContextUniqueId?: string | null;
   signal?: AbortSignal;
@@ -832,13 +835,53 @@ async function revalidateEndpointCleanupAuthority(options: {
       exactSignalFallbackAllowed: false,
     };
   }
-  if (owners.size !== 1 || !owners.has(options.pid)) {
+  if (!owners.has(options.pid)) {
     return {
       ok: false,
       reason:
         "Listener co-ownership or foreign ownership before cleanup; refuse Browser.close under unique-owner contract.",
       exactSignalFallbackAllowed: false,
     };
+  }
+  const companionOwners = [...owners].filter((pid) => pid !== options.pid);
+  if (companionOwners.length > 0) {
+    const inventory = createNodeProcessInventoryAdapter({
+      commands: options.commands,
+      exactProcess: options.runtimeProcess,
+    });
+    const processes = await inventory.list({ signal: options.signal });
+    const byPid = new Map(processes.map((process) => [process.pid, process]));
+    const isDescendant = (pid: number): boolean => {
+      const visited = new Set<number>();
+      let current = byPid.get(pid);
+      while (current !== undefined && !visited.has(current.pid)) {
+        if (current.parentPid === options.pid) return true;
+        visited.add(current.pid);
+        current = byPid.get(current.parentPid);
+      }
+      return false;
+    };
+    const privateRoots = options.privateRoots ?? [];
+    const everyCompanionIsOwned = companionOwners.every((pid) => {
+      const process = byPid.get(pid);
+      return process !== undefined &&
+        isDescendant(pid) &&
+        privateRoots.some((root) =>
+          process.executablePath === root ||
+          process.executablePath.startsWith(`${root}/`) ||
+          process.arguments.some((token) =>
+            token === root || token.startsWith(`${root}/`)
+          )
+        );
+    });
+    if (!everyCompanionIsOwned) {
+      return {
+        ok: false,
+        reason:
+          "Listener co-ownership or foreign ownership before cleanup; refuse Browser.close under unique-owner contract.",
+        exactSignalFallbackAllowed: false,
+      };
+    }
   }
 
   try {
@@ -1072,8 +1115,10 @@ export async function stopExactProcess(options: {
     let exactSignalUsed = false;
     const closeAuthority = await revalidateEndpointCleanupAuthority({
       commands: options.commands,
+      runtimeProcess: options.runtimeProcess,
       cdp: options.cdp,
       pid: options.pid,
+      privateRoots: options.privateRoots,
       expectedTargetId: options.expectedTargetId,
       expectedContextUniqueId: options.expectedContextUniqueId,
       signal: cleanup.signal,

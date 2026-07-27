@@ -23,6 +23,7 @@ function input(overrides: Record<string, unknown> = {}) {
     version: "opaque-v1",
     payloadSha256: DIGEST,
     lifecycle: "dynamic",
+    boundary: "current",
     assets: [{
       path: "assets/notice.txt",
       bytes: [...new TextEncoder().encode("snapshot bytes")],
@@ -141,7 +142,7 @@ describe("M3-F05 private approved-payload runtime application", () => {
     await controller.destroy();
   });
 
-  test("enabled reconciliation capability can be claimed and consumed only once", async () => {
+  test("enabled reconciliation capability accepts exact identities once within one operation", async () => {
     const host: Record<string, unknown> = {};
     const controller = createPluginApplicationController({ host });
     const capability = controller.claimEnabledReconciliation();
@@ -160,13 +161,29 @@ describe("M3-F05 private approved-payload runtime application", () => {
     const replay = await capability(input(), () => {
       evaluated += 1;
     });
+    const betaDigest = "c".repeat(64);
+    const second = await capability(input({
+      id: "beta",
+      payloadSha256: betaDigest,
+    }), () => {
+      evaluated += 1;
+      const register = host[PRIVATE_REGISTER_GLOBAL] as (
+        id: string,
+        definition: unknown,
+      ) => void;
+      register("beta", { setup() {} });
+    });
 
     expect(first.status).toBe("applied");
+    expect(second.status).toBe("applied");
     expect(replay).toMatchObject({
       status: "failed",
       error: { code: "plugin.application.unauthorized" },
     });
-    expect(evaluated).toBe(1);
+    expect(evaluated).toBe(2);
+    controller.disableEnabledReconciliation();
+    controller.enableEnabledReconciliation();
+    expect(controller.claimEnabledReconciliation()).not.toBeNull();
     await controller.destroy();
   });
 
@@ -411,6 +428,53 @@ describe("M3-F05 private approved-payload runtime application", () => {
       setupCount: 0,
     });
     expect(evaluated).toBe(false);
+  });
+
+  test("enabled reconciliation evaluates restart lifecycles only at their exact boundary", async () => {
+    const host: Record<string, unknown> = {};
+    const controller = createPluginApplicationController({ host });
+    let rendererSetup = 0;
+    const renderer = await controller.reconcileEnabled(
+      input({
+        lifecycle: "renderer-start",
+        boundary: "renderer",
+      }),
+      () => {
+        const register = host[PRIVATE_REGISTER_GLOBAL] as (
+          id: string,
+          definition: unknown,
+        ) => void;
+        register("alpha", {
+          setup() {
+            rendererSetup += 1;
+          },
+        });
+      },
+    );
+    expect(renderer).toMatchObject({
+      status: "applied",
+      boundary: "none",
+      setupCount: 1,
+    });
+    expect(rendererSetup).toBe(1);
+
+    const wrong = await controller.reconcileEnabled(
+      input({
+        id: "beta",
+        payloadSha256: "c".repeat(64),
+        lifecycle: "app-start",
+        boundary: "renderer",
+      }),
+      () => {
+        throw new Error("wrong boundary must remain source-absent");
+      },
+    );
+    expect(wrong).toMatchObject({
+      status: "boundary-required",
+      boundary: "app",
+      setupCount: 0,
+    });
+    expect(controller.status("beta")).toBeNull();
   });
 
   test("rejects pre-commit, wrong-secret, replayed, and cross-operation application", async () => {

@@ -39,7 +39,11 @@ function updateRequest() {
     expiresAtMs: 2_000,
     activationCommitment: "c".repeat(64),
     applicationTtlMs: 1_000,
-    enabledPluginIds: ["enabled-plugin"],
+    enabledPluginIdentities: [{
+      id: "enabled-plugin",
+      version: "opaque-A",
+      payloadSha256: "f".repeat(64),
+    }],
     artifacts: [{
       id: "enabled-plugin",
       displayName: "Enabled plugin",
