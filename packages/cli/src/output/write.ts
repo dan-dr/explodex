@@ -30,6 +30,7 @@ export function writeCliResult(
   rendered: RenderedCliResult,
   options: { json: boolean },
 ): void {
+  if (rendered.outputMode === "already-written") return;
   if (options.json) {
     io.stdout.write(serializeEnvelope(rendered.envelope));
     if (rendered.humanStderr.length > 0) {

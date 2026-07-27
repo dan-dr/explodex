@@ -19,6 +19,7 @@ import { runPluginUpdateApply } from "../commands/plugin-update-apply.ts";
 import { runPluginReview } from "../commands/plugin-review.ts";
 import { runPluginDisable } from "../commands/plugin-disable.ts";
 import { runPluginRemove } from "../commands/plugin-remove.ts";
+import { runPluginDevelop } from "../commands/plugin-develop.ts";
 import { runDevStatus } from "../commands/dev-status.ts";
 import { runDevRecover } from "../commands/dev-recover.ts";
 import { runDevLifecycle } from "../commands/dev-lifecycle.ts";
@@ -41,6 +42,7 @@ const ACCEPTS_POSITIONALS = new Set([
   "plugin.update.apply",
   "plugin.disable",
   "plugin.remove",
+  "plugin.develop",
   "dev.inject",
 ]);
 
@@ -56,6 +58,7 @@ const IMPLEMENTED_RESERVED_OPERATIONS = new Set([
   "dev.inject",
   "dev.focus",
   "plugin.update.apply",
+  "plugin.develop",
 ]);
 
 export async function dispatch(options: {
@@ -236,6 +239,15 @@ export async function dispatch(options: {
       return runPluginRemove({
         globals: parsed.globals,
         env,
+        rest,
+        endOfOptions,
+        signal,
+      });
+    case "plugin.develop":
+      return runPluginDevelop({
+        globals: parsed.globals,
+        env,
+        io,
         rest,
         endOfOptions,
         signal,

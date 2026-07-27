@@ -39,6 +39,8 @@ export type CliExitCode = 0 | 1 | 2 | 3 | 4 | 5 | 130;
 export type RenderedCliResult = {
   envelope: CliJsonEnvelope;
   exitCode: CliExitCode;
+  /** The command already emitted its distinct machine protocol. */
+  outputMode?: "standard" | "already-written";
   /** Human primary result for stdout when not in JSON mode. Empty when only stderr matters. */
   humanStdout: string;
   /** Progress, warnings, errors, recovery for stderr. */
