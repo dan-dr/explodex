@@ -20,6 +20,8 @@ export const PRIVATE_RECONCILE_ENABLED =
   "__explodexReconcileEnabledPayload" as const;
 export const PRIVATE_APPLICATION_STATUS =
   "__explodexPluginApplicationStatus" as const;
+export const PRIVATE_UNLOAD_PLUGIN =
+  "__explodexUnloadPlugin" as const;
 
 type ApprovedAssetInput = {
   path: string;

@@ -66,6 +66,42 @@ export type PluginApplicationOperationResult =
       };
     };
 
+export type PluginTeardownOperationResult =
+  | {
+      ok: true;
+      operationId: string;
+      target: TargetIdentity;
+      result: {
+        status: "applied" | "failed";
+        target: TargetIdentity;
+        appliedIdentity: PluginPayloadIdentity | null;
+        message: string;
+        error?: {
+          code: string;
+          message: string;
+          stage: "cleanup";
+          possiblePartialEffects: boolean;
+        };
+      };
+      residualInventory: {
+        callbacks: number;
+        sessions: number;
+        hasResidentControlPlane: boolean;
+      };
+    }
+  | {
+      ok: false;
+      operationId: string;
+      code: string;
+      message: string;
+      details?: Record<string, unknown>;
+      residualInventory?: {
+        callbacks: number;
+        sessions: number;
+        hasResidentControlPlane: boolean;
+      };
+    };
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -687,4 +723,211 @@ export function runEnabledPluginApplicationOperation(options: {
     activationSecret: "",
     mode: "enabled",
   });
+}
+
+function buildPluginTeardownExpression(options: {
+  identity: PluginPayloadIdentity;
+}): string {
+  return `(async () => {
+  const runtime = globalThis.Explodex;
+  const status = runtime && runtime["__explodexPluginApplicationStatus"];
+  const unload = runtime && runtime["__explodexUnloadPlugin"];
+  if (typeof status !== "function" || typeof unload !== "function") {
+    throw new Error("Explodex exact plugin teardown surface is unavailable");
+  }
+  const before = status(${JSON.stringify(options.identity.id)});
+  if (before !== null) {
+    const identity = before.identity;
+    if (
+      !identity ||
+      identity.id !== ${JSON.stringify(options.identity.id)} ||
+      identity.version !== ${JSON.stringify(options.identity.version)} ||
+      identity.payloadSha256 !== ${JSON.stringify(options.identity.payloadSha256)}
+    ) {
+      throw new Error("The live plugin identity did not match the exact requested teardown identity");
+    }
+  }
+  const unloaded = await unload(${JSON.stringify(options.identity.id)});
+  const after = status(${JSON.stringify(options.identity.id)});
+  const cleanupFailures = unloaded && unloaded.disposed &&
+    Array.isArray(unloaded.disposed.failures)
+    ? unloaded.disposed.failures
+    : [];
+  return {
+    schemaVersion: 1,
+    id: ${JSON.stringify(options.identity.id)},
+    version: ${JSON.stringify(options.identity.version)},
+    payloadSha256: ${JSON.stringify(options.identity.payloadSha256)},
+    status: cleanupFailures.length === 0 && after === null
+      ? "applied"
+      : "failed",
+    appliedIdentity: after && after.identity ? after.identity : null,
+    teardownInvoked: unloaded ? unloaded.teardownInvoked === true : false,
+    cleanupFailures: cleanupFailures.map((failure) => ({
+      kind: String(failure.kind || "unknown"),
+      message: String(failure.message || "Tracked cleanup failed"),
+    })),
+  };
+})()`;
+}
+
+function parsePluginTeardownResponse(value: unknown): {
+  status: "applied" | "failed";
+  appliedIdentity: PluginPayloadIdentity | null;
+  teardownInvoked: boolean;
+  cleanupFailures: Array<{ kind: string; message: string }>;
+} | null {
+  if (
+    !isRecord(value) ||
+    value.schemaVersion !== 1 ||
+    (value.status !== "applied" && value.status !== "failed") ||
+    typeof value.teardownInvoked !== "boolean" ||
+    !Array.isArray(value.cleanupFailures)
+  ) {
+    return null;
+  }
+  const appliedIdentity = parseIdentity(value.appliedIdentity);
+  if (appliedIdentity === false) return null;
+  const cleanupFailures: Array<{ kind: string; message: string }> = [];
+  for (const failure of value.cleanupFailures) {
+    if (
+      !isRecord(failure) ||
+      typeof failure.kind !== "string" ||
+      typeof failure.message !== "string"
+    ) {
+      return null;
+    }
+    cleanupFailures.push({
+      kind: failure.kind,
+      message: failure.message,
+    });
+  }
+  if (
+    (value.status === "applied" &&
+      (appliedIdentity !== null || cleanupFailures.length !== 0)) ||
+    (value.status === "failed" && cleanupFailures.length === 0)
+  ) {
+    return null;
+  }
+  return {
+    status: value.status,
+    appliedIdentity,
+    teardownInvoked: value.teardownInvoked,
+    cleanupFailures,
+  };
+}
+
+export async function runPluginTeardownOperation(options: {
+  runtime: RuntimeAdapters;
+  operationId: string;
+  role: HostRole;
+  homeIdentity: string;
+  host: HostIdentity;
+  process: VerifiedProcess;
+  endpoint: DeclaredRoleEndpoint;
+  cdp: CdpAdapter;
+  expectedTarget?: TargetIdentity;
+  expectedTargetId?: string;
+  revalidate(): Promise<PointOfUseIdentity>;
+  identity: PluginPayloadIdentity;
+  timeoutMs: number;
+  signal?: AbortSignal;
+}): Promise<PluginTeardownOperationResult> {
+  const operation = await runExactTargetOperation({
+    runtime: options.runtime,
+    operationId: options.operationId,
+    operation: "plugin.mutation.teardown",
+    role: options.role,
+    homeIdentity: options.homeIdentity,
+    host: options.host,
+    process: options.process,
+    endpoint: options.endpoint,
+    cdp: options.cdp,
+    signal: options.signal,
+    revalidate: options.revalidate,
+    evaluate: {
+      expression(input) {
+        if (
+          (options.expectedTarget !== undefined &&
+            !targetIdentitiesEqual(input.target, options.expectedTarget)) ||
+          (options.expectedTargetId !== undefined &&
+            input.target.targetId !== options.expectedTargetId)
+        ) {
+          throw Object.assign(
+            new Error(
+              "Plugin teardown target did not match the exact requested context.",
+            ),
+            { code: "context_identity_drift" as const },
+          );
+        }
+        return buildPluginTeardownExpression({
+          identity: options.identity,
+        });
+      },
+    },
+    stageBounds: {
+      cdpEvaluationMs: options.timeoutMs,
+    },
+  });
+  if (!operation.ok) {
+    return {
+      ok: false,
+      operationId: operation.operationId,
+      code: operation.error.code,
+      message: operation.error.message,
+      details: {
+        stage: operation.error.stage,
+        residualInventory: operation.residualInventory,
+      },
+      residualInventory: operation.residualInventory,
+    };
+  }
+  const result = parsePluginTeardownResponse(
+    operation.result.evaluation.value,
+  );
+  const raw = operation.result.evaluation.value;
+  if (
+    result === null ||
+    !isRecord(raw) ||
+    raw.id !== options.identity.id ||
+    raw.version !== options.identity.version ||
+    raw.payloadSha256 !== options.identity.payloadSha256
+  ) {
+    return {
+      ok: false,
+      operationId: operation.operationId,
+      code: "plugin.mutation.invalid-teardown-response",
+      message: "Renderer returned a malformed exact plugin teardown result.",
+      residualInventory: operation.residualInventory,
+    };
+  }
+  const message = result.status === "applied"
+    ? result.teardownInvoked
+      ? "Exact dynamic teardown completed."
+      : "The exact plugin identity was not live in the inspected renderer."
+    : result.cleanupFailures.map((failure) =>
+        `${failure.kind}: ${failure.message}`
+      ).join("; ");
+  return {
+    ok: true,
+    operationId: operation.operationId,
+    target: operation.result.target,
+    result: {
+      status: result.status,
+      target: operation.result.target,
+      appliedIdentity: result.appliedIdentity,
+      message,
+      ...(result.status === "applied"
+        ? {}
+        : {
+            error: {
+              code: "plugin.mutation.teardown-cleanup-failed",
+              message,
+              stage: "cleanup" as const,
+              possiblePartialEffects: true,
+            },
+          }),
+    },
+    residualInventory: operation.residualInventory,
+  };
 }

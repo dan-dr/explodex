@@ -9,6 +9,11 @@ import type {
   PluginUpdateReviewRequest,
   ReviewOutcome,
 } from "./plugin-review.ts";
+import type {
+  PluginManagementFailure,
+  PluginManagementModel,
+  PluginManagementRequest,
+} from "./plugin-management.ts";
 
 export type ExplodexRuntime = {
   readonly version: string;
@@ -30,6 +35,12 @@ export type ExplodexRuntime = {
       callbackName: string,
       reason?: string,
     ): boolean;
+  };
+  readonly management: {
+    open(
+      request: PluginManagementRequest,
+    ): PluginManagementModel | PluginManagementFailure;
+    close(): void;
   };
   destroy(options?: { reason?: string }): void;
 };

@@ -72,13 +72,27 @@ export async function runPluginStatus(options: {
     stateStatus: loaded.status,
     schemaVersion: loaded.status === "valid" ? loaded.state.schemaVersion : 1,
     plugins: selected,
+    applications: Object.fromEntries(
+      Object.keys(selected).sort().map((pluginId) => [
+        pluginId,
+        {
+          status: "unknown" as const,
+          lifecycle: null,
+          boundary: "none" as const,
+          observedIdentity: null,
+          observedAt: null,
+          message:
+            "No exact renderer application state was inspected by this read-only status operation.",
+        },
+      ]),
+    ),
     discovered: false,
     stateChanged: false,
   };
   const lines = [
     `Plugin state: ${loaded.status}`,
     ...Object.entries(selected).map(([pluginId, record]) =>
-      `${pluginId}: ${record.enabled === null ? "disabled" : `enabled ${record.enabled.version} ${record.enabled.payloadSha256}`} (${record.pendingReview.length} pending)`
+      `${pluginId}: ${record.enabled === null ? "disabled" : `enabled ${record.enabled.version} ${record.enabled.payloadSha256}`} (${record.pendingReview.length} pending), application unknown`
     ),
     "",
   ];

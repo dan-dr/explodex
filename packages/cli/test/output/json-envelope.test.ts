@@ -111,9 +111,9 @@ describe("schemaVersion-1 JSON envelope", () => {
     expect(typeof parsed.result.version).toBe("string");
   });
 
-  test("reserved commands return usage.command-unavailable without side effects", async () => {
+  test("available mutation commands validate required arguments without side effects", async () => {
     const captured = await captureCli(["--json", "plugin", "disable"]);
-    expect(captured.exitCode).toBe(3);
+    expect(captured.exitCode).toBe(2);
     const parsed = assertSingleJsonValue(captured.stdout) as {
       ok: boolean;
       operation: string;
@@ -121,7 +121,7 @@ describe("schemaVersion-1 JSON envelope", () => {
     };
     expect(parsed.ok).toBe(false);
     expect(parsed.operation).toBe("plugin.disable");
-    expect(parsed.error.code).toBe("usage.command-unavailable");
+    expect(parsed.error.code).toBe("usage.missing-argument");
   });
 
   test(

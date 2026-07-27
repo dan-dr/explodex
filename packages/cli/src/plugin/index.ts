@@ -57,6 +57,7 @@ export {
   buildApprovedApplicationExpression,
   runApprovedPluginApplicationOperation,
   runEnabledPluginApplicationOperation,
+  runPluginTeardownOperation,
 } from "./application-operation.ts";
 export {
   revalidateEnabledPluginArtifacts,
@@ -73,6 +74,10 @@ export {
 export {
   runReconciliationOnDeclaredTarget,
 } from "./reconciliation-target.ts";
+export {
+  disableInstalledPlugin,
+  removeInstalledPlugin,
+} from "./mutation-transaction.ts";
 export {
   buildMetadataReviewExpression,
   createReviewProtocolContext,
@@ -152,6 +157,7 @@ export type {
 } from "./approval-transaction.ts";
 export type {
   PluginApplicationOperationResult,
+  PluginTeardownOperationResult,
   RuntimeApplicationResult,
 } from "./application-operation.ts";
 export type {
@@ -176,6 +182,14 @@ export type {
 export type {
   DeclaredTargetReconciliationResult,
 } from "./reconciliation-target.ts";
+export type {
+  PluginDisableResult,
+  PluginMutationAdapters,
+  PluginMutationIdentity,
+  PluginRemoveResult,
+  PluginTeardownRequest,
+  PluginTeardownResult,
+} from "./mutation-transaction.ts";
 export type {
   ReviewArtifact,
   ReviewArtifactSelection,

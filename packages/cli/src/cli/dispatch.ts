@@ -16,6 +16,8 @@ import { runPluginRefresh } from "../commands/plugin-refresh.ts";
 import { runPluginStatus } from "../commands/plugin-status.ts";
 import { runPluginUpdateCheck } from "../commands/plugin-update-check.ts";
 import { runPluginReview } from "../commands/plugin-review.ts";
+import { runPluginDisable } from "../commands/plugin-disable.ts";
+import { runPluginRemove } from "../commands/plugin-remove.ts";
 import type { CliIo } from "../output/write.ts";
 
 /** Operations that parse their own positional arguments. */
@@ -30,6 +32,13 @@ const ACCEPTS_POSITIONALS = new Set([
   "plugin.refresh",
   "plugin.review",
   "plugin.update.check",
+  "plugin.disable",
+  "plugin.remove",
+]);
+
+const IMPLEMENTED_RESERVED_OPERATIONS = new Set([
+  "plugin.disable",
+  "plugin.remove",
 ]);
 
 export async function dispatch(options: {
@@ -70,7 +79,10 @@ export async function dispatch(options: {
     endOfOptions: parsed.endOfOptions,
   };
 
-  if (command.availability === "reserved") {
+  if (
+    command.availability === "reserved" &&
+    !IMPLEMENTED_RESERVED_OPERATIONS.has(command.operation)
+  ) {
     const path = publicPathFor(command, group.name);
     return renderFailure({
       operation: command.operation,
@@ -180,6 +192,22 @@ export async function dispatch(options: {
       });
     case "plugin.update.check":
       return runPluginUpdateCheck({
+        globals: parsed.globals,
+        env,
+        rest,
+        endOfOptions,
+        signal,
+      });
+    case "plugin.disable":
+      return runPluginDisable({
+        globals: parsed.globals,
+        env,
+        rest,
+        endOfOptions,
+        signal,
+      });
+    case "plugin.remove":
+      return runPluginRemove({
         globals: parsed.globals,
         env,
         rest,

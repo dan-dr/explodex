@@ -5,6 +5,7 @@ import {
   PRIVATE_APPLY_APPROVED,
   PRIVATE_FINALIZE_APPROVED,
   PRIVATE_RECONCILE_ENABLED,
+  PRIVATE_UNLOAD_PLUGIN,
   type ApprovedPluginApplicationResult,
   type PluginApplicationController,
 } from "./plugin-application.ts";
@@ -12,6 +13,11 @@ import {
   createPluginReviewController,
   renderPluginReviewDom,
 } from "./plugin-review.ts";
+import {
+  buildPluginManagementModel,
+  renderPluginManagementDom,
+  type PluginManagementRenderHandle,
+} from "./plugin-management.ts";
 import type { ExplodexRuntime } from "./public.ts";
 import { RUNTIME_VERSION } from "./version.ts";
 
@@ -40,6 +46,9 @@ type InternalExplodexRuntime = ExplodexRuntime & {
   readonly [PRIVATE_APPLICATION_STATUS]: (
     pluginId: string,
   ) => ReturnType<PluginApplicationController["status"]>;
+  readonly [PRIVATE_UNLOAD_PLUGIN]: (
+    pluginId: string,
+  ) => ReturnType<PluginApplicationController["unload"]>;
   readonly [PRIVATE_DESTROY_AND_WAIT]: (
     options?: { reason?: string },
   ) => Promise<void>;
@@ -132,11 +141,14 @@ export function installRuntime(global: RuntimeHost): InternalExplodexRuntime {
   if (reconcileEnabled === null) {
     throw new Error("Explodex enabled reconciliation capability was unavailable.");
   }
+  let managementHandle: PluginManagementRenderHandle | null = null;
   async function destroyAndWait(options?: { reason?: string }): Promise<void> {
     if (destroyed) return;
     destroyed = true;
     review.destroy();
     updates.destroy();
+    managementHandle?.close();
+    managementHandle = null;
     await application.destroy();
     log.info("destroy", { reason: options?.reason ?? "explicit" });
     if (global.Explodex === runtime) {
@@ -169,6 +181,29 @@ export function installRuntime(global: RuntimeHost): InternalExplodexRuntime {
       cancelExact: (operationId, callbackName, reason) =>
         updates.cancelExact(operationId, callbackName, reason),
     },
+    management: {
+      open(request) {
+        const model = buildPluginManagementModel(request);
+        if (!model.ok) return model;
+        if (global.document === undefined || global.document.body === null) {
+          return {
+            ok: false,
+            message:
+              "Explodex plugin management requires a live renderer document.",
+          };
+        }
+        managementHandle?.close();
+        managementHandle = renderPluginManagementDom(
+          global.document,
+          model,
+        );
+        return model;
+      },
+      close() {
+        managementHandle?.close();
+        managementHandle = null;
+      },
+    },
     [PRIVATE_APPLY_APPROVED]: (input, evaluate, secret) =>
       application.applyApproved(input, evaluate, secret),
     [PRIVATE_FINALIZE_APPROVED]: (operationId, nonce) =>
@@ -176,6 +211,8 @@ export function installRuntime(global: RuntimeHost): InternalExplodexRuntime {
     [PRIVATE_RECONCILE_ENABLED]: reconcileEnabled,
     [PRIVATE_APPLICATION_STATUS]: (pluginId) =>
       application.status(pluginId),
+    [PRIVATE_UNLOAD_PLUGIN]: (pluginId) =>
+      application.unload(pluginId),
     [PRIVATE_DESTROY_AND_WAIT]: destroyAndWait,
     destroy(options) {
       void destroyAndWait(options);

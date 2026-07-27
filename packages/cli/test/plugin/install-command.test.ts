@@ -168,6 +168,14 @@ describe("plugin install immutable command", () => {
           discovered: boolean;
           stateChanged: boolean;
           plugins: Record<string, unknown>;
+          applications: Record<string, {
+            status: string;
+            lifecycle: string | null;
+            boundary: string;
+            observedIdentity: unknown;
+            observedAt: unknown;
+            message: string;
+          }>;
         };
       };
       expect(statusEnvelope.result.discovered).toBe(false);
@@ -175,6 +183,15 @@ describe("plugin install immutable command", () => {
       expect(Object.keys(statusEnvelope.result.plugins)).toEqual([
         packaged.report.id,
       ]);
+      expect(statusEnvelope.result.applications[packaged.report.id]).toEqual({
+        status: "unknown",
+        lifecycle: null,
+        boundary: "none",
+        observedIdentity: null,
+        observedAt: null,
+        message:
+          "No exact renderer application state was inspected by this read-only status operation.",
+      });
       expect(await readFile(statePath)).toEqual(before);
       expect((await stat(statePath)).mtimeMs).toBe(beforeMtime);
 
