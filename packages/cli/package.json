@@ -18,6 +18,10 @@
       "types": "./dist/cli/index.d.ts",
       "import": "./dist/cli/index.js"
     },
+    "./artifact-schema": {
+      "types": "./dist/artifact-schema.d.ts",
+      "import": "./dist/artifact-schema.js"
+    },
     "./host": {
       "types": "./dist/host/index.d.ts",
       "import": "./dist/host/index.js"
