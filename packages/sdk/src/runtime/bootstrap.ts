@@ -1,9 +1,12 @@
 import { createLogger, type RuntimeLogEntry } from "./logger.ts";
 import {
   createPluginApplicationController,
+  PRIVATE_APPLICATION_STATUS,
   PRIVATE_APPLY_APPROVED,
   PRIVATE_FINALIZE_APPROVED,
+  PRIVATE_RECONCILE_ENABLED,
   type ApprovedPluginApplicationResult,
+  type PluginApplicationController,
 } from "./plugin-application.ts";
 import {
   createPluginReviewController,
@@ -16,9 +19,13 @@ import { RUNTIME_VERSION } from "./version.ts";
 
 const RUNTIME_MARK = "__explodexSdkRuntimeMark";
 const RUNTIME_INSTANCE = "__explodexSdkRuntimeInstance";
+const RUNTIME_REQUEST_IDENTITY = "__explodexSdkRuntimeRequestIdentity";
+const RUNTIME_REQUEST_MARK = "__explodexSdkRuntimeRequestMark";
+const PRIVATE_DESTROY_AND_WAIT = "__explodexDestroyRuntimeAndWait";
 
 type InternalExplodexRuntime = ExplodexRuntime & {
   readonly [RUNTIME_MARK]: string;
+  readonly [RUNTIME_REQUEST_MARK]: string;
   readonly [PRIVATE_APPLY_APPROVED]: (
     input: unknown,
     evaluate: unknown,
@@ -28,37 +35,42 @@ type InternalExplodexRuntime = ExplodexRuntime & {
     operationId: string,
     nonce: string,
   ) => void;
+  readonly [PRIVATE_RECONCILE_ENABLED]: (
+    input: unknown,
+    evaluate: unknown,
+  ) => Promise<ApprovedPluginApplicationResult>;
+  readonly [PRIVATE_APPLICATION_STATUS]: (
+    pluginId: string,
+  ) => ReturnType<PluginApplicationController["status"]>;
+  readonly [PRIVATE_DESTROY_AND_WAIT]: (
+    options?: { reason?: string },
+  ) => Promise<void>;
 };
 
 type RuntimeHost = {
   Explodex?: InternalExplodexRuntime;
   [RUNTIME_INSTANCE]?: InternalExplodexRuntime;
+  [RUNTIME_REQUEST_IDENTITY]?: string;
   console: Console;
   document?: Document;
   setTimeout(callback: () => void, delayMs: number): unknown;
   clearTimeout(handle: unknown): void;
 };
 
-function isExplodexRuntime(value: unknown): value is InternalExplodexRuntime {
-  if (typeof value !== "object" || value === null) return false;
-  const record = value as Record<string, unknown>;
-  return (
-    typeof record.version === "string" &&
-    typeof record.destroy === "function" &&
-    typeof record.review === "object" &&
-    typeof record[PRIVATE_APPLY_APPROVED] === "function" &&
-    typeof record[PRIVATE_FINALIZE_APPROVED] === "function" &&
-    record[RUNTIME_MARK] === RUNTIME_VERSION
-  );
-}
-
 /**
- * Install or reuse the single documented SDK runtime on a browser-like host.
- * Repeated evaluation converges on one live instance for the same version.
+ * Install or reuse the exact requested SDK runtime on a browser-like host.
+ * CLI expressions bind this request to verified bytes plus one operation ID.
  */
 export function installRuntime(global: RuntimeHost): InternalExplodexRuntime {
   const existing = global.Explodex;
-  if (isExplodexRuntime(existing) && global[RUNTIME_INSTANCE] === existing) {
+  const requestIdentity = global[RUNTIME_REQUEST_IDENTITY] ??
+    `version:${RUNTIME_VERSION}`;
+  if (
+    existing !== undefined &&
+    global[RUNTIME_INSTANCE] === existing &&
+    existing[RUNTIME_MARK] === RUNTIME_VERSION &&
+    existing[RUNTIME_REQUEST_MARK] === requestIdentity
+  ) {
     return existing;
   }
 
@@ -75,6 +87,13 @@ export function installRuntime(global: RuntimeHost): InternalExplodexRuntime {
   let destroyed = false;
   const application = createPluginApplicationController({
     host: global as unknown as Record<string, unknown>,
+    onDiagnostic(diagnostic) {
+      log.error(diagnostic.code, {
+        id: diagnostic.id,
+        identity: diagnostic.identity,
+        message: diagnostic.message,
+      });
+    },
   });
   const review = createPluginReviewController({
     host: {
@@ -93,12 +112,33 @@ export function installRuntime(global: RuntimeHost): InternalExplodexRuntime {
       application.authorizeReview(request, submission);
     },
   });
+  const reconcileEnabled = application.claimEnabledReconciliation();
+  if (reconcileEnabled === null) {
+    throw new Error("Explodex enabled reconciliation capability was unavailable.");
+  }
+  async function destroyAndWait(options?: { reason?: string }): Promise<void> {
+    if (destroyed) return;
+    destroyed = true;
+    review.destroy();
+    await application.destroy();
+    log.info("destroy", { reason: options?.reason ?? "explicit" });
+    if (global.Explodex === runtime) {
+      delete global.Explodex;
+    }
+    if (global[RUNTIME_INSTANCE] === runtime) {
+      delete global[RUNTIME_INSTANCE];
+    }
+  }
 
   const runtime: InternalExplodexRuntime = {
     version: RUNTIME_VERSION,
+    [RUNTIME_REQUEST_MARK]: requestIdentity,
     log,
     review: {
-      open: (request) => review.open(request),
+      open: (request) => {
+        application.disableEnabledReconciliation();
+        return review.open(request);
+      },
       cancel: (reason) => review.cancel(reason),
       cancelExact: (operationId, callbackName, reason) =>
         review.cancelExact(operationId, callbackName, reason),
@@ -107,18 +147,12 @@ export function installRuntime(global: RuntimeHost): InternalExplodexRuntime {
       application.applyApproved(input, evaluate, secret),
     [PRIVATE_FINALIZE_APPROVED]: (operationId, nonce) =>
       application.finalizeApproved(operationId, nonce),
+    [PRIVATE_RECONCILE_ENABLED]: reconcileEnabled,
+    [PRIVATE_APPLICATION_STATUS]: (pluginId) =>
+      application.status(pluginId),
+    [PRIVATE_DESTROY_AND_WAIT]: destroyAndWait,
     destroy(options) {
-      if (destroyed) return;
-      destroyed = true;
-      review.destroy();
-      void application.destroy();
-      log.info("destroy", { reason: options?.reason ?? "explicit" });
-      if (global.Explodex === runtime) {
-        delete global.Explodex;
-      }
-      if (global[RUNTIME_INSTANCE] === runtime) {
-        delete global[RUNTIME_INSTANCE];
-      }
+      void destroyAndWait(options);
     },
     [RUNTIME_MARK]: RUNTIME_VERSION,
   };

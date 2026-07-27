@@ -56,7 +56,14 @@ export {
 export {
   buildApprovedApplicationExpression,
   runApprovedPluginApplicationOperation,
+  runEnabledPluginApplicationOperation,
 } from "./application-operation.ts";
+export {
+  revalidateEnabledPluginArtifacts,
+} from "./reconciliation.ts";
+export {
+  runReconciliationOnDeclaredTarget,
+} from "./reconciliation-target.ts";
 export {
   buildMetadataReviewExpression,
   createReviewProtocolContext,
@@ -138,6 +145,16 @@ export type {
   PluginApplicationOperationResult,
   RuntimeApplicationResult,
 } from "./application-operation.ts";
+export type {
+  EnabledPluginReconciliationAdapters,
+  EnabledPluginRevalidationResult,
+  PersistedPluginIntent,
+  PluginApplicationObservation,
+  PluginMutationResult,
+} from "./reconciliation.ts";
+export type {
+  DeclaredTargetReconciliationResult,
+} from "./reconciliation-target.ts";
 export type {
   ReviewArtifact,
   ReviewArtifactSelection,

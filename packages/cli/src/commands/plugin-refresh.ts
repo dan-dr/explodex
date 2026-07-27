@@ -119,6 +119,29 @@ export async function runPluginRefresh(options: {
       target: parsed.target,
     },
   };
+  const reconciliation = parsed.target === "none"
+    ? null
+    : await (await import("../plugin/reconciliation-target.ts"))
+      .runReconciliationOnDeclaredTarget({
+        role: parsed.target,
+        explodexHome: home,
+        devRoot: options.globals.devRoot ?? undefined,
+        env: options.env,
+        timeoutMs: options.globals.timeoutMs,
+        signal: options.signal,
+      });
+  if (reconciliation !== null && !reconciliation.ok) {
+    return renderFailure({
+      operation: OPERATION,
+      code: reconciliation.code,
+      message: reconciliation.message,
+      details: {
+        ...payload,
+        reconciliation,
+      },
+      exitCode: exitCodeForError(reconciliation.code),
+    });
+  }
   if (result.pending.length > 0 && parsed.target !== "none") {
     const review = await performPendingPluginReview({
       globals: options.globals,
@@ -148,6 +171,7 @@ export async function runPluginRefresh(options: {
     return {
       envelope: successEnvelope(OPERATION, {
         ...payload,
+        reconciliation,
         review,
       }),
       exitCode: 0,
@@ -159,19 +183,28 @@ export async function runPluginRefresh(options: {
         review.status === "approved"
           ? `Application results: ${review.applications.length}`
           : "Activation authority was unchanged.",
+        reconciliation === null
+          ? "Enabled reconciliation was not requested."
+          : `Enabled reconciliation results: ${reconciliation.results.length}`,
         "",
       ].join("\n"),
       humanStderr: "",
     };
   }
   return {
-    envelope: successEnvelope(OPERATION, payload),
+    envelope: successEnvelope(OPERATION, {
+      ...payload,
+      reconciliation,
+    }),
     exitCode: 0,
     humanStdout: [
       `Plugin refresh: ${result.pending.length} pending, ${result.invalid.length} invalid`,
       result.pending.length === 0
         ? "No review is required."
         : "Review is required; pending identities remain disabled and source-absent.",
+      reconciliation === null
+        ? "Enabled reconciliation was not requested."
+        : `Enabled reconciliation results: ${reconciliation.results.length}`,
       "",
     ].join("\n"),
     humanStderr: "",

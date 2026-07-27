@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { createNodeCdpAdapter } from "../cdp/adapters.ts";
+import { createHash } from "node:crypto";
 import { resolveDefaultDevRoot, describeDevLayout } from "../dev/layout.ts";
 import { loadDevInstanceState } from "../dev/state.ts";
 import { createDefaultHostAdapters } from "../host/adapters.ts";
@@ -14,6 +15,7 @@ import {
   createDefaultHostStatusAdapters,
 } from "../host/process-adapters.ts";
 import { resolveSdkRuntimeIdentityForCli } from "../host/sdk-runtime-identity.ts";
+import { runCompatibilityProbe } from "../host/probe-operation.ts";
 import {
   roleEndpoint,
   type HostRole,
@@ -32,6 +34,7 @@ import {
   runApprovedPluginApplicationOperation,
   type RuntimeApplicationResult,
 } from "./application-operation.ts";
+import type { PluginMutationResult } from "./reconciliation.ts";
 
 export type PluginReviewApprovalResult =
   | {
@@ -54,6 +57,7 @@ export type PluginReviewApprovalResult =
       authorityChanged: boolean;
       sourceDelivered: boolean;
       applications: RuntimeApplicationResult[];
+      mutations?: PluginMutationResult[];
       residualInventory: {
         callbacks: number;
         sessions: number;
@@ -70,9 +74,10 @@ export type PluginReviewApprovalResult =
       sourceDelivered: boolean;
       authorityChanged: boolean;
       applications: RuntimeApplicationResult[];
+      mutations?: PluginMutationResult[];
     };
 
-type PreparedReviewTarget = {
+export type PreparedPluginApplicationTarget = {
   role: HostRole;
   process: VerifiedProcess;
   listener: ListenerObservation;
@@ -98,14 +103,107 @@ function unavailable(options: {
   };
 }
 
-async function prepareTarget(options: {
+function mutationResults(options: {
+  approval: {
+    selected: Array<{ id: string; version: string; payloadSha256: string }>;
+    previousIntents: Array<{
+      id: string;
+      intent: { version: string; payloadSha256: string } | null;
+    }>;
+  };
+  applications: RuntimeApplicationResult[];
+  target: import("../cdp/types.ts").TargetIdentity | null;
+}): PluginMutationResult[] {
+  const previous = new Map(
+    options.approval.previousIntents.map((entry) => [entry.id, entry.intent]),
+  );
+  const applications = new Map(
+    options.applications.map((entry) => [entry.id, entry]),
+  );
+  return options.approval.selected.map((selected) => {
+    const application = applications.get(selected.id);
+    const currentIntent = {
+      version: selected.version,
+      payloadSha256: selected.payloadSha256,
+    };
+    if (application === undefined) {
+      return {
+        id: selected.id,
+        previousIntent: previous.get(selected.id) ?? null,
+        currentIntent,
+        stateCommitted: true,
+        reviewStatus: "approved",
+        application: {
+          status: "not-attempted",
+          lifecycle: null,
+          target: null,
+          boundary: "none",
+          appliedIdentity: null,
+          message: "Application was not attempted after approval committed.",
+          error: {
+            code: "plugin.application.not-attempted",
+            message: "Application was not attempted after approval committed.",
+            stage: "evaluation",
+            possiblePartialEffects: false,
+          },
+        },
+      };
+    }
+    const status =
+      application.status === "applied" || application.status === "unchanged"
+        ? "applied"
+        : application.status;
+    return {
+      id: selected.id,
+      previousIntent: previous.get(selected.id) ?? null,
+      currentIntent,
+      stateCommitted: true,
+      reviewStatus: "approved",
+      application: {
+        status,
+        lifecycle: application.boundary === "renderer"
+          ? "renderer-start"
+          : application.boundary === "app"
+            ? "app-start"
+            : "dynamic",
+        target: options.target,
+        boundary: application.boundary,
+        appliedIdentity: application.appliedIdentity === null
+          ? null
+          : {
+              version: application.appliedIdentity.version,
+              payloadSha256: application.appliedIdentity.payloadSha256,
+            },
+        ...(application.error === undefined
+          ? {}
+          : {
+              message: application.error.message,
+              error: {
+                code: application.error.code,
+                message: application.error.message,
+                stage:
+                  application.stage === "setup" ||
+                    application.stage === "cleanup" ||
+                    application.stage === "evaluation"
+                    ? application.stage
+                    : "evaluation" as const,
+                possiblePartialEffects:
+                  application.possiblePartialEffects,
+              },
+            }),
+      },
+    };
+  });
+}
+
+export async function preparePluginApplicationTarget(options: {
   role: HostRole;
   explodexHome: string;
   devRoot?: string;
   env: NodeJS.ProcessEnv;
   host: HostIdentity;
 }): Promise<
-  | { ok: true; target: PreparedReviewTarget }
+  | { ok: true; target: PreparedPluginApplicationTarget }
   | { ok: false; code: string; message: string; details?: Record<string, unknown> }
 > {
   const adapters = await createDefaultHostAdapters();
@@ -202,6 +300,85 @@ async function prepareTarget(options: {
   };
 }
 
+export async function attemptAutomaticDevelopmentReproof(options: {
+  explodexHome: string;
+  devRoot?: string;
+  env: NodeJS.ProcessEnv;
+  host: HostIdentity;
+  hostAdapters: Awaited<ReturnType<typeof createDefaultHostAdapters>>;
+  sdkRuntime: Awaited<ReturnType<typeof resolveSdkRuntimeIdentityForCli>>;
+  signal?: AbortSignal;
+}): Promise<
+  | { ok: true }
+  | { ok: false; code: string; message: string }
+> {
+  const prepared = await preparePluginApplicationTarget({
+    role: "development",
+    explodexHome: options.explodexHome,
+    devRoot: options.devRoot,
+    env: options.env,
+    host: options.host,
+  });
+  if (!prepared.ok) return prepared;
+  const devRoot = resolveDefaultDevRoot({
+    osHome: options.env.HOME,
+    explodexHome: options.explodexHome,
+    explicitRoot: options.devRoot,
+  });
+  let sdkSource: string;
+  try {
+    sdkSource = await readVerifiedSdkRuntimeSource(options.sdkRuntime);
+  } catch {
+    return {
+      ok: false,
+      code: "compatibility.unproven",
+      message:
+        "The generated SDK runtime bytes are unavailable for automatic development re-proof.",
+    };
+  }
+  const probe = await runCompatibilityProbe({
+    adapters: options.hostAdapters,
+    explodexHome: options.explodexHome,
+    phase0ContractPath: describeDevLayout(devRoot).phase0ContractPath,
+    sdkRuntime: {
+      version: options.sdkRuntime.version,
+      sha256: options.sdkRuntime.sha256,
+    },
+    sdkSource,
+    cdp: createNodeCdpAdapter(),
+    acceptanceProcess: {
+      pid: prepared.target.process.pid,
+      processStartedAt: prepared.target.process.processStartedAt,
+      executablePath: prepared.target.process.executablePath,
+      targetId: prepared.target.expectedTargetId ?? null,
+    },
+    authoringMain: null,
+    signal: options.signal,
+  });
+  return probe.ok && probe.committed
+    ? { ok: true }
+    : {
+        ok: false,
+        code: probe.ok ? "compatibility.unproven" : probe.error.code,
+        message: probe.ok
+          ? "Automatic development compatibility re-proof did not commit authority."
+          : probe.error.message,
+      };
+}
+
+export async function readVerifiedSdkRuntimeSource(
+  sdkRuntime: Awaited<ReturnType<typeof resolveSdkRuntimeIdentityForCli>>,
+): Promise<string> {
+  const source = await readFile(sdkRuntime.sourcePath, "utf8");
+  const sha256 = createHash("sha256").update(source).digest("hex");
+  if (sha256 !== sdkRuntime.sha256) {
+    throw new Error(
+      "Generated SDK runtime bytes do not match the compatibility-bound identity.",
+    );
+  }
+  return source;
+}
+
 export async function runReviewOnDeclaredTarget(options: {
   role: HostRole;
   explodexHome: string;
@@ -226,11 +403,11 @@ export async function runReviewOnDeclaredTarget(options: {
       message: inspection.error.message,
     });
   }
-  const persisted = await loadCompatibilityRecord({
+  let persisted = await loadCompatibilityRecord({
     adapters: hostAdapters,
     explodexHome: options.explodexHome,
   });
-  const compatibility = evaluateCompatibility({
+  let compatibility = evaluateCompatibility({
     host: inspection.host,
     sdkRuntime: {
       version: sdkRuntime.version,
@@ -239,10 +416,39 @@ export async function runReviewOnDeclaredTarget(options: {
     persisted,
     runningProcess: null,
   });
-  const gate = gateCompatibilityDependentOperation({
+  let gate = gateCompatibilityDependentOperation({
     operation: "review",
     compatibility,
   });
+  if (!gate.allowed && gate.error.code === "compatibility_stale") {
+    const reproved = await attemptAutomaticDevelopmentReproof({
+      explodexHome: options.explodexHome,
+      devRoot: options.devRoot,
+      env: options.env,
+      host: inspection.host,
+      hostAdapters,
+      sdkRuntime,
+      signal: options.signal,
+    });
+    if (reproved.ok) {
+      persisted = await loadCompatibilityRecord({
+        adapters: hostAdapters,
+        explodexHome: options.explodexHome,
+      });
+      compatibility = evaluateCompatibility({
+        host: inspection.host,
+        sdkRuntime: {
+          version: sdkRuntime.version,
+          sha256: sdkRuntime.sha256,
+        },
+        persisted,
+      });
+      gate = gateCompatibilityDependentOperation({
+        operation: "review",
+        compatibility,
+      });
+    }
+  }
   if (!gate.allowed) {
     return unavailable({
       code: gate.error.code === "compatibility_stale"
@@ -252,7 +458,7 @@ export async function runReviewOnDeclaredTarget(options: {
       details: { nextAction: gate.error.nextAction },
     });
   }
-  const prepared = await prepareTarget({
+  const prepared = await preparePluginApplicationTarget({
     role: options.role,
     explodexHome: options.explodexHome,
     devRoot: options.devRoot,
@@ -264,7 +470,7 @@ export async function runReviewOnDeclaredTarget(options: {
   }
   let sdkRuntimeSource: string;
   try {
-    sdkRuntimeSource = await readFile(sdkRuntime.sourcePath, "utf8");
+    sdkRuntimeSource = await readVerifiedSdkRuntimeSource(sdkRuntime);
   } catch {
     return unavailable({
       code: "compatibility.unproven",
@@ -287,11 +493,22 @@ export async function runReviewOnDeclaredTarget(options: {
       adapters: hostAdapters,
       explodexHome: options.explodexHome,
     });
+    const currentSdkRuntime = await resolveSdkRuntimeIdentityForCli();
+    if (
+      currentSdkRuntime.version !== sdkRuntime.version ||
+      currentSdkRuntime.sha256 !== sdkRuntime.sha256 ||
+      currentSdkRuntime.sourcePath !== sdkRuntime.sourcePath
+    ) {
+      throw Object.assign(
+        new Error("Generated SDK runtime identity changed during approval."),
+        { code: "host_identity_drift" as const },
+      );
+    }
     const currentCompatibility = evaluateCompatibility({
       host: currentInspection.host,
       sdkRuntime: {
-        version: sdkRuntime.version,
-        sha256: sdkRuntime.sha256,
+        version: currentSdkRuntime.version,
+        sha256: currentSdkRuntime.sha256,
       },
       persisted: currentPersisted,
       runningProcess: null,
@@ -437,6 +654,13 @@ export async function runReviewOnDeclaredTarget(options: {
     runtimeAdapters: runtime,
     operationId: review.operationId,
   });
+  const committedApprovalMutations = approval.stateCommitted
+    ? mutationResults({
+        approval,
+        applications: [],
+        target: null,
+      })
+    : undefined;
   if (!approval.ok) {
     const cleanup = await finalizeReviewGrant();
     if (!cleanup.ok) {
@@ -455,6 +679,9 @@ export async function runReviewOnDeclaredTarget(options: {
         authorityChanged: approval.authorityChanged,
         sourceDelivered: false,
         applications: [],
+        ...(committedApprovalMutations === undefined
+          ? {}
+          : { mutations: committedApprovalMutations }),
       };
     }
     return {
@@ -471,6 +698,9 @@ export async function runReviewOnDeclaredTarget(options: {
       authorityChanged: approval.authorityChanged,
       sourceDelivered: false,
       applications: [],
+      ...(committedApprovalMutations === undefined
+        ? {}
+        : { mutations: committedApprovalMutations }),
     };
   }
   if (options.signal?.aborted) {
@@ -487,6 +717,7 @@ export async function runReviewOnDeclaredTarget(options: {
         authorityChanged: true,
         sourceDelivered: false,
         applications: [],
+        mutations: committedApprovalMutations,
       };
     }
     return {
@@ -499,6 +730,7 @@ export async function runReviewOnDeclaredTarget(options: {
       authorityChanged: true,
       sourceDelivered: false,
       applications: [],
+      mutations: committedApprovalMutations,
     };
   }
 
@@ -531,6 +763,11 @@ export async function runReviewOnDeclaredTarget(options: {
       authorityChanged: true,
       sourceDelivered: application.sourceDelivered,
       applications: application.applications,
+      mutations: mutationResults({
+        approval,
+        applications: application.applications,
+        target: null,
+      }),
     };
   }
   return {
@@ -541,6 +778,11 @@ export async function runReviewOnDeclaredTarget(options: {
     authorityChanged: true,
     sourceDelivered: application.sourceDelivered,
     applications: application.applications,
+    mutations: mutationResults({
+      approval,
+      applications: application.applications,
+      target: application.target,
+    }),
     residualInventory: {
       callbacks:
         review.residualInventory.callbacks +

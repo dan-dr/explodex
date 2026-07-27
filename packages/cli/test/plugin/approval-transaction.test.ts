@@ -113,6 +113,10 @@ describe("M3-F05 composed approval transaction", () => {
       expect(result.stateCommitted).toBe(true);
       expect(result.authorityChanged).toBe(true);
       expect(result.snapshots).toHaveLength(1);
+      expect(result.previousIntents).toEqual([{
+        id: fixture.installed.id,
+        intent: null,
+      }]);
       const snapshot = result.snapshots[0]!;
       expect(new TextDecoder().decode(snapshot.read("assets/notice.txt"))).toBe(
         "SNAPSHOT_A",

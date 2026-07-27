@@ -15,6 +15,10 @@ export const PRIVATE_APPLY_APPROVED =
   "__explodexApplyApprovedPayload" as const;
 export const PRIVATE_FINALIZE_APPROVED =
   "__explodexFinalizeApprovedOperation" as const;
+export const PRIVATE_RECONCILE_ENABLED =
+  "__explodexReconcileEnabledPayload" as const;
+export const PRIVATE_APPLICATION_STATUS =
+  "__explodexPluginApplicationStatus" as const;
 
 type ApprovedAssetInput = {
   path: string;
@@ -37,10 +41,27 @@ export type ApprovedPluginApplicationResult = {
   id: string;
   version: string;
   payloadSha256: string;
-  status: "applied" | "boundary-required" | "failed";
+  status: "unchanged" | "applied" | "boundary-required" | "failed";
   boundary: "none" | "renderer" | "app";
   setupCount: number;
+  previousAppliedIdentity: AppliedPluginIdentity | null;
+  appliedIdentity: AppliedPluginIdentity | null;
+  stage: "authorization" | "evaluation" | "setup" | "cleanup" | "none";
+  possiblePartialEffects: boolean;
   error?: { code: string; message: string };
+};
+
+export type AppliedPluginIdentity = {
+  id: string;
+  version: string;
+  payloadSha256: string;
+};
+
+export type PluginRuntimeDiagnostic = {
+  id: string;
+  identity: AppliedPluginIdentity;
+  code: "plugin.runtime.error";
+  message: string;
 };
 
 export type PluginApplicationController = {
@@ -53,7 +74,23 @@ export type PluginApplicationController = {
     evaluate: unknown,
     secret: unknown,
   ): Promise<ApprovedPluginApplicationResult>;
+  reconcileEnabled(
+    input: unknown,
+    evaluate: unknown,
+  ): Promise<ApprovedPluginApplicationResult>;
+  claimEnabledReconciliation(): (
+    (
+      input: unknown,
+      evaluate: unknown,
+    ) => Promise<ApprovedPluginApplicationResult>
+  ) | null;
+  disableEnabledReconciliation(): void;
   finalizeApproved(operationId: string, nonce: string): void;
+  status(pluginId: string): {
+    identity: AppliedPluginIdentity;
+    lifecycle: ApprovedPluginInput["lifecycle"];
+  } | null;
+  reportRuntimeError(pluginId: string, error: unknown): void;
   unload(pluginId: string): ReturnType<PluginLifecycleHost["unload"]>;
   destroy(): Promise<void>;
 };
@@ -144,6 +181,13 @@ function failed(
   input: ApprovedPluginInput,
   code: string,
   message: string,
+  options?: {
+    previousAppliedIdentity?: AppliedPluginIdentity | null;
+    appliedIdentity?: AppliedPluginIdentity | null;
+    stage?: ApprovedPluginApplicationResult["stage"];
+    setupCount?: number;
+    possiblePartialEffects?: boolean;
+  },
 ): ApprovedPluginApplicationResult {
   return {
     schemaVersion: 1,
@@ -152,7 +196,11 @@ function failed(
     payloadSha256: input.payloadSha256,
     status: "failed",
     boundary: "none",
-    setupCount: 0,
+    setupCount: options?.setupCount ?? 0,
+    previousAppliedIdentity: options?.previousAppliedIdentity ?? null,
+    appliedIdentity: options?.appliedIdentity ?? null,
+    stage: options?.stage ?? "authorization",
+    possiblePartialEffects: options?.possiblePartialEffects ?? false,
     error: { code, message },
   };
 }
@@ -169,10 +217,59 @@ async function sha256(value: string): Promise<string> {
 
 export function createPluginApplicationController(options: {
   host: RegistrationHost;
+  onDiagnostic?(diagnostic: PluginRuntimeDiagnostic): void;
 }): PluginApplicationController {
-  const lifecycle = createPluginLifecycleHost();
   const registration = createPrivateRegistrationController(options.host);
-  const stores = new Map<string, PluginAssetStore>();
+  const live = new Map<string, {
+    identity: AppliedPluginIdentity;
+    lifecycle: ApprovedPluginInput["lifecycle"];
+    store: PluginAssetStore;
+    generation: number;
+    token: string;
+  }>();
+  const generationIdentities = new Map<number, {
+    token: string;
+    identity: AppliedPluginIdentity;
+  }>();
+  const pendingDiagnostics = new Map<number, unknown[]>();
+  const reportDiagnostic = (
+    pluginId: string,
+    identity: AppliedPluginIdentity,
+    error: unknown,
+  ) => {
+    options.onDiagnostic?.({
+      id: pluginId,
+      identity: { ...identity },
+      code: "plugin.runtime.error",
+      message: error instanceof Error
+        ? error.message
+        : "Plugin emitted a delayed runtime error.",
+    });
+  };
+  const bindGenerationIdentity = (
+    pluginId: string,
+    generation: number,
+    token: string,
+    identity: AppliedPluginIdentity,
+  ) => {
+    generationIdentities.set(generation, { token, identity: { ...identity } });
+    for (const error of pendingDiagnostics.get(generation) ?? []) {
+      reportDiagnostic(pluginId, identity, error);
+    }
+    pendingDiagnostics.delete(generation);
+  };
+  const lifecycle = createPluginLifecycleHost({
+    onRuntimeError(event) {
+      const origin = generationIdentities.get(event.generation);
+      if (origin !== undefined && origin.token === event.token) {
+        reportDiagnostic(event.pluginId, origin.identity, event.error);
+        return;
+      }
+      const pending = pendingDiagnostics.get(event.generation) ?? [];
+      pending.push(event.error);
+      pendingDiagnostics.set(event.generation, pending);
+    },
+  });
   const pending = new Map<string, {
     activationCommitment: string;
     activateByMs: number;
@@ -180,6 +277,7 @@ export function createPluginApplicationController(options: {
     applicationExpiresAtMs: number | null;
     selected: Set<string>;
   }>();
+  let enabledReconciliationAvailable = true;
   const grantKey = (operationId: string, nonce: string): string =>
     `${operationId}\0${nonce}`;
   const identityKey = (input: {
@@ -187,9 +285,14 @@ export function createPluginApplicationController(options: {
     version: string;
     payloadSha256: string;
   }): string => `${input.id}\0${input.version}\0${input.payloadSha256}`;
+  const copyIdentity = (
+    identity: AppliedPluginIdentity | null,
+  ): AppliedPluginIdentity | null =>
+    identity === null ? null : { ...identity };
 
-  return {
+  const controller: PluginApplicationController = {
     authorizeReview(request, submission) {
+      enabledReconciliationAvailable = false;
       const remaining = new Set(submission.selected.map(identityKey));
       if (remaining.size === 0) {
         const key = grantKey(request.operationId, request.nonce);
@@ -215,6 +318,10 @@ export function createPluginApplicationController(options: {
           status: "failed",
           boundary: "none",
           setupCount: 0,
+          previousAppliedIdentity: null,
+          appliedIdentity: null,
+          stage: "authorization",
+          possiblePartialEffects: false,
           error: {
             code: "plugin.application.invalid-input",
             message: "Approved plugin application input was malformed.",
@@ -224,12 +331,18 @@ export function createPluginApplicationController(options: {
       const key = grantKey(input.operationId, input.nonce);
       const grant = pending.get(key);
       const identity = identityKey(input);
+      const previous = live.get(input.id);
+      const previousIdentity = copyIdentity(previous?.identity ?? null);
       if (grant === undefined || Date.now() >= grant.activateByMs) {
         pending.delete(key);
         return failed(
           input,
           "plugin.application.unauthorized",
           "Approved plugin application capability was absent, expired, or already consumed.",
+          {
+            previousAppliedIdentity: previousIdentity,
+            appliedIdentity: previousIdentity,
+          },
         );
       }
       if (
@@ -242,6 +355,10 @@ export function createPluginApplicationController(options: {
           input,
           "plugin.application.unauthorized",
           "Approved plugin application capability secret was invalid.",
+          {
+            previousAppliedIdentity: previousIdentity,
+            appliedIdentity: previousIdentity,
+          },
         );
       }
       if (grant.applicationExpiresAtMs === null) {
@@ -256,6 +373,10 @@ export function createPluginApplicationController(options: {
           input,
           "plugin.application.unauthorized",
           "Approved plugin application capability was absent, expired, or already consumed.",
+          {
+            previousAppliedIdentity: previousIdentity,
+            appliedIdentity: previousIdentity,
+          },
         );
       }
       if (grant.selected.size === 0) pending.delete(key);
@@ -268,6 +389,31 @@ export function createPluginApplicationController(options: {
           status: "boundary-required",
           boundary: input.lifecycle === "renderer-start" ? "renderer" : "app",
           setupCount: 0,
+          previousAppliedIdentity: previousIdentity,
+          appliedIdentity: previousIdentity,
+          stage: "none",
+          possiblePartialEffects: false,
+        };
+      }
+      const requestedIdentity: AppliedPluginIdentity = {
+        id: input.id,
+        version: input.version,
+        payloadSha256: input.payloadSha256,
+      };
+      if (
+        previous !== undefined &&
+        identityKey(previous.identity) === identityKey(requestedIdentity)
+      ) {
+        return {
+          schemaVersion: 1,
+          ...requestedIdentity,
+          status: "unchanged",
+          boundary: "none",
+          setupCount: 0,
+          previousAppliedIdentity: copyIdentity(previous.identity),
+          appliedIdentity: copyIdentity(previous.identity),
+          stage: "none",
+          possiblePartialEffects: false,
         };
       }
       if (typeof evaluate !== "function") {
@@ -275,6 +421,11 @@ export function createPluginApplicationController(options: {
           input,
           "plugin.application.invalid-source",
           "Dynamic approved plugin application requires one source evaluator.",
+          {
+            previousAppliedIdentity: previousIdentity,
+            appliedIdentity: previousIdentity,
+            stage: "evaluation",
+          },
         );
       }
 
@@ -283,7 +434,12 @@ export function createPluginApplicationController(options: {
         evaluate: evaluate as () => void,
       });
       if (!registered.ok) {
-        return failed(input, registered.code, registered.message);
+        return failed(input, registered.code, registered.message, {
+          previousAppliedIdentity: previousIdentity,
+          appliedIdentity: previousIdentity,
+          stage: "evaluation",
+          possiblePartialEffects: true,
+        });
       }
 
       const store = createPluginAssetStore({
@@ -295,27 +451,61 @@ export function createPluginApplicationController(options: {
           ]),
         ),
       });
-      const previous = stores.get(input.id);
       const applied = await lifecycle.apply({
         pluginId: input.id,
         definition: registered.registration.definition,
         assets: store,
       });
       if (!applied.ok) {
-        store.revoke();
+        const newGenerationIsLive = applied.record.status === "applied";
+        if (!newGenerationIsLive) store.revoke();
+        if (newGenerationIsLive) {
+          live.set(input.id, {
+            identity: requestedIdentity,
+            lifecycle: input.lifecycle,
+            store,
+            generation: applied.record.generation,
+            token: applied.record.token,
+          });
+          bindGenerationIdentity(
+            input.id,
+            applied.record.generation,
+            applied.record.token,
+            requestedIdentity,
+          );
+          previous?.store.revoke();
+        }
         return {
           schemaVersion: 1,
           id: input.id,
           version: input.version,
           payloadSha256: input.payloadSha256,
-          status: "failed",
+          status: newGenerationIsLive ? "applied" : "failed",
           boundary: "none",
           setupCount: applied.record.setupCount,
+          previousAppliedIdentity: previousIdentity,
+          appliedIdentity: newGenerationIsLive
+            ? copyIdentity(requestedIdentity)
+            : previousIdentity,
+          stage: newGenerationIsLive ? "cleanup" : "setup",
+          possiblePartialEffects: applied.record.setupCount > 0,
           error: { code: applied.code, message: applied.message },
         };
       }
-      stores.set(input.id, store);
-      previous?.revoke();
+      live.set(input.id, {
+        identity: requestedIdentity,
+        lifecycle: input.lifecycle,
+        store,
+        generation: applied.record.generation,
+        token: applied.record.token,
+      });
+      bindGenerationIdentity(
+        input.id,
+        applied.record.generation,
+        applied.record.token,
+        requestedIdentity,
+      );
+      previous?.store.revoke();
       return {
         schemaVersion: 1,
         id: input.id,
@@ -324,25 +514,113 @@ export function createPluginApplicationController(options: {
         status: "applied",
         boundary: "none",
         setupCount: applied.record.setupCount,
+        previousAppliedIdentity: previousIdentity,
+        appliedIdentity: copyIdentity(requestedIdentity),
+        stage: "setup",
+        possiblePartialEffects: false,
       };
     },
+    async reconcileEnabled(raw, evaluate) {
+      const input = parseInput(raw);
+      if (input === null) {
+        return {
+          schemaVersion: 1,
+          id: "invalid",
+          version: "invalid",
+          payloadSha256: "0".repeat(64),
+          status: "failed",
+          boundary: "none",
+          setupCount: 0,
+          previousAppliedIdentity: null,
+          appliedIdentity: null,
+          stage: "authorization",
+          possiblePartialEffects: false,
+          error: {
+            code: "plugin.application.invalid-input",
+            message: "Enabled plugin reconciliation input was malformed.",
+          },
+        };
+      }
+      const activationCapability = input.payloadSha256;
+      pending.set(grantKey(input.operationId, input.nonce), {
+        activationCommitment: await sha256(activationCapability),
+        activateByMs: Date.now() + 60_000,
+        applicationTtlMs: 60_000,
+        applicationExpiresAtMs: null,
+        selected: new Set([identityKey(input)]),
+      });
+      return controller.applyApproved(input, evaluate, activationCapability);
+    },
+    claimEnabledReconciliation() {
+      if (!enabledReconciliationAvailable) return null;
+      enabledReconciliationAvailable = false;
+      let used = false;
+      return (input, evaluate) => {
+        if (used) {
+          return Promise.resolve(failed(
+            {
+              schemaVersion: 1,
+              operationId: "consumed",
+              nonce: "consumed",
+              id: "invalid",
+              version: "invalid",
+              payloadSha256: "0".repeat(64),
+              lifecycle: "dynamic",
+              assets: [],
+            },
+            "plugin.application.unauthorized",
+            "Enabled reconciliation capability has already been consumed.",
+          ));
+        }
+        used = true;
+        return controller.reconcileEnabled(input, evaluate);
+      };
+    },
+    disableEnabledReconciliation() {
+      enabledReconciliationAvailable = false;
+    },
     finalizeApproved(operationId, nonce) {
+      enabledReconciliationAvailable = false;
       const key = grantKey(operationId, nonce);
       pending.delete(key);
     },
+    status(pluginId) {
+      const current = live.get(pluginId);
+      return current === undefined
+        ? null
+        : {
+            identity: { ...current.identity },
+            lifecycle: current.lifecycle,
+          };
+    },
+    reportRuntimeError(pluginId, error) {
+      const current = live.get(pluginId);
+      if (current === undefined) return;
+      options.onDiagnostic?.({
+        id: pluginId,
+        identity: { ...current.identity },
+        code: "plugin.runtime.error",
+        message: error instanceof Error
+          ? error.message
+          : "Plugin emitted a delayed runtime error.",
+      });
+    },
     unload(pluginId) {
-      stores.get(pluginId)?.revoke();
-      stores.delete(pluginId);
+      live.get(pluginId)?.store.revoke();
+      live.delete(pluginId);
       return lifecycle.unload({ pluginId });
     },
     async destroy() {
       pending.clear();
+      generationIdentities.clear();
+      pendingDiagnostics.clear();
       const ids = lifecycle.list().map((record) => record.pluginId);
       for (const id of ids.reverse()) {
-        stores.get(id)?.revoke();
-        stores.delete(id);
+        live.get(id)?.store.revoke();
+        live.delete(id);
         await lifecycle.unload({ pluginId: id });
       }
     },
   };
+  return controller;
 }

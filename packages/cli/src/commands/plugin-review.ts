@@ -14,7 +14,6 @@ import {
   selectPendingReviewArtifacts,
   type ReviewArtifact,
 } from "../plugin/review-protocol.ts";
-import { runReviewOnDeclaredTarget } from "../plugin/review-target.ts";
 
 const OPERATION = "plugin.review";
 
@@ -33,6 +32,7 @@ export type ReviewEntryResult =
       authorityChanged: boolean;
       stateCommitted: boolean;
       applications: unknown[];
+      mutations?: unknown[];
       protocol?: {
         operationId: string;
         callbackName: string;
@@ -51,6 +51,7 @@ export type ReviewEntryResult =
       authorityChanged: boolean;
       stateCommitted: boolean;
       applications: unknown[];
+      mutations?: unknown[];
     };
 
 function parseReviewArgs(tokens: readonly string[]):
@@ -201,7 +202,8 @@ export async function performPendingPluginReview(options: {
       applications: [],
     };
   }
-  const operation = await runReviewOnDeclaredTarget({
+  const operation = await (await import("../plugin/review-target.ts"))
+    .runReviewOnDeclaredTarget({
     role: options.target,
     explodexHome: options.explodexHome,
     devRoot: options.globals.devRoot ?? undefined,
@@ -231,6 +233,7 @@ export async function performPendingPluginReview(options: {
       authorityChanged: operation.authorityChanged,
       stateCommitted: operation.stateCommitted,
       applications: operation.applications,
+      mutations: operation.mutations,
     };
   }
   return {
@@ -243,6 +246,7 @@ export async function performPendingPluginReview(options: {
     authorityChanged: operation.authorityChanged,
     stateCommitted: operation.stateCommitted,
     applications: operation.applications,
+    mutations: operation.mutations,
     protocol: {
       operationId: operation.operationId,
       callbackName: operation.protocol.callbackName,
@@ -328,6 +332,7 @@ export async function runPluginReview(options: {
         authorityChanged: result.authorityChanged,
         stateCommitted: result.stateCommitted,
         applications: result.applications,
+        mutations: result.mutations,
       },
       exitCode: result.exitCode ?? exitCodeForError(result.code),
       humanStderr: `${result.message}\nerror.code: ${result.code}\n`,
@@ -343,6 +348,7 @@ export async function runPluginReview(options: {
     authorityChanged: result.authorityChanged,
     stateCommitted: result.stateCommitted,
     applications: result.applications,
+    mutations: result.mutations,
     ...(result.protocol === undefined ? {} : { protocol: result.protocol }),
   };
   return {

@@ -14,7 +14,9 @@ import type {
   VerifiedProcess,
 } from "../../src/host/status.ts";
 import {
+  buildApprovedApplicationExpression,
   runApprovedPluginApplicationOperation,
+  runEnabledPluginApplicationOperation,
 } from "../../src/plugin/application-operation.ts";
 import type {
   PluginPayloadSnapshot,
@@ -163,6 +165,15 @@ function snapshot(lifecycle: "dynamic" | "renderer-start" = "dynamic"):
   });
 }
 
+function snapshotFor(id: string): PluginPayloadSnapshot {
+  const base = snapshot();
+  return {
+    ...base,
+    identity: { ...base.identity, id },
+    manifest: { ...base.manifest, id },
+  };
+}
+
 function run(options: {
   adapter: ApplicationCdpAdapter;
   expectedTarget?: TargetIdentity;
@@ -203,6 +214,132 @@ function run(options: {
 }
 
 describe("M3-F05 exact snapshot target application", () => {
+  test("awaits prior runtime teardown before refreshed setup", async () => {
+    const globalRecord = globalThis as Record<string, unknown>;
+    const order: string[] = [];
+    globalRecord.Explodex = {
+      __explodexSdkRuntimeRequestMark: "prior-operation",
+      async __explodexDestroyRuntimeAndWait() {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        order.push("old-teardown");
+        delete globalRecord.Explodex;
+      },
+    };
+    globalRecord.__runtimeReplacementOrder = order;
+    const expression = buildApprovedApplicationExpression({
+      sdkRuntimeSource: `
+globalThis.__runtimeReplacementOrder.push("new-runtime");
+globalThis.Explodex = {
+  __explodexApplyApprovedPayload: async (input) => {
+    globalThis.__runtimeReplacementOrder.push("new-setup");
+    return {
+      schemaVersion: 1,
+      id: input.id,
+      version: input.version,
+      payloadSha256: input.payloadSha256,
+      status: "applied",
+      boundary: "none",
+      setupCount: 1,
+      previousAppliedIdentity: null,
+      appliedIdentity: {
+        id: input.id,
+        version: input.version,
+        payloadSha256: input.payloadSha256,
+      },
+      stage: "setup",
+      possiblePartialEffects: false,
+    };
+  },
+  __explodexFinalizeApprovedOperation() {},
+  __explodexPluginApplicationStatus() { return null; },
+};`,
+      operationId: "replacement-order",
+      nonce: "replacement-nonce",
+      activationSecret: "f".repeat(64),
+      snapshots: [snapshot()],
+    });
+
+    await Function(`return ${expression}`)();
+
+    expect(order).toEqual(["old-teardown", "new-runtime", "new-setup"]);
+    delete globalRecord.Explodex;
+    delete globalRecord.__runtimeReplacementOrder;
+    delete globalRecord.__explodexSdkRuntimeRequestIdentity;
+  });
+
+  test("preserves completed results when a later renderer application throws", async () => {
+    const expression = buildApprovedApplicationExpression({
+      sdkRuntimeSource: `
+globalThis.Explodex = {
+  __explodexApplyApprovedPayload: async (input) => {
+    if (input.id === "beta") throw new Error("renderer became unusable");
+    return {
+      schemaVersion: 1,
+      id: input.id,
+      version: input.version,
+      payloadSha256: input.payloadSha256,
+      status: "applied",
+      boundary: "none",
+      setupCount: 1,
+      previousAppliedIdentity: null,
+      appliedIdentity: {
+        id: input.id,
+        version: input.version,
+        payloadSha256: input.payloadSha256,
+      },
+      stage: "setup",
+      possiblePartialEffects: false,
+    };
+  },
+  __explodexFinalizeApprovedOperation() {},
+  __explodexPluginApplicationStatus(id) {
+    return id === "alpha" ? null : {
+      identity: {
+        id,
+        version: "prior-live",
+        payloadSha256: "${"c".repeat(64)}",
+      },
+      lifecycle: "dynamic",
+    };
+  },
+};`,
+      operationId: "ordered-application",
+      nonce: "ordered-nonce",
+      activationSecret: "e".repeat(64),
+      snapshots: [
+        snapshotFor("alpha"),
+        snapshotFor("beta"),
+        snapshotFor("gamma"),
+      ],
+    });
+
+    const result = await Function(`return ${expression}`)();
+
+    expect(result.applications.map((entry: { status: string }) =>
+      entry.status
+    )).toEqual(["applied", "failed", "not-attempted"]);
+    expect(result.applications[1]).toMatchObject({
+      id: "beta",
+      stage: "evaluation",
+      possiblePartialEffects: true,
+      appliedIdentity: {
+        id: "beta",
+        version: "prior-live",
+        payloadSha256: "c".repeat(64),
+      },
+    });
+    expect(result.applications[2]).toMatchObject({
+      id: "gamma",
+      stage: "none",
+      possiblePartialEffects: false,
+      appliedIdentity: {
+        id: "gamma",
+        version: "prior-live",
+        payloadSha256: "c".repeat(64),
+      },
+    });
+  });
+
   test("evaluates selected source and assets only from the accepted snapshot", async () => {
     const adapter = new ApplicationCdpAdapter({
       schemaVersion: 1,
@@ -277,6 +414,17 @@ describe("M3-F05 exact snapshot target application", () => {
     const adapter = new ApplicationCdpAdapter({
       schemaVersion: 1,
       applications: [],
+      observed: [{
+        id: "alpha",
+        status: {
+          identity: {
+            id: "alpha",
+            version: "prior-dynamic",
+            payloadSha256: "c".repeat(64),
+          },
+          lifecycle: "dynamic",
+        },
+      }],
     });
     const fixture = run({
       adapter,
@@ -290,6 +438,11 @@ describe("M3-F05 exact snapshot target application", () => {
         status: "boundary-required",
         boundary: "renderer",
         setupCount: 0,
+        appliedIdentity: {
+          id: "alpha",
+          version: "prior-dynamic",
+          payloadSha256: "c".repeat(64),
+        },
       }],
       residualInventory: {
         callbacks: 0,
@@ -313,9 +466,108 @@ describe("M3-F05 exact snapshot target application", () => {
       ok: false,
       code: "plugin.approval.invalid-application-response",
       sourceDelivered: true,
-      applications: [],
+      applications: [{
+        status: "not-attempted",
+        stage: "evaluation",
+        possiblePartialEffects: true,
+      }],
     });
     expect(adapter.evaluations).toBe(2);
     expect(adapter.closed).toBe(true);
+  });
+
+  test("rejects contradictory renderer status without claiming rollback", async () => {
+    const adapter = new ApplicationCdpAdapter({
+      schemaVersion: 1,
+      applications: [{
+        schemaVersion: 1,
+        id: "alpha",
+        version: "opaque-v1",
+        payloadSha256: DIGEST,
+        status: "applied",
+        boundary: "renderer",
+        setupCount: 1,
+        previousAppliedIdentity: null,
+        appliedIdentity: {
+          id: "alpha",
+          version: "opaque-v1",
+          payloadSha256: DIGEST,
+        },
+        stage: "setup",
+        possiblePartialEffects: false,
+      }],
+    });
+    const fixture = run({ adapter });
+    const result = await runWithClockPump(fixture.runtime, fixture.operation);
+    expect(result).toMatchObject({
+      ok: false,
+      code: "plugin.approval.invalid-application-response",
+      sourceDelivered: true,
+    });
+    expect(adapter.closed).toBe(true);
+  });
+
+  test("enabled reconciliation uses the private one-shot surface without an approval grant", async () => {
+    const adapter = new ApplicationCdpAdapter({
+      schemaVersion: 1,
+      applications: [{
+        schemaVersion: 1,
+        id: "alpha",
+        version: "opaque-v1",
+        payloadSha256: DIGEST,
+        status: "unchanged",
+        boundary: "none",
+        setupCount: 0,
+        previousAppliedIdentity: {
+          id: "alpha",
+          version: "opaque-v1",
+          payloadSha256: DIGEST,
+        },
+        appliedIdentity: {
+          id: "alpha",
+          version: "opaque-v1",
+          payloadSha256: DIGEST,
+        },
+        stage: "none",
+        possiblePartialEffects: false,
+      }],
+    });
+    const runtime = createFakeRuntimeHarness({
+      startMs: 10_000,
+      self: { pid: 8001, processStartedAt: "enabled-reconciliation" },
+    });
+    runtime.setProcessAlive(PROCESS.pid, PROCESS.processStartedAt, true);
+    const result = await runWithClockPump(
+      runtime,
+      runEnabledPluginApplicationOperation({
+        runtime: runtime.adapters,
+        operationId: "enabled-reconciliation",
+        role: "development",
+        homeIdentity: "/tmp/approval-home",
+        host: HOST,
+        process: PROCESS,
+        endpoint: { host: "127.0.0.1", port: 9444 },
+        cdp: adapter,
+        expectedTarget: TARGET_IDENTITY,
+        revalidate: async () => ({
+          host: HOST,
+          process: PROCESS,
+          listener: LISTENER,
+        }),
+        sdkRuntimeSource: "globalThis.Explodex = globalThis.Explodex;",
+        snapshots: [snapshot()],
+        timeoutMs: 1_000,
+      }),
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      applications: [{ status: "unchanged", setupCount: 0 }],
+    });
+    expect(adapter.expressions.join("\n")).toContain(
+      "__explodexReconcileEnabledPayload",
+    );
+    expect(adapter.expressions.join("\n")).not.toContain(
+      "__explodexFinalizeApprovedOperation",
+    );
   });
 });

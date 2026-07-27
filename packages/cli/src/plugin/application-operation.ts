@@ -1,4 +1,5 @@
 import type { HostIdentity } from "../host/types.ts";
+import { createHash } from "node:crypto";
 import type {
   DeclaredRoleEndpoint,
   HostRole,
@@ -22,9 +23,18 @@ export type RuntimeApplicationResult = {
   id: string;
   version: string;
   payloadSha256: string;
-  status: "applied" | "boundary-required" | "failed";
+  status:
+    | "unchanged"
+    | "applied"
+    | "boundary-required"
+    | "failed"
+    | "not-attempted";
   boundary: "none" | "renderer" | "app";
   setupCount: number;
+  previousAppliedIdentity: PluginPayloadIdentity | null;
+  appliedIdentity: PluginPayloadIdentity | null;
+  stage: "authorization" | "evaluation" | "setup" | "cleanup" | "none";
+  possiblePartialEffects: boolean;
   error?: { code: string; message: string };
 };
 
@@ -69,6 +79,23 @@ function identityEquals(
     result.payloadSha256 === expected.payloadSha256;
 }
 
+function parseIdentity(value: unknown): PluginPayloadIdentity | null | false {
+  if (value === null || value === undefined) return null;
+  if (
+    !isRecord(value) ||
+    typeof value.id !== "string" ||
+    typeof value.version !== "string" ||
+    typeof value.payloadSha256 !== "string"
+  ) {
+    return false;
+  }
+  return {
+    id: value.id,
+    version: value.version,
+    payloadSha256: value.payloadSha256,
+  };
+}
+
 function parseRuntimeResult(
   value: unknown,
   expected: readonly PluginPayloadIdentity[],
@@ -92,14 +119,34 @@ function parseRuntimeResult(
       typeof candidate.id !== "string" ||
       typeof candidate.version !== "string" ||
       typeof candidate.payloadSha256 !== "string" ||
-      (candidate.status !== "applied" &&
+      (candidate.status !== "unchanged" &&
+        candidate.status !== "applied" &&
         candidate.status !== "boundary-required" &&
+        candidate.status !== "not-attempted" &&
         candidate.status !== "failed") ||
       (candidate.boundary !== "none" &&
         candidate.boundary !== "renderer" &&
         candidate.boundary !== "app") ||
       !Number.isInteger(candidate.setupCount) ||
       Number(candidate.setupCount) < 0
+    ) {
+      return null;
+    }
+    const previousAppliedIdentity = parseIdentity(
+      candidate.previousAppliedIdentity,
+    );
+    const appliedIdentity = parseIdentity(candidate.appliedIdentity);
+    if (
+      previousAppliedIdentity === false ||
+      appliedIdentity === false ||
+      (candidate.stage !== undefined &&
+        candidate.stage !== "authorization" &&
+        candidate.stage !== "evaluation" &&
+        candidate.stage !== "setup" &&
+        candidate.stage !== "cleanup" &&
+        candidate.stage !== "none") ||
+      (candidate.possiblePartialEffects !== undefined &&
+        typeof candidate.possiblePartialEffects !== "boolean")
     ) {
       return null;
     }
@@ -117,14 +164,54 @@ function parseRuntimeResult(
         message: candidate.error.message,
       };
     }
+    const status = candidate.status;
+    const boundary = candidate.boundary;
+    const setupCount = Number(candidate.setupCount);
+    const normalizedAppliedIdentity = candidate.appliedIdentity === undefined
+      ? status === "applied" || status === "unchanged"
+        ? {
+            id: candidate.id,
+            version: candidate.version,
+            payloadSha256: candidate.payloadSha256,
+          }
+        : null
+      : appliedIdentity;
+    const normalizedStage =
+      candidate.stage as RuntimeApplicationResult["stage"] | undefined ??
+        (status === "failed" ? "setup" : status === "applied" ? "setup" : "none");
+    const normalizedPartial = candidate.possiblePartialEffects === true;
+    if (
+      ((status === "applied" || status === "unchanged") &&
+        boundary !== "none") ||
+      (status === "unchanged" &&
+        (setupCount !== 0 || error !== undefined ||
+          normalizedAppliedIdentity === null)) ||
+      (status === "boundary-required" &&
+        (boundary === "none" || setupCount !== 0 || error !== undefined ||
+          normalizedPartial)) ||
+      (status === "not-attempted" &&
+        (boundary !== "none" || setupCount !== 0 || error === undefined ||
+          normalizedPartial)) ||
+      (status === "failed" &&
+        (boundary !== "none" || error === undefined)) ||
+      (status === "applied" &&
+        error !== undefined &&
+        normalizedStage !== "cleanup")
+    ) {
+      return null;
+    }
     const parsed: RuntimeApplicationResult = {
       schemaVersion: 1,
       id: candidate.id,
       version: candidate.version,
       payloadSha256: candidate.payloadSha256,
-      status: candidate.status,
-      boundary: candidate.boundary,
-      setupCount: Number(candidate.setupCount),
+      status,
+      boundary,
+      setupCount,
+      previousAppliedIdentity,
+      appliedIdentity: normalizedAppliedIdentity,
+      stage: normalizedStage,
+      possiblePartialEffects: normalizedPartial,
       ...(error === undefined ? {} : { error }),
     };
     if (!identityEquals(parsed, identity)) return null;
@@ -133,13 +220,51 @@ function parseRuntimeResult(
   return applications;
 }
 
+function parseObservedApplications(
+  value: unknown,
+  expectedIds: readonly string[],
+): Map<string, PluginPayloadIdentity | null> | null {
+  if (expectedIds.length === 0 && isRecord(value) && value.observed === undefined) {
+    return new Map();
+  }
+  if (!isRecord(value) || !Array.isArray(value.observed)) return null;
+  if (value.observed.length !== expectedIds.length) return null;
+  const observed = new Map<string, PluginPayloadIdentity | null>();
+  for (let index = 0; index < value.observed.length; index += 1) {
+    const candidate = value.observed[index];
+    const expectedId = expectedIds[index];
+    if (
+      expectedId === undefined ||
+      !isRecord(candidate) ||
+      candidate.id !== expectedId ||
+      observed.has(expectedId)
+    ) {
+      return null;
+    }
+    if (candidate.status === null) {
+      observed.set(expectedId, null);
+      continue;
+    }
+    if (!isRecord(candidate.status)) return null;
+    const identity = parseIdentity(candidate.status.identity);
+    if (identity === false || identity === null || identity.id !== expectedId) {
+      return null;
+    }
+    observed.set(expectedId, identity);
+  }
+  return observed;
+}
+
 export function buildApprovedApplicationExpression(options: {
   sdkRuntimeSource: string;
   operationId: string;
   nonce: string;
   activationSecret: string;
   snapshots: readonly PluginPayloadSnapshot[];
+  mode?: "approved" | "enabled";
+  observedPluginIds?: readonly string[];
 }): string {
+  const mode = options.mode ?? "approved";
   const operations = options.snapshots.map((snapshot) => ({
     input: {
       schemaVersion: 1,
@@ -159,29 +284,129 @@ export function buildApprovedApplicationExpression(options: {
     ),
   }));
   const operationSource = operations.map((operation) => `
-    applications.push(await apply(
-      ${JSON.stringify(operation.input)},
-      () => {
+    if (rendererUnavailable === null) {
+      try {
+        applications.push(await apply(
+          ${JSON.stringify(operation.input)},
+          () => {
 ${operation.source}
-      },
-      ${JSON.stringify(options.activationSecret)},
-    ));`).join("\n");
-  return `(
-async () => {
-${options.sdkRuntimeSource}
-  const runtime = globalThis.Explodex;
-  const apply = runtime && runtime["__explodexApplyApprovedPayload"];
+          }${mode === "approved"
+            ? `,
+          ${JSON.stringify(options.activationSecret)}`
+            : ""},
+        ));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const observed = status(${JSON.stringify(operation.input.id)});
+        const observedIdentity = observed && observed.identity
+          ? observed.identity
+          : null;
+        rendererUnavailable = message;
+        applications.push({
+          schemaVersion: 1,
+          id: ${JSON.stringify(operation.input.id)},
+          version: ${JSON.stringify(operation.input.version)},
+          payloadSha256: ${JSON.stringify(operation.input.payloadSha256)},
+          status: "failed",
+          boundary: "none",
+          setupCount: 0,
+          previousAppliedIdentity: observedIdentity,
+          appliedIdentity: observedIdentity,
+          stage: "evaluation",
+          possiblePartialEffects: true,
+          error: {
+            code: "plugin.application.runtime-unusable",
+            message,
+          },
+        });
+      }
+    } else {
+      const observed = status(${JSON.stringify(operation.input.id)});
+      const observedIdentity = observed && observed.identity
+        ? observed.identity
+        : null;
+      applications.push({
+        schemaVersion: 1,
+        id: ${JSON.stringify(operation.input.id)},
+        version: ${JSON.stringify(operation.input.version)},
+        payloadSha256: ${JSON.stringify(operation.input.payloadSha256)},
+        status: "not-attempted",
+        boundary: "none",
+        setupCount: 0,
+        previousAppliedIdentity: observedIdentity,
+        appliedIdentity: observedIdentity,
+        stage: "none",
+        possiblePartialEffects: false,
+        error: {
+          code: "plugin.application.runtime-unusable",
+          message: rendererUnavailable,
+        },
+      });
+    }`).join("\n");
+  const applyName = mode === "approved"
+    ? "__explodexApplyApprovedPayload"
+    : "__explodexReconcileEnabledPayload";
+  const finalizeSource = mode === "approved"
+    ? `
   const finalize = runtime && runtime["__explodexFinalizeApprovedOperation"];
   if (typeof apply !== "function" || typeof finalize !== "function") {
     throw new Error("Explodex approved-payload application surface is unavailable");
-  }
-  const applications = [];
-  try {
-${operationSource}
-    return { schemaVersion: 1, applications };
+  }`
+    : `
+  if (typeof apply !== "function") {
+    throw new Error("Explodex enabled-payload reconciliation surface is unavailable");
+  }`;
+  const finallySource = mode === "approved"
+    ? `
   } finally {
     finalize(${JSON.stringify(options.operationId)}, ${JSON.stringify(options.nonce)});
+  }`
+    : `
+  } finally {
+    // Enabled reconciliation is one-shot and holds no renderer callback grant.
+  }`;
+  const observedPluginIds = options.observedPluginIds ?? [];
+  const sdkRequestIdentity = `${
+    createHash("sha256").update(options.sdkRuntimeSource).digest("hex")
+  }:${options.operationId}`;
+  return `(
+async () => {
+const previousRuntime = globalThis.Explodex;
+if (
+  previousRuntime &&
+  previousRuntime["__explodexSdkRuntimeRequestMark"] !== ${
+    JSON.stringify(sdkRequestIdentity)
   }
+) {
+  const destroyAndWait = previousRuntime["__explodexDestroyRuntimeAndWait"];
+  if (typeof destroyAndWait !== "function") {
+    throw new Error("Previous Explodex runtime cannot be replaced safely");
+  }
+  await destroyAndWait({ reason: "operation-replacement" });
+}
+globalThis.__explodexSdkRuntimeRequestIdentity = ${
+    JSON.stringify(sdkRequestIdentity)
+  };
+${options.sdkRuntimeSource}
+  const runtime = globalThis.Explodex;
+  const apply = runtime && runtime[${JSON.stringify(applyName)}];${finalizeSource}
+  const status = runtime && runtime["__explodexPluginApplicationStatus"];
+  if (typeof status !== "function") {
+    throw new Error("Explodex plugin application status surface is unavailable");
+  }
+  const applications = [];
+  let rendererUnavailable = null;
+  try {
+${operationSource}
+    return {
+      schemaVersion: 1,
+      applications,
+      observed: ${JSON.stringify(observedPluginIds)}.map((id) => ({
+        id,
+        status: status(id),
+      })),
+    };
+${finallySource}
 }
 )()`;
 }
@@ -197,12 +422,18 @@ export async function runApprovedPluginApplicationOperation(options: {
   process: VerifiedProcess;
   endpoint: DeclaredRoleEndpoint;
   cdp: CdpAdapter;
-  expectedTarget: TargetIdentity;
+  expectedTarget?: TargetIdentity;
+  expectedTargetId?: string;
   revalidate(): Promise<PointOfUseIdentity>;
   sdkRuntimeSource: string;
   snapshots: readonly PluginPayloadSnapshot[];
+  observedBoundaries?: readonly {
+    identity: PluginPayloadIdentity;
+    lifecycle: "renderer-start" | "app-start";
+  }[];
   timeoutMs: number;
   signal?: AbortSignal;
+  mode?: "approved" | "enabled";
 }): Promise<PluginApplicationOperationResult> {
   if (options.signal?.aborted) {
     return {
@@ -217,27 +448,44 @@ export async function runApprovedPluginApplicationOperation(options: {
   const dynamicSnapshots = options.snapshots.filter((snapshot) =>
     snapshot.manifest.lifecycle === "dynamic"
   );
-  const boundaryApplications = options.snapshots.flatMap((snapshot) =>
-    snapshot.manifest.lifecycle === "dynamic"
-      ? []
-      : [{
-          schemaVersion: 1 as const,
-          ...snapshot.identity,
-          status: "boundary-required" as const,
-          boundary: snapshot.manifest.lifecycle === "renderer-start"
-            ? "renderer" as const
-            : "app" as const,
-          setupCount: 0,
-        }]
-  );
+  const boundarySnapshots = [
+    ...options.snapshots.flatMap((snapshot) =>
+      snapshot.manifest.lifecycle === "dynamic"
+        ? []
+        : [{
+            identity: snapshot.identity,
+            lifecycle: snapshot.manifest.lifecycle,
+          }]
+    ),
+    ...(options.observedBoundaries ?? []),
+  ];
   const expectedIdentities = dynamicSnapshots.map((snapshot) => ({
     ...snapshot.identity,
   }));
+  const notAttempted = (
+    code: string,
+    message: string,
+    possiblePartialEffects: boolean,
+  ): RuntimeApplicationResult[] =>
+    expectedIdentities.map((identity) => ({
+      schemaVersion: 1,
+      ...identity,
+      status: "not-attempted",
+      boundary: "none",
+      setupCount: 0,
+      previousAppliedIdentity: null,
+      appliedIdentity: null,
+      stage: "evaluation",
+      possiblePartialEffects,
+      error: { code, message },
+    }));
   let deliveryStarted = false;
   const operation = await runExactTargetOperation({
     runtime: options.runtime,
     operationId: options.operationId,
-    operation: "plugin.approval.apply",
+    operation: options.mode === "enabled"
+      ? "plugin.reconcile.apply"
+      : "plugin.approval.apply",
     role: options.role,
     homeIdentity: options.homeIdentity,
     host: options.host,
@@ -248,7 +496,12 @@ export async function runApprovedPluginApplicationOperation(options: {
     revalidate: options.revalidate,
     evaluate: {
       expression(input) {
-        if (!targetIdentitiesEqual(input.target, options.expectedTarget)) {
+        if (
+          (options.expectedTarget !== undefined &&
+            !targetIdentitiesEqual(input.target, options.expectedTarget)) ||
+          (options.expectedTargetId !== undefined &&
+            input.target.targetId !== options.expectedTargetId)
+        ) {
           throw Object.assign(
             new Error(
               "Approval application target did not match the exact reviewed context.",
@@ -263,29 +516,58 @@ export async function runApprovedPluginApplicationOperation(options: {
             nonce: options.nonce,
             activationSecret: options.activationSecret,
             snapshots: dynamicSnapshots,
+            mode: options.mode,
+            observedPluginIds: boundarySnapshots.map((boundary) =>
+              boundary.identity.id
+            ),
           });
+        }
+        if (options.mode === "enabled") {
+          return `(async () => {
+  const runtime = globalThis.Explodex;
+  const status = runtime && runtime["__explodexPluginApplicationStatus"];
+  if (typeof status !== "function") {
+    throw new Error("Explodex plugin application status surface is unavailable");
+  }
+  return {
+    schemaVersion: 1,
+    applications: [],
+    observed: ${JSON.stringify(
+      boundarySnapshots.map((boundary) => boundary.identity.id),
+    )}.map((id) => ({ id, status: status(id) })),
+  };
+})()`;
         }
         return `(async () => {
   const runtime = globalThis.Explodex;
   const finalize = runtime && runtime["__explodexFinalizeApprovedOperation"];
-  if (typeof finalize !== "function") {
+  const status = runtime && runtime["__explodexPluginApplicationStatus"];
+  if (typeof finalize !== "function" || typeof status !== "function") {
     throw new Error("Explodex approval capability finalizer is unavailable");
   }
   finalize(${JSON.stringify(options.operationId)}, ${JSON.stringify(options.nonce)});
-  return { schemaVersion: 1, applications: [] };
+  return {
+    schemaVersion: 1,
+    applications: [],
+    observed: ${JSON.stringify(
+      boundarySnapshots.map((boundary) => boundary.identity.id),
+    )}.map((id) => ({ id, status: status(id) })),
+  };
 })()`;
       },
       onBeforeEvaluation() {
         if (dynamicSnapshots.length > 0) deliveryStarted = true;
       },
-      terminalCleanupExpression: `(() => {
+      ...(options.mode === "enabled"
+        ? {}
+        : { terminalCleanupExpression: `(() => {
   const runtime = globalThis.Explodex;
   const finalize = runtime && runtime["__explodexFinalizeApprovedOperation"];
   if (typeof finalize === "function") {
     finalize(${JSON.stringify(options.operationId)}, ${JSON.stringify(options.nonce)});
   }
   return true;
-})()`,
+})()` }),
     },
     stageBounds: {
       cdpEvaluationMs: options.timeoutMs,
@@ -301,7 +583,11 @@ export async function runApprovedPluginApplicationOperation(options: {
         stage: operation.error.stage,
         residualInventory: operation.residualInventory,
       },
-      applications: [],
+      applications: notAttempted(
+        operation.error.code,
+        operation.error.message,
+        deliveryStarted,
+      ),
       sourceDelivered: deliveryStarted,
       residualInventory: operation.residualInventory,
     };
@@ -316,11 +602,51 @@ export async function runApprovedPluginApplicationOperation(options: {
       operationId: operation.operationId,
       code: "plugin.approval.invalid-application-response",
       message: "Renderer returned a malformed plugin application result.",
-      applications: [],
+      applications: notAttempted(
+        "plugin.approval.invalid-application-response",
+        "Renderer returned a malformed plugin application result.",
+        deliveryStarted,
+      ),
       sourceDelivered: deliveryStarted,
       residualInventory: operation.residualInventory,
     };
   }
+  const observed = parseObservedApplications(
+    operation.result.evaluation.value,
+    boundarySnapshots.map((boundary) => boundary.identity.id),
+  );
+  if (observed === null) {
+    return {
+      ok: false,
+      operationId: operation.operationId,
+      code: "plugin.approval.invalid-application-response",
+      message: "Renderer returned malformed plugin application status.",
+      applications: notAttempted(
+        "plugin.approval.invalid-application-response",
+        "Renderer returned malformed plugin application status.",
+        deliveryStarted,
+      ),
+      sourceDelivered: deliveryStarted,
+      residualInventory: operation.residualInventory,
+    };
+  }
+  const boundaryApplications: RuntimeApplicationResult[] =
+    boundarySnapshots.map((boundary) => {
+      const appliedIdentity = observed.get(boundary.identity.id) ?? null;
+      return {
+        schemaVersion: 1,
+        ...boundary.identity,
+        status: "boundary-required",
+        boundary: boundary.lifecycle === "renderer-start"
+          ? "renderer"
+          : "app",
+        setupCount: 0,
+        previousAppliedIdentity: appliedIdentity,
+        appliedIdentity,
+        stage: "none",
+        possiblePartialEffects: false,
+      };
+    });
   return {
     ok: true,
     operationId: operation.operationId,
@@ -332,4 +658,33 @@ export async function runApprovedPluginApplicationOperation(options: {
     sourceDelivered: deliveryStarted,
     residualInventory: operation.residualInventory,
   };
+}
+
+export function runEnabledPluginApplicationOperation(options: {
+  runtime: RuntimeAdapters;
+  operationId: string;
+  role: HostRole;
+  homeIdentity: string;
+  host: HostIdentity;
+  process: VerifiedProcess;
+  endpoint: DeclaredRoleEndpoint;
+  cdp: CdpAdapter;
+  expectedTarget?: TargetIdentity;
+  expectedTargetId?: string;
+  revalidate(): Promise<PointOfUseIdentity>;
+  sdkRuntimeSource: string;
+  snapshots: readonly PluginPayloadSnapshot[];
+  observedBoundaries?: readonly {
+    identity: PluginPayloadIdentity;
+    lifecycle: "renderer-start" | "app-start";
+  }[];
+  timeoutMs: number;
+  signal?: AbortSignal;
+}): Promise<PluginApplicationOperationResult> {
+  return runApprovedPluginApplicationOperation({
+    ...options,
+    nonce: `${options.operationId}-enabled`,
+    activationSecret: "",
+    mode: "enabled",
+  });
 }

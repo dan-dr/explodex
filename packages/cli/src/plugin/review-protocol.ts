@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type { TargetIdentity } from "../cdp/types.ts";
 
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
@@ -382,8 +384,27 @@ export function buildMetadataReviewExpression(options: {
       "Enabled plugins are trusted unsandboxed renderer code that can read or modify UI and authenticated renderer state. Confirmation and checksums do not provide sandboxing or publisher authentication.",
     artifacts: options.context.artifacts,
   };
+  const sdkRequestIdentity = `${
+    createHash("sha256").update(options.sdkRuntimeSource).digest("hex")
+  }:${options.context.operationId}`;
   return `(
 async () => {
+const previousRuntime = globalThis.Explodex;
+if (
+  previousRuntime &&
+  previousRuntime["__explodexSdkRuntimeRequestMark"] !== ${
+    JSON.stringify(sdkRequestIdentity)
+  }
+) {
+  const destroyAndWait = previousRuntime["__explodexDestroyRuntimeAndWait"];
+  if (typeof destroyAndWait !== "function") {
+    throw new Error("Previous Explodex runtime cannot be replaced safely");
+  }
+  await destroyAndWait({ reason: "operation-replacement" });
+}
+globalThis.__explodexSdkRuntimeRequestIdentity = ${
+    JSON.stringify(sdkRequestIdentity)
+  };
 ${options.sdkRuntimeSource}
   const runtime = globalThis.Explodex;
   if (!runtime || !runtime.review || typeof runtime.review.open !== "function") {

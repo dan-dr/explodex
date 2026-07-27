@@ -155,8 +155,17 @@ function withTimeout<T>(
  * Create an in-memory plugin lifecycle host.
  * Not a public general activation setter; used by the runtime and testing harness.
  */
-export function createPluginLifecycleHost(): PluginLifecycleHost {
+export function createPluginLifecycleHost(options?: {
+  onRuntimeError?(event: {
+    pluginId: string;
+    generation: number;
+    token: string;
+    error: unknown;
+  }): void;
+}): PluginLifecycleHost {
   const slots = new Map<string, LiveSlot>();
+  const applicationQueues = new Map<string, Promise<void>>();
+  const onRuntimeError = options?.onRuntimeError;
   let nextGeneration = 1;
   let totalSetupInvocations = 0;
   let totalTeardownInvocations = 0;
@@ -308,7 +317,7 @@ export function createPluginLifecycleHost(): PluginLifecycleHost {
     return true;
   }
 
-  async function apply(options: {
+  async function applyNow(options: {
     pluginId: string;
     definition: PluginDefinition;
     assets?: PluginAssetStore;
@@ -320,20 +329,31 @@ export function createPluginLifecycleHost(): PluginLifecycleHost {
     const pluginId = options.pluginId;
 
     const previous = slots.get(pluginId);
+    const previousWasApplied = previous?.status === "applied";
     if (
       previous !== undefined &&
-      (previous.status === "applied" || previous.status === "setting-up")
+      previous.status === "setting-up"
     ) {
       // Supersede: mark previous so late work cannot resurrect it.
       previous.status = "superseded";
       previous.resources.rejectNew("superseded");
-      // Teardown previous after new setup attempt policy: prepare new first.
     }
 
     const generation = nextGeneration;
     nextGeneration += 1;
     const token = newToken(pluginId, generation);
-    const resources = createTrackedResourceRegistry({ generation, token });
+    const resources = createTrackedResourceRegistry({
+      generation,
+      token,
+      onRuntimeError(error) {
+        onRuntimeError?.({
+          pluginId,
+          generation,
+          token,
+          error,
+        });
+      },
+    });
     const slot: LiveSlot = {
       pluginId,
       generation,
@@ -427,6 +447,10 @@ export function createPluginLifecycleHost(): PluginLifecycleHost {
       slot.status = "applied";
 
       // If there was a previous applied generation, tear it down now.
+      if (previousWasApplied && previous !== undefined) {
+        previous.status = "superseded";
+        previous.resources.rejectNew("superseded");
+      }
       const previousCleaned = await cleanupSupersededPrevious(
         previous,
         slot,
@@ -480,7 +504,14 @@ export function createPluginLifecycleHost(): PluginLifecycleHost {
           );
       }
 
-      await cleanupSupersededPrevious(previous, slot, teardownTimeoutMs);
+      if (previousWasApplied && previous !== undefined) {
+        // Replacement setup is provisional. A failure preserves the prior
+        // applied generation and its live resources; persisted intent is
+        // reported separately by the caller and is never rewritten here.
+        slots.set(pluginId, previous);
+      } else {
+        await cleanupSupersededPrevious(previous, slot, teardownTimeoutMs);
+      }
 
       return {
         ok: false,
@@ -545,7 +576,25 @@ export function createPluginLifecycleHost(): PluginLifecycleHost {
   }
 
   return {
-    apply,
+    async apply(options) {
+      const prior = applicationQueues.get(options.pluginId) ??
+        Promise.resolve();
+      let release!: () => void;
+      const turn = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const tail = prior.then(() => turn);
+      applicationQueues.set(options.pluginId, tail);
+      await prior;
+      try {
+        return await applyNow(options);
+      } finally {
+        release();
+        if (applicationQueues.get(options.pluginId) === tail) {
+          applicationQueues.delete(options.pluginId);
+        }
+      }
+    },
     unload,
     get(pluginId) {
       const slot = slots.get(pluginId);

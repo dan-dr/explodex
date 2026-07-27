@@ -63,6 +63,10 @@ export type PluginApprovalSuccess = {
   stateCommitted: boolean;
   authorityChanged: boolean;
   snapshots: PluginPayloadSnapshot[];
+  previousIntents: Array<{
+    id: string;
+    intent: Omit<PluginPayloadIdentity, "id"> | null;
+  }>;
   residualLockAuthority?: ResidualLockAuthority;
 };
 
@@ -76,6 +80,10 @@ export type PluginApprovalFailure = {
   stateCommitted: boolean;
   authorityChanged: boolean;
   snapshots: PluginPayloadSnapshot[];
+  previousIntents: Array<{
+    id: string;
+    intent: Omit<PluginPayloadIdentity, "id"> | null;
+  }>;
   residualLockAuthority?: ResidualLockAuthority;
 };
 
@@ -110,6 +118,7 @@ function interrupted(): PluginApprovalFailure {
     stateCommitted: false,
     authorityChanged: false,
     snapshots: [],
+    previousIntents: [],
   };
 }
 
@@ -121,6 +130,7 @@ function failure(options: {
   selected?: PluginPayloadIdentity[];
   stateCommitted?: boolean;
   snapshots?: PluginPayloadSnapshot[];
+  previousIntents?: PluginApprovalFailure["previousIntents"];
   residualLockAuthority?: ResidualLockAuthority;
 }): PluginApprovalFailure {
   return {
@@ -133,6 +143,7 @@ function failure(options: {
     stateCommitted: options.stateCommitted ?? false,
     authorityChanged: options.stateCommitted ?? false,
     snapshots: options.snapshots ?? [],
+    previousIntents: options.previousIntents ?? [],
     ...(options.residualLockAuthority === undefined
       ? {}
       : { residualLockAuthority: options.residualLockAuthority }),
@@ -310,7 +321,7 @@ function createSnapshot(options: {
   return Object.freeze(snapshot);
 }
 
-async function capturePayloadSnapshot(options: {
+export async function captureExactPayloadSnapshot(options: {
   artifactPath: string;
   identity: PluginPayloadIdentity;
   signal?: AbortSignal;
@@ -516,6 +527,7 @@ function mapLockFailure(
     selected: completed?.selected ?? selected,
     stateCommitted: completed?.stateCommitted ?? false,
     snapshots: completed?.snapshots ?? [],
+    previousIntents: completed?.previousIntents ?? [],
     residualLockAuthority: locked.residual,
   });
 }
@@ -541,6 +553,7 @@ export async function approveSelectedPluginArtifacts(options: {
       stateCommitted: false,
       authorityChanged: false,
       snapshots: [],
+      previousIntents: [],
     };
   }
 
@@ -568,6 +581,13 @@ export async function approveSelectedPluginArtifacts(options: {
       if (!Array.isArray(resolved)) {
         return { ...resolved, operationId };
       }
+      const previousIntents = validated.map((identity) => {
+        const enabled = loaded.state.plugins[identity.id]?.enabled ?? null;
+        return {
+          id: identity.id,
+          intent: enabled === null ? null : { ...enabled },
+        };
+      });
 
       await options.adapters?.beforeSelectedRevalidation?.();
       if (options.signal?.aborted) {
@@ -575,6 +595,7 @@ export async function approveSelectedPluginArtifacts(options: {
           ...interrupted(),
           operationId,
           selected: validated,
+          previousIntents,
         };
       }
       for (const artifact of resolved) {
@@ -597,6 +618,7 @@ export async function approveSelectedPluginArtifacts(options: {
               artifactCode: standalone.code,
             },
             selected: validated,
+            previousIntents,
           });
         }
       }
@@ -612,6 +634,7 @@ export async function approveSelectedPluginArtifacts(options: {
             ...interrupted(),
             operationId,
             selected: validated,
+            previousIntents,
           };
         }
         await options.adapters?.beforeStateCommit?.();
@@ -631,6 +654,7 @@ export async function approveSelectedPluginArtifacts(options: {
             : "Approval state commit failed.",
           selected: validated,
           stateCommitted: committed,
+          previousIntents,
         });
       }
 
@@ -639,7 +663,7 @@ export async function approveSelectedPluginArtifacts(options: {
       const readSnapshotFile = options.adapters?.readSnapshotFile ??
         (async (path: string) => readFile(path));
       for (const artifact of resolved) {
-        const captured = await capturePayloadSnapshot({
+        const captured = await captureExactPayloadSnapshot({
           artifactPath: artifact.artifactPath,
           identity: artifact.identity,
           signal: options.signal,
@@ -659,6 +683,7 @@ export async function approveSelectedPluginArtifacts(options: {
             selected: validated,
             stateCommitted: true,
             snapshots: [],
+            previousIntents,
           });
         }
         snapshots.push(captured.snapshot);
@@ -672,6 +697,7 @@ export async function approveSelectedPluginArtifacts(options: {
           selected: validated,
           stateCommitted: true,
           snapshots: [],
+          previousIntents,
         });
       }
       await options.adapters?.afterSnapshot?.();
@@ -684,6 +710,7 @@ export async function approveSelectedPluginArtifacts(options: {
           selected: validated,
           stateCommitted: true,
           snapshots: [],
+          previousIntents,
         });
       }
       return {
@@ -693,6 +720,7 @@ export async function approveSelectedPluginArtifacts(options: {
         stateCommitted: true,
         authorityChanged: true,
         snapshots,
+        previousIntents,
       };
     },
   });

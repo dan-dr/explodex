@@ -159,7 +159,7 @@ describe("VAL-SDK-019 bounded generation-safe setup/teardown", () => {
     expect(teardownCalls).toBe(1);
   });
 
-  test("failed replacement never restores the superseded generation", async () => {
+  test("failed replacement preserves the previously applied generation", async () => {
     const harness = createLifecycleHarness();
     let oldTeardownCalls = 0;
 
@@ -180,15 +180,62 @@ describe("VAL-SDK-019 bounded generation-safe setup/teardown", () => {
     expect(replacement.ok).toBe(false);
     if (replacement.ok) throw new Error("expected replacement failure");
     expect(replacement.record.status).toBe("failed");
-    expect(harness.host.get("sample")?.generation).toBe(replacement.record.generation);
-    expect(harness.host.get("sample")?.status).toBe("failed");
-    expect(harness.host.get("sample")?.generation).not.toBe(first.record.generation);
+    expect(harness.host.get("sample")?.generation).toBe(first.record.generation);
+    expect(harness.host.get("sample")?.status).toBe("applied");
 
     await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(oldTeardownCalls).toBe(0);
+    await harness.unload("sample");
     expect(oldTeardownCalls).toBe(1);
   });
 
-  test("in-flight generation superseded by a failed replacement finishes cleanup-only", async () => {
+  test("overlapping replacements serialize and clean every applied ancestor", async () => {
+    const harness = createLifecycleHarness();
+    const gate = deferred<PluginTeardown>();
+    let aTeardown = 0;
+    let bTeardown = 0;
+    let cTeardown = 0;
+
+    const a = await harness.apply("sample", {
+      setup() {
+        return () => {
+          aTeardown += 1;
+        };
+      },
+    });
+    expect(a.ok).toBe(true);
+
+    const bPromise = harness.apply("sample", {
+      setup() {
+        return gate.promise;
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const cPromise = harness.apply("sample", {
+      setup() {
+        return () => {
+          cTeardown += 1;
+        };
+      },
+    });
+    gate.resolve(() => {
+      bTeardown += 1;
+    });
+
+    const [b, c] = await Promise.all([bPromise, cPromise]);
+    expect(b.ok).toBe(true);
+    expect(c.ok).toBe(true);
+    if (!c.ok) throw new Error(c.message);
+    expect(harness.host.get("sample")?.generation).toBe(c.record.generation);
+    expect(aTeardown).toBe(1);
+    expect(bTeardown).toBe(1);
+    expect(cTeardown).toBe(0);
+
+    await harness.unload("sample");
+    expect(cTeardown).toBe(1);
+  });
+
+  test("queued failed replacement waits for in-flight setup and preserves it", async () => {
     const harness = createLifecycleHarness();
     const gate = deferred<PluginTeardown>();
     let oldTeardownCalls = 0;
@@ -204,26 +251,25 @@ describe("VAL-SDK-019 bounded generation-safe setup/teardown", () => {
     );
     await new Promise((resolve) => setTimeout(resolve, 10));
 
-    const replacement = await harness.apply("sample", {
+    const replacementPromise = harness.apply("sample", {
       setup() {
         throw new Error("replacement failed");
       },
     });
-    expect(replacement.ok).toBe(false);
-    if (replacement.ok) throw new Error("expected replacement failure");
-    expect(harness.host.get("sample")?.generation).toBe(replacement.record.generation);
 
     gate.resolve(() => {
       oldTeardownCalls += 1;
     });
     const first = await firstPromise;
-    expect(first.ok).toBe(false);
-    if (first.ok) throw new Error("expected superseded result");
-    expect(first.code).toBe("plugin.lifecycle.superseded");
-    expect(first.record.status).toBe("superseded");
+    const replacement = await replacementPromise;
+    expect(first.ok).toBe(true);
+    expect(replacement.ok).toBe(false);
+    if (!first.ok) throw new Error(first.message);
+    expect(harness.host.get("sample")?.generation).toBe(first.record.generation);
+    expect(harness.host.get("sample")?.status).toBe("applied");
+    expect(oldTeardownCalls).toBe(0);
+    await harness.unload("sample");
     expect(oldTeardownCalls).toBe(1);
-    expect(harness.host.get("sample")?.generation).toBe(replacement.record.generation);
-    expect(harness.host.get("sample")?.status).toBe("failed");
   });
 
   test("timed-out setup may only finish through one cleanup-only teardown", async () => {

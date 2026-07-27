@@ -104,6 +104,7 @@ function emptySnapshot(): TrackedResourceSnapshot {
 export function createTrackedResourceRegistry(options: {
   generation: number;
   token: string;
+  onRuntimeError?(error: unknown): void;
   timers?: {
     setTimeout: typeof setTimeout;
     clearTimeout: typeof clearTimeout;
@@ -121,6 +122,33 @@ export function createTrackedResourceRegistry(options: {
   let accepting = true;
   const entries: Array<{ kind: TrackedResourceKind; dispose: () => void }> = [];
   let disposalResult: TrackedDisposalResult | null = null;
+
+  function reportRuntimeError(error: unknown): void {
+    if (options.onRuntimeError !== undefined) {
+      options.onRuntimeError(error);
+      return;
+    }
+    throw error;
+  }
+
+  function observeReturnedPromise(value: unknown): void {
+    if (
+      typeof value === "object" &&
+      value !== null &&
+      "then" in value &&
+      typeof (value as { then?: unknown }).then === "function"
+    ) {
+      void Promise.resolve(value).catch(reportRuntimeError);
+    }
+  }
+
+  function runTrackedCallback(callback: () => unknown): void {
+    try {
+      observeReturnedPromise(callback());
+    } catch (error: unknown) {
+      reportRuntimeError(error);
+    }
+  }
 
   function assertAccepting(kind: TrackedResourceKind): void {
     if (!accepting) {
@@ -228,14 +256,27 @@ export function createTrackedResourceRegistry(options: {
     },
     listen(target, type, listener, listenerOptions) {
       assertAccepting("listener");
-      target.addEventListener(type, listener, listenerOptions);
+      const trackedListener: TrackedEventListener | null =
+        typeof listener === "function"
+          ? (event) => runTrackedCallback(() => listener(event))
+          : listener === null
+            ? null
+            : {
+                handleEvent(event) {
+                  runTrackedCallback(() => listener.handleEvent(event));
+                },
+              };
+      target.addEventListener(type, trackedListener, listenerOptions);
       entries.push({ kind: "listener", dispose: () => {
-        target.removeEventListener(type, listener, listenerOptions);
+        target.removeEventListener(type, trackedListener, listenerOptions);
       } });
     },
     timeout(handler, ms, ...args) {
       assertAccepting("timeout");
-      const id = timers.setTimeout(handler, ms, ...args) as unknown as number;
+      const id = timers.setTimeout(
+        () => runTrackedCallback(() => handler(...args)),
+        ms,
+      ) as unknown as number;
       entries.push({ kind: "timeout", dispose: () => {
         timers.clearTimeout(id as unknown as ReturnType<typeof setTimeout>);
       } });
@@ -243,7 +284,10 @@ export function createTrackedResourceRegistry(options: {
     },
     interval(handler, ms, ...args) {
       assertAccepting("interval");
-      const id = timers.setInterval(handler, ms, ...args) as unknown as number;
+      const id = timers.setInterval(
+        () => runTrackedCallback(() => handler(...args)),
+        ms,
+      ) as unknown as number;
       entries.push({ kind: "interval", dispose: () => {
         timers.clearInterval(id as unknown as ReturnType<typeof setInterval>);
       } });
