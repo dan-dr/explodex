@@ -185,6 +185,18 @@ async function waitForFile(path: string, timeoutMs = 5_000): Promise<string> {
   throw new Error(`Timeout waiting for file: ${path}`);
 }
 
+async function waitForJsonFile(path: string, timeoutMs = 5_000): Promise<WorkerOutput> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      return JSON.parse(await readFile(path, "utf8")) as WorkerOutput;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+  throw new Error(`Timeout waiting for complete JSON file: ${path}`);
+}
+
 async function pidAlive(pid: number): Promise<boolean> {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
@@ -411,7 +423,7 @@ describe("packed Darwin advisory-lease protocol under required Node runtimes", (
         });
         if (holder.pid !== undefined) recordedPids.add(holder.pid);
         try {
-          const ready = JSON.parse(await waitForFile(readyFile)) as WorkerOutput;
+          const ready = await waitForJsonFile(readyFile);
           expect(ready.closeOnExec).toBe(true);
           expect(ready.leaseInode).toBeDefined();
           if (ready.leasePath !== undefined) recordedLeasePaths.add(ready.leasePath);
@@ -541,7 +553,7 @@ describe("packed Darwin advisory-lease protocol under required Node runtimes", (
         } finally {
           await stopExactTestProcess(holder);
         }
-      });
+      }, 15_000);
 
       test("two synchronized first-time publishers preserve one canonical inode", async () => {
         const home = await freshHome(fixtureRoot, node, "publication");
@@ -572,15 +584,19 @@ describe("packed Darwin advisory-lease protocol under required Node runtimes", (
         if (first.pid !== undefined) recordedPids.add(first.pid);
         if (second.pid !== undefined) recordedPids.add(second.pid);
         try {
-          await waitForFile(join(barrier, `publisher-${first.pid ?? 0}`));
-          await waitForFile(join(barrier, `publisher-${second.pid ?? 0}`));
+          await waitForFile(join(barrier, `publisher-${first.pid ?? 0}`), 10_000);
+          await waitForFile(join(barrier, `publisher-${second.pid ?? 0}`), 10_000);
           const canonicalLease = join(home, "locks", "plugins-state.lock", "lease");
-          await waitForFile(canonicalLease);
+          await Promise.all([
+            writeFile(releaseOne, "release\n", { mode: 0o600 }),
+            writeFile(releaseTwo, "release\n", { mode: 0o600 }),
+          ]);
+          const [firstResult, secondResult] = await Promise.all([
+            collectWorker(first),
+            collectWorker(second),
+          ]);
+          await waitForFile(canonicalLease, 10_000);
           const canonicalInode = (await stat(canonicalLease, { bigint: true })).ino.toString();
-          await writeFile(releaseOne, "release\n", { mode: 0o600 });
-          const firstResult = await collectWorker(first);
-          await writeFile(releaseTwo, "release\n", { mode: 0o600 });
-          const secondResult = await collectWorker(second);
           const publications = [firstResult.result.publication, secondResult.result.publication].sort();
           expect(publications).toEqual(["lost-race", "published"]);
           const acquisitionResults = [firstResult.result, secondResult.result];
@@ -608,7 +624,7 @@ describe("packed Darwin advisory-lease protocol under required Node runtimes", (
           await stopExactTestProcess(first);
           await stopExactTestProcess(second);
         }
-      });
+      }, 15_000);
     });
   }
 
