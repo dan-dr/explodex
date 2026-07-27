@@ -98,7 +98,6 @@ async function artifactLifecycle(options: {
         version: options.artifact.version,
         payloadSha256: options.artifact.payloadSha256,
       },
-      signal: options.signal,
     },
   );
   return validated.ok ? validated.lifecycle : null;

@@ -172,15 +172,15 @@ describe("VAL-SDK-020 lifecycle tracked-resource cleanup", () => {
       generation: 1,
       token: "late",
       timers: {
-        setTimeout() {
+        setTimeout: ((..._args: Parameters<typeof setTimeout>) => {
           timers += 1;
           return 1 as unknown as ReturnType<typeof setTimeout>;
-        },
+        }) as typeof setTimeout,
         clearTimeout() {},
-        setInterval() {
+        setInterval: ((..._args: Parameters<typeof setInterval>) => {
           timers += 1;
           return 2 as unknown as ReturnType<typeof setInterval>;
-        },
+        }) as typeof setInterval,
         clearInterval() {},
       },
     });

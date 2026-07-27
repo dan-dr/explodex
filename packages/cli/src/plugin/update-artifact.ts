@@ -141,7 +141,6 @@ export async function prepareRecommendationArtifact(options: {
     const artifactPath = resolve(options.home, existing.relativePath);
     const validated = await validateInstallablePayloadDir(artifactPath, {
       source: "directory",
-      signal: options.signal,
       expectedIdentity: identity,
     });
     if (!validated.ok) {

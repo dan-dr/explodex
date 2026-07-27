@@ -603,7 +603,6 @@ export async function approveSelectedPluginArtifacts(options: {
           artifact.artifactPath,
           {
             source: "directory",
-            signal: options.signal,
             expectedIdentity: artifact.identity,
           },
         );

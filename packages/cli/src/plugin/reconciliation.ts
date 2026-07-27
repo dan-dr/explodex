@@ -256,7 +256,6 @@ export async function revalidateEnabledPluginArtifacts(options: {
         await options.adapters?.beforeArtifactRevalidation?.(enabled.id);
         const validated = await validateInstallablePayloadDir(artifactPath, {
           source: "directory",
-          signal: options.signal,
           expectedIdentity: {
             id: enabled.id,
             version: enabled.intent.version,

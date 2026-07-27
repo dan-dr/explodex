@@ -76,8 +76,10 @@ describe("M3-F04 renderer metadata-only plugin review", () => {
     expect(model?.warning).toContain("authenticated renderer state");
     expect(model?.warning).toContain("not provide sandboxing");
     expect(model?.warning).toContain("publisher authentication");
+    const artifact = request().artifacts[0];
+    if (artifact === undefined) throw new Error("expected review artifact fixture");
     expect(model?.artifacts).toEqual([{
-      ...request().artifacts[0],
+      ...artifact,
       selected: false,
     }]);
     expect(Object.keys(model?.artifacts[0] ?? {}).sort()).toEqual([

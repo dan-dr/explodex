@@ -9,6 +9,22 @@ import {
 import { SDK_VERSION } from "../../src/version.ts";
 import * as publicSurface from "../../src/index.ts";
 
+function expectCompatibilityReason(
+  version: unknown,
+  range: unknown,
+  reason:
+    | "version-missing"
+    | "version-malformed"
+    | "range-missing"
+    | "range-malformed"
+    | "out-of-range",
+): void {
+  const verdict = evaluateSdkCompatibility(version, range);
+  expect(verdict.ok).toBe(false);
+  if (verdict.ok) throw new Error("expected incompatible SDK verdict");
+  expect(verdict.reason).toBe(reason);
+}
+
 describe("VAL-SDK-008 shared compatibility authority", () => {
   test("authoritative SDK_VERSION is exported and used by currentSdkSatisfiesRange", () => {
     expect(SDK_VERSION).toBe("1.2.0");
@@ -133,15 +149,15 @@ describe("VAL-SDK-008 shared compatibility authority", () => {
   });
 
   test("evaluateSdkCompatibility distinguishes fail-closed reasons", () => {
-    expect(evaluateSdkCompatibility(undefined, "^1.0.0").reason).toBe("version-missing");
-    expect(evaluateSdkCompatibility(null, "^1.0.0").reason).toBe("version-missing");
-    expect(evaluateSdkCompatibility("", "^1.0.0").reason).toBe("version-missing");
-    expect(evaluateSdkCompatibility("1.2", "^1.0.0").reason).toBe("version-malformed");
-    expect(evaluateSdkCompatibility(42, "^1.0.0").reason).toBe("version-malformed");
-    expect(evaluateSdkCompatibility("1.2.0", undefined).reason).toBe("range-missing");
-    expect(evaluateSdkCompatibility("1.2.0", "").reason).toBe("range-missing");
-    expect(evaluateSdkCompatibility("1.2.0", "!!!").reason).toBe("range-malformed");
-    expect(evaluateSdkCompatibility("1.2.0", "^2.0.0").reason).toBe("out-of-range");
+    expectCompatibilityReason(undefined, "^1.0.0", "version-missing");
+    expectCompatibilityReason(null, "^1.0.0", "version-missing");
+    expectCompatibilityReason("", "^1.0.0", "version-missing");
+    expectCompatibilityReason("1.2", "^1.0.0", "version-malformed");
+    expectCompatibilityReason(42, "^1.0.0", "version-malformed");
+    expectCompatibilityReason("1.2.0", undefined, "range-missing");
+    expectCompatibilityReason("1.2.0", "", "range-missing");
+    expectCompatibilityReason("1.2.0", "!!!", "range-malformed");
+    expectCompatibilityReason("1.2.0", "^2.0.0", "out-of-range");
 
     const ok = evaluateSdkCompatibility("1.2.0", "^1.2.0");
     expect(ok).toEqual({ ok: true, version: "1.2.0", range: "^1.2.0" });
