@@ -1,0 +1,40 @@
+observedAt=2026-07-28T09:39:25Z
+
+[pid-76069]
+absent
+
+[pid-76398]
+absent
+
+[listeners-9444]
+no-listener
+
+[endpoint-9444]
+curl: (7) Failed to connect to 127.0.0.1 port 9444 after 0 ms: Couldn't connect to server
+unreachable
+
+[protected-9333]
+p22810
+cComet
+f107
+tIPv4
+n127.0.0.1:9333
+TST=LISTEN
+TQR=0
+TQS=0
+
+[host-and-sdk-hashes]
+9765029b131711b4797e2c21312ae3b290563f7ff3d2a9ec3c9b3b08686e6a2d  /Applications/ChatGPT.app/Contents/Info.plist
+d7bd5eacb7f59c42240e6c5dc62eebdeca9d09a0b59ed4c3ac3e2b55ef8d9336  /Applications/ChatGPT.app/Contents/MacOS/ChatGPT
+da39a51b06fb4c728d418b8f0f05fc8fd8c6b1f74c4fb4d47c20c7914a798f45  /Applications/ChatGPT.app/Contents/Resources/app.asar
+cde97e29af89a35b737406bd038212c94752b43ec3d24ab74b87aeb480e03ec4  /Users/dan/Projects/ddyo/Explodex/packages/sdk/dist/runtime/explodex-runtime.iife.js
+
+[authority-files]
+/Users/dan/.explodex/dev/plugin-dev/state.json mode=-rw------- size=908 mtime=1785076218
+5abd53852c64ef0b4e699737bf695c57b7d8d97fcccfeb8c79d2cccf79261f09  /Users/dan/.explodex/dev/plugin-dev/state.json
+/Users/dan/.explodex/state/compatibility.json mode=-rw------- size=2462 mtime=1785077315
+cadfaae5d21baea7dac8227fbd38ac3ca182f23a43fa5cbe4f8034777e6a8b6e  /Users/dan/.explodex/state/compatibility.json
+/Users/dan/.explodex/plugins.json absent
+
+[agent-browser-sessions]
+No active sessions

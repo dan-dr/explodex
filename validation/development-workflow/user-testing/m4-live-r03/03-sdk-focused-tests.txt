@@ -1,0 +1,41 @@
+bun test v1.3.14 (0d9b296a)
+
+packages/sdk/test/runtime/iife-idempotent.test.ts:
+[Explodex:runtime] ready {
+  version: "1.2.0",
+}
+[Explodex:runtime] ready {
+  version: "1.2.0",
+}
+(pass) VAL-SDK-004 renderer IIFE is self-contained and idempotent > classic IIFE initializes once and converges on one runtime instance [2455.02ms]
+
+packages/sdk/test/runtime/plugin-review.test.ts:
+(pass) M3-F04 renderer metadata-only plugin review > renders the trusted-code warning and every visible control unselected [1.34ms]
+(pass) M3-F04 renderer metadata-only plugin review > passive interaction has no effect and submission sends exact selected tuples [1.00ms]
+(pass) M3-F04 renderer metadata-only plugin review > empty submit is a no-op result while expiry, destroy, and duplicate open authorize nothing [1.86ms]
+(pass) M3-F04 renderer metadata-only plugin review > terminal cleanup cancels only its exact operation and callback [0.44ms]
+
+packages/sdk/test/runtime/plugin-update-review.test.ts:
+(pass) M3-F07 independent metadata-only update review > pending and update surfaces keep separate callbacks and cancellation state [2.25ms]
+(pass) M3-F07 independent metadata-only update review > empty selection is a no-op and an expired update does not consume pending review [0.69ms]
+
+packages/sdk/test/runtime/plugin-application.test.ts:
+(pass) M3-F05 private approved-payload runtime application > registers inertly, then runs setup once with scoped snapshot assets [18.96ms]
+(pass) M3-F05 private approved-payload runtime application > repeated exact application converges without duplicate setup [0.84ms]
+(pass) M3-F05 private approved-payload runtime application > enabled reconciliation capability accepts exact identities once within one operation [2.21ms]
+(pass) M3-F05 private approved-payload runtime application > failed replacement preserves the prior live identity and reports possible partial effects [0.91ms]
+(pass) M3-F05 private approved-payload runtime application > later runtime errors are observable without changing the live identity [15.68ms]
+(pass) M3-F05 private approved-payload runtime application > delayed errors stay attributed to their originating generation [46.57ms]
+(pass) M3-F05 private approved-payload runtime application > wrong or multiple registration never invokes setup [0.78ms]
+(pass) M3-F05 private approved-payload runtime application > restart lifecycles remain source-absent and report their boundary [0.47ms]
+(pass) M3-F05 private approved-payload runtime application > enabled reconciliation evaluates restart lifecycles only at their exact boundary [1.73ms]
+(pass) M3-F05 private approved-payload runtime application > rejects pre-commit, wrong-secret, replayed, and cross-operation application [0.68ms]
+
+packages/sdk/test/runtime/plugin-management.test.ts:
+(pass) M3-F08 honest post-exit plugin management > renders command-only bounded handoffs with exact identities [0.92ms]
+(pass) M3-F08 honest post-exit plugin management > rejects malformed metadata and never exposes a callback or direct mutation hook [1.09ms]
+
+ 19 pass
+ 0 fail
+ 129 expect() calls
+Ran 19 tests across 5 files. [3.00s]

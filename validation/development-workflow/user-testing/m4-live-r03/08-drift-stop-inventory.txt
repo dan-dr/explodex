@@ -1,0 +1,6 @@
+[targets]
+
+[tabs]
+{"success":true,"data":{"tabs":[{"active":true,"label":null,"tabId":"t1","title":"about:blank","type":"page","url":"about:blank"}]},"error":null}
+
+[processes]

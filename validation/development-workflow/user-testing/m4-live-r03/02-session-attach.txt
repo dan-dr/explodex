@@ -1,0 +1,5 @@
+connectAt=2026-07-28T09:25:30Z
+✓ Done
+{"success":true,"data":{"tabs":[{"active":true,"label":null,"tabId":"t1","title":"Codex","type":"page","url":"app://-/index.html"},{"active":false,"label":null,"tabId":"t2","title":"Codex","type":"page","url":"app://-/index.html?initialRoute=%2Favatar-overlay"}]},"error":null}
+app://-/index.html
+{"success":true,"data":{"origin":"app://-/index.html","result":{"bodyTextBytes":506,"bridgeType":"function","composerPresent":true,"href":"app://-/index.html","profilePresent":true,"readyState":"complete","sdkPresent":false,"signInVisible":false,"timeOrigin":1785214292957.6,"title":"Codex"}},"error":null}

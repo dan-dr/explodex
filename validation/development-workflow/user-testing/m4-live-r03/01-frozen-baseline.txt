@@ -1,0 +1,89 @@
+observedAt=2026-07-28T09:25:01Z
+
+[host]
+bundleRealpath=/Applications/ChatGPT.app
+executableRealpath=/Applications/ChatGPT.app/Contents/MacOS/ChatGPT
+com.openai.codex
+26.721.41059
+5848
+ChatGPT
+Executable=/Applications/ChatGPT.app/Contents/MacOS/ChatGPT
+Identifier=com.openai.codex
+TeamIdentifier=2DC432GLL2
+9765029b131711b4797e2c21312ae3b290563f7ff3d2a9ec3c9b3b08686e6a2d  /Applications/ChatGPT.app/Contents/Info.plist
+d7bd5eacb7f59c42240e6c5dc62eebdeca9d09a0b59ed4c3ac3e2b55ef8d9336  /Applications/ChatGPT.app/Contents/MacOS/ChatGPT
+da39a51b06fb4c728d418b8f0f05fc8fd8c6b1f74c4fb4d47c20c7914a798f45  /Applications/ChatGPT.app/Contents/Resources/app.asar
+
+[processes]
+113245930.161864995
+113246247.161865506
+76069     1 Tue Jul 28 07:51:31 2026     04:33:33 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT --user-data-dir=/Users/dan/.explodex/dev/plugin-dev/electron-user-data --remote-debugging-port=9444 --explodex-dev-instance=plugin-dev
+76398 76069 Tue Jul 28 07:51:35 2026     04:33:29 /Users/dan/.explodex/dev/plugin-dev/codex-home/computer-use/Codex Computer Use.app/Contents/MacOS/SkyComputerUseService
+
+[listeners-9444]
+p76069
+cChatGPT
+f58
+tIPv4
+n127.0.0.1:9444
+TST=LISTEN
+TQR=0
+TQS=0
+p76398
+cSkyComputerUseService
+f58
+tIPv4
+n127.0.0.1:9444
+TST=LISTEN
+TQR=0
+TQS=0
+
+[protected-9333]
+p22810
+cComet
+f107
+tIPv4
+n127.0.0.1:9333
+TST=LISTEN
+TQR=0
+TQS=0
+
+[cdp-version]
+{
+   "Browser": "Chrome/150.0.7871.128",
+   "Protocol-Version": "1.3",
+   "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
+   "V8-Version": "15.0.1240245",
+   "WebKit-Version": "537.36 (@81891e5ca708047763816c778216799ef14c66cb)",
+   "webSocketDebuggerUrl": "ws://127.0.0.1:9444/devtools/browser/4f1f94ec-f085-42d7-a171-e35e071465db"
+}
+
+[cdp-targets]
+[ {
+   "description": "",
+   "devtoolsFrontendUrl": "https://chrome-devtools-frontend.appspot.com/serve_rev/@81891e5ca708047763816c778216799ef14c66cb/inspector.html?ws=127.0.0.1:9444/devtools/page/B7FBA1D17F480337F3092F9D855B8D6B",
+   "id": "B7FBA1D17F480337F3092F9D855B8D6B",
+   "title": "Codex",
+   "type": "page",
+   "url": "app://-/index.html?initialRoute=%2Favatar-overlay",
+   "webSocketDebuggerUrl": "ws://127.0.0.1:9444/devtools/page/B7FBA1D17F480337F3092F9D855B8D6B"
+}, {
+   "description": "",
+   "devtoolsFrontendUrl": "https://chrome-devtools-frontend.appspot.com/serve_rev/@81891e5ca708047763816c778216799ef14c66cb/inspector.html?ws=127.0.0.1:9444/devtools/page/320892B4AB2506B37CF08E743DB39053",
+   "id": "320892B4AB2506B37CF08E743DB39053",
+   "title": "Codex",
+   "type": "page",
+   "url": "app://-/index.html",
+   "webSocketDebuggerUrl": "ws://127.0.0.1:9444/devtools/page/320892B4AB2506B37CF08E743DB39053"
+} ]
+
+[sdk]
+   85623 /Users/dan/Projects/ddyo/Explodex/packages/sdk/dist/runtime/explodex-runtime.iife.js
+cde97e29af89a35b737406bd038212c94752b43ec3d24ab74b87aeb480e03ec4  /Users/dan/Projects/ddyo/Explodex/packages/sdk/dist/runtime/explodex-runtime.iife.js
+
+[authority-files]
+/Users/dan/.explodex/dev/plugin-dev/state.json mode=-rw------- size=908 mtime=1785076218
+5abd53852c64ef0b4e699737bf695c57b7d8d97fcccfeb8c79d2cccf79261f09  /Users/dan/.explodex/dev/plugin-dev/state.json
+/Users/dan/.explodex/state/compatibility.json mode=-rw------- size=2462 mtime=1785077315
+cadfaae5d21baea7dac8227fbd38ac3ca182f23a43fa5cbe4f8034777e6a8b6e  /Users/dan/.explodex/state/compatibility.json
+/Users/dan/.explodex/plugins.json absent
