@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { createNodeCdpAdapter, type CdpAdapter } from "../cdp/adapters.ts";
 import type { TargetIdentity } from "../cdp/types.ts";
@@ -57,7 +58,7 @@ import {
   loadDevInstanceStateResult,
   saveDevInstanceState,
 } from "./state.ts";
-import { readGenerationRecord } from "../plugin/generation.ts";
+import { readVerifiedGenerationOutput } from "../plugin/generation.ts";
 import {
   createStagedMainArtifactReceipt,
   saveStagedMainArtifactReceipt,
@@ -85,6 +86,10 @@ export type DevInjectSuccess = {
   };
   compatibility: {
     proven: true;
+  };
+  sdkRuntimeIdentity: {
+    version: string;
+    sha256: string;
   };
   target: TargetIdentity;
   applications: RuntimeApplicationResult[];
@@ -333,7 +338,17 @@ async function applySnapshot(options: {
         { code: "host_identity_drift" as const },
       );
     }
-    const currentSdkRuntime = await resolveSdkRuntimeIdentityForCli();
+    const currentSdkRuntimeSource = await readFile(
+      options.sdkRuntime.sourcePath,
+      "utf8",
+    );
+    const currentSdkRuntime = {
+      version: options.sdkRuntime.version,
+      sha256: createHash("sha256")
+        .update(currentSdkRuntimeSource)
+        .digest("hex"),
+      sourcePath: options.sdkRuntime.sourcePath,
+    };
     if (
       currentSdkRuntime.version !== options.sdkRuntime.version ||
       currentSdkRuntime.sha256 !== options.sdkRuntime.sha256 ||
@@ -406,11 +421,45 @@ async function applySnapshot(options: {
 async function persistRendererBoundaryTarget(options: {
   prepared: PreparedOwnedDevTarget;
   target: TargetIdentity;
+  osHome: string;
+  explodexHome: string;
+  explicitRoot?: string | null;
   hostAdapters: HostAdapters;
+  statusAdapters: HostStatusAdapters;
+  cdp: CdpAdapter;
 }): Promise<
   | { ok: true }
   | { ok: false; code: string; message: string }
 > {
+  const finalObservation = await prepareOwnedDevTarget({
+    operation: "inject",
+    osHome: options.osHome,
+    explodexHome: options.explodexHome,
+    explicitRoot: options.explicitRoot,
+    signal: undefined,
+    hostAdapters: options.hostAdapters,
+    statusAdapters: options.statusAdapters,
+    cdp: options.cdp,
+  });
+  if (
+    !finalObservation.ok ||
+    finalObservation.value.process.pid !== options.prepared.process.pid ||
+    finalObservation.value.process.processStartedAt !==
+      options.prepared.process.processStartedAt ||
+    finalObservation.value.listener.pid !== options.prepared.listener.pid ||
+    finalObservation.value.target.targetId !== options.target.targetId ||
+    finalObservation.value.target.executionContextId !==
+      options.target.executionContextId ||
+    finalObservation.value.target.executionContextUniqueId !==
+      options.target.executionContextUniqueId
+  ) {
+    return {
+      ok: false,
+      code: "operation.state-changed",
+      message:
+        "Development process, listener, target, or default context changed before renderer boundary identity commit.",
+    };
+  }
   const statePath = `${options.prepared.snapshot.rootPath}/state.json`;
   const loaded = await loadDevInstanceStateResult({
     adapters: options.hostAdapters,
@@ -694,7 +743,12 @@ export async function runDevInjectOperation(options: {
               : await persistRendererBoundaryTarget({
                   prepared: prepared.value,
                   target: application.target,
+                  osHome: options.osHome,
+                  explodexHome,
+                  explicitRoot: options.explicitRoot,
                   hostAdapters,
+                  statusAdapters,
+                  cdp,
                 });
             return {
               prepared: prepared.value,
@@ -904,7 +958,9 @@ export async function runDevInjectOperation(options: {
         "Local-SDK-dependent development output cannot be staged for the authoring main.",
     };
   } else {
-    const generation = await readGenerationRecord(resolve(options.artifactPath));
+    const generation = await readVerifiedGenerationOutput(
+      resolve(options.artifactPath),
+    );
     const persistedCompatibility = await loadCompatibilityRecord({
       adapters: hostAdapters,
       explodexHome,
@@ -933,6 +989,7 @@ export async function runDevInjectOperation(options: {
           sdkRuntimeIdentity: sdkRuntime,
           devValidatedTarget: application.target,
           devValidatedAt: new Date().toISOString(),
+          validationOperationId: operationId,
           compatibilityKeyHash: compatibilityKeyHash(
             compatibility.currentKey,
           ),
@@ -990,6 +1047,10 @@ export async function runDevInjectOperation(options: {
       executionContextId: application.target.executionContextId,
     },
     compatibility: { proven: true },
+    sdkRuntimeIdentity: {
+      version: sdkRuntime.version,
+      sha256: sdkRuntime.sha256,
+    },
     target: application.target,
     applications: application.applications,
     sourceDelivered: application.sourceDelivered,

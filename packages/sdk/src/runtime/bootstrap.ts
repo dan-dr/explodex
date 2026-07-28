@@ -1,6 +1,7 @@
 import { createLogger, type RuntimeLogEntry } from "./logger.ts";
 import {
   createPluginApplicationController,
+  PRIVATE_APPLICATION_INVENTORY,
   PRIVATE_APPLICATION_STATUS,
   PRIVATE_APPLY_APPROVED,
   PRIVATE_DISABLE_RECONCILIATION,
@@ -50,6 +51,8 @@ type InternalExplodexRuntime = ExplodexRuntime & {
   readonly [PRIVATE_APPLICATION_STATUS]: (
     pluginId: string,
   ) => ReturnType<PluginApplicationController["status"]>;
+  readonly [PRIVATE_APPLICATION_INVENTORY]: () =>
+    ReturnType<PluginApplicationController["inventory"]>;
   readonly [PRIVATE_UNLOAD_PLUGIN]: (
     pluginId: string,
   ) => ReturnType<PluginApplicationController["unload"]>;
@@ -235,6 +238,7 @@ export function installRuntime(global: RuntimeHost): InternalExplodexRuntime {
       application.disableEnabledReconciliation(),
     [PRIVATE_APPLICATION_STATUS]: (pluginId) =>
       application.status(pluginId),
+    [PRIVATE_APPLICATION_INVENTORY]: () => application.inventory(),
     [PRIVATE_UNLOAD_PLUGIN]: (pluginId) =>
       application.unload(pluginId),
     [PRIVATE_DESTROY_AND_WAIT]: destroyAndWait,

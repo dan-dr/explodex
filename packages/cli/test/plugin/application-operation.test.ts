@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import type {
   CdpAdapter,
   CdpTargetSession,
@@ -249,6 +250,11 @@ globalThis.Explodex = globalThis.Explodex;`,
 
     globalRecord.Explodex = {
       __explodexSdkRuntimeRequestMark: `${"b".repeat(64)}:prior-operation`,
+      __explodexAdoptRuntimeRequest(next: string) {
+        (globalRecord.Explodex as Record<string, unknown>)
+          .__explodexSdkRuntimeRequestMark = next;
+        return true;
+      },
       async __explodexReconcileEnabledPayload(input: {
         id: string;
         version: string;
@@ -276,10 +282,11 @@ globalThis.Explodex = globalThis.Explodex;`,
         return null;
       },
     };
-    const protectedExpression = buildApprovedApplicationExpression({
-      sdkRuntimeSource: `
+    const protectedSource = `
 globalThis.__mainSdkReplacementEvaluated = true;
-globalThis.Explodex = {};`,
+globalThis.Explodex = {};`;
+    const protectedExpression = buildApprovedApplicationExpression({
+      sdkRuntimeSource: protectedSource,
       operationId: "main-safe-runtime",
       nonce: "main-safe-nonce",
       activationSecret: "",
@@ -291,7 +298,9 @@ globalThis.Explodex = {};`,
     expect(globalRecord.__mainSdkReplacementEvaluated).toBe(false);
     expect(globalRecord.Explodex).toMatchObject({
       __explodexSdkRuntimeRequestMark:
-        `${"b".repeat(64)}:prior-operation`,
+        `${
+          createHash("sha256").update(protectedSource).digest("hex")
+        }:main-safe-runtime`,
     });
     delete globalRecord.Explodex;
     delete globalRecord.__mainSdkReplacementEvaluated;

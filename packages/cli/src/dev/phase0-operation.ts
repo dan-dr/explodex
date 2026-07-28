@@ -884,12 +884,22 @@ async function revalidateEndpointCleanupAuthority(options: {
     }
   }
 
+  let version;
   try {
-    const version = await options.cdp.readEndpoint({
+    version = await options.cdp.readEndpoint({
       host: DEV_CDP_HOST,
       port: DEV_CDP_PORT,
       signal: options.signal,
     });
+  } catch {
+    return {
+      ok: false,
+      reason:
+        "Endpoint unavailable before Browser.close; fall through to exact-PID signal.",
+      exactSignalFallbackAllowed: true,
+    };
+  }
+  try {
     if (typeof version.browser !== "string" || version.browser.length === 0) {
       return {
         ok: false,
@@ -957,11 +967,13 @@ async function revalidateEndpointCleanupAuthority(options: {
         }
       }
     }
-  } catch {
+  } catch (error: unknown) {
     return {
       ok: false,
-      reason: "Endpoint unavailable before Browser.close; fall through to exact-PID signal.",
-      exactSignalFallbackAllowed: true,
+      reason: error instanceof Error
+        ? `Endpoint ownership inspection failed closed: ${error.message}`
+        : "Endpoint ownership inspection failed closed.",
+      exactSignalFallbackAllowed: false,
     };
   }
   return { ok: true };
@@ -1051,6 +1063,13 @@ export type StopExactProcessResult = {
   portReleased: boolean;
   uncertain: boolean;
   method: Phase0CleanupMethod;
+  code?:
+    | "operation.timeout"
+    | "dev.ownership-uncertain"
+    | "dev.termination-failed";
+  elapsedMs?: number;
+  boundMs?: number;
+  residualDisposition?: "none" | "process-running" | "port-held" | "unknown";
   reason?: string;
 };
 
@@ -1078,11 +1097,16 @@ export async function stopExactProcess(options: {
     timeoutMs: number;
     signal: AbortSignal;
   }) => Promise<boolean>;
+  /** Complete strict lifecycle ownership revalidation immediately before SIGTERM. */
+  beforeExactSignal?: () => Promise<
+    { ok: true } | { ok: false; reason: string }
+  >;
   /** Private roots under which ChatGPT may spawn helper processes. */
   privateRoots?: readonly string[];
   /** Intentionally ignored for cleanup; cleanup always uses a fresh finite context. */
   signal?: AbortSignal;
 }): Promise<StopExactProcessResult> {
+  const startedAt = Date.now();
   const deadline = Date.now() + options.timeoutMs;
   const cleanup = createCleanupContext(options.timeoutMs);
   try {
@@ -1101,6 +1125,10 @@ export async function stopExactProcess(options: {
         portReleased: false,
         uncertain: true,
         method: "none",
+        code: "dev.ownership-uncertain",
+        elapsedMs: Date.now() - startedAt,
+        boundMs: options.timeoutMs,
+        residualDisposition: "unknown",
         reason: processAuthority.reason,
       };
     }
@@ -1133,6 +1161,10 @@ export async function stopExactProcess(options: {
         portReleased: false,
         uncertain: true,
         method: "none",
+        code: "dev.ownership-uncertain",
+        elapsedMs: Date.now() - startedAt,
+        boundMs: options.timeoutMs,
+        residualDisposition: "unknown",
         reason: closeAuthority.reason,
       };
     }
@@ -1188,6 +1220,10 @@ export async function stopExactProcess(options: {
             : browserCloseAttempted
               ? "browser-close-then-signal"
               : "exact-signal-only",
+          code: "operation.timeout",
+          elapsedMs: Date.now() - startedAt,
+          boundMs: options.timeoutMs,
+          residualDisposition: "process-running",
           reason: `Exact development PID ${options.pid} did not exit within the cleanup bound.`,
         };
       }
@@ -1206,7 +1242,58 @@ export async function stopExactProcess(options: {
           portReleased: false,
           uncertain: true,
           method: browserCloseAttempted ? "browser-close-then-signal" : "exact-signal-only",
+          code: "dev.ownership-uncertain",
+          elapsedMs: Date.now() - startedAt,
+          boundMs: options.timeoutMs,
+          residualDisposition: "unknown",
           reason: recheck.reason,
+        };
+      }
+      const strictRecheck = options.beforeExactSignal === undefined
+        ? { ok: true as const }
+        : await options.beforeExactSignal();
+      if (!strictRecheck.ok) {
+        return {
+          stopped: false,
+          portReleased: false,
+          uncertain: true,
+          method: browserCloseAttempted
+            ? "browser-close-then-signal"
+            : "exact-signal-only",
+          code: "dev.ownership-uncertain",
+          elapsedMs: Date.now() - startedAt,
+          boundMs: options.timeoutMs,
+          residualDisposition: "unknown",
+          reason: strictRecheck.reason,
+        };
+      }
+      const endpointRecheck = await revalidateEndpointCleanupAuthority({
+        commands: options.commands,
+        runtimeProcess: options.runtimeProcess,
+        cdp: options.cdp,
+        pid: options.pid,
+        privateRoots: options.privateRoots,
+        expectedTargetId: options.expectedTargetId,
+        expectedContextUniqueId: options.expectedContextUniqueId,
+        signal: cleanup.signal,
+      });
+      if (
+        !endpointRecheck.ok &&
+        options.requireCompleteEndpointOwnershipForSignal === true &&
+        !endpointRecheck.exactSignalFallbackAllowed
+      ) {
+        return {
+          stopped: false,
+          portReleased: false,
+          uncertain: true,
+          method: browserCloseAttempted
+            ? "browser-close-then-signal"
+            : "exact-signal-only",
+          code: "dev.ownership-uncertain",
+          elapsedMs: Date.now() - startedAt,
+          boundMs: options.timeoutMs,
+          residualDisposition: "unknown",
+          reason: endpointRecheck.reason,
         };
       }
       const signaled = await options.runtimeProcess.signalExact(
@@ -1221,6 +1308,10 @@ export async function stopExactProcess(options: {
           portReleased: false,
           uncertain: true,
           method: browserCloseAttempted ? "browser-close-then-signal" : "exact-signal-only",
+          code: "dev.termination-failed",
+          elapsedMs: Date.now() - startedAt,
+          boundMs: options.timeoutMs,
+          residualDisposition: "process-running",
           reason: "Exact SIGTERM failed after Browser.close; residual authority preserved.",
         };
       }
@@ -1255,6 +1346,10 @@ export async function stopExactProcess(options: {
         portReleased: false,
         uncertain: true,
         method,
+        code: "operation.timeout",
+        elapsedMs: Date.now() - startedAt,
+        boundMs: options.timeoutMs,
+        residualDisposition: "process-running",
         reason: `Exact development PID ${options.pid} did not exit within the cleanup bound.`,
       };
     }
@@ -1284,6 +1379,10 @@ export async function stopExactProcess(options: {
           portReleased: false,
           uncertain: true,
           method,
+          code: "dev.termination-failed",
+          elapsedMs: Date.now() - startedAt,
+          boundMs: options.timeoutMs,
+          residualDisposition: "port-held",
           reason: "Process exited but 9444 was not released; residual authority preserved.",
         };
       }
@@ -1310,6 +1409,10 @@ export async function stopExactProcess(options: {
           portReleased: false,
           uncertain: true,
           method,
+          code: "dev.termination-failed",
+          elapsedMs: Date.now() - startedAt,
+          boundMs: options.timeoutMs,
+          residualDisposition: "port-held",
           reason:
             "Private-root helper still holds 9444 after ChatGPT exit; residual authority preserved.",
         };
@@ -1319,6 +1422,10 @@ export async function stopExactProcess(options: {
         portReleased: false,
         uncertain: true,
         method,
+        code: "dev.termination-failed",
+        elapsedMs: Date.now() - startedAt,
+        boundMs: options.timeoutMs,
+        residualDisposition: "port-held",
         reason:
           "9444 still has a non-development listener after exact ChatGPT exit; residual authority preserved.",
       };
@@ -1328,6 +1435,9 @@ export async function stopExactProcess(options: {
       portReleased: true,
       uncertain: false,
       method,
+      elapsedMs: Date.now() - startedAt,
+      boundMs: options.timeoutMs,
+      residualDisposition: "none",
     };
   } catch (error) {
     const message =
@@ -1337,6 +1447,13 @@ export async function stopExactProcess(options: {
       portReleased: false,
       uncertain: true,
       method: "none",
+      code:
+        cleanup.signal.aborted || Date.now() >= deadline
+          ? "operation.timeout"
+          : "dev.termination-failed",
+      elapsedMs: Date.now() - startedAt,
+      boundMs: options.timeoutMs,
+      residualDisposition: "unknown",
       reason: message,
     };
   } finally {

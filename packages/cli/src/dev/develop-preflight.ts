@@ -1,4 +1,4 @@
-import { lstat, realpath } from "node:fs/promises";
+import { lstat, readdir, realpath } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { CdpAdapter } from "../cdp/adapters.ts";
 import { createNodeCdpAdapter } from "../cdp/adapters.ts";
@@ -90,6 +90,37 @@ async function requiredWorkspacePathsStayContained(
   return null;
 }
 
+async function findNestedPluginWorkspace(
+  workspacePath: string,
+): Promise<string | null> {
+  const queue = [workspacePath];
+  while (queue.length > 0) {
+    const directory = queue.shift()!;
+    const entries = await readdir(directory, { withFileTypes: true });
+    const names = new Set(entries.map((entry) => entry.name));
+    if (
+      directory !== workspacePath &&
+      names.has("package.json") &&
+      names.has("explodex.config.ts") &&
+      entries.some((entry) => entry.name === "src" && entry.isDirectory())
+    ) {
+      return directory;
+    }
+    for (const entry of entries) {
+      if (
+        !entry.isDirectory() ||
+        entry.isSymbolicLink() ||
+        entry.name === "dist" ||
+        entry.name === "dist-build" ||
+        entry.name === "node_modules" ||
+        entry.name.startsWith(".explodex-dist-")
+      ) continue;
+      queue.push(join(directory, entry.name));
+    }
+  }
+  return null;
+}
+
 /**
  * Complete foreground preflight. Workspace, overlap, and current-dist checks
  * run before any ownership/CDP inspection.
@@ -147,6 +178,19 @@ export async function runDevelopPreflight(options: {
       message: `Plugin workspace path is missing or escapes the workspace: ${escaped}.`,
     };
   }
+  const nestedWorkspace = await findNestedPluginWorkspace(workspace.path)
+    .catch(() => null);
+  if (nestedWorkspace !== null) {
+    return {
+      ok: false,
+      code: "develop.workspace-unsafe",
+      message:
+        "Development root must contain exactly one plugin workspace; a nested plugin workspace was found.",
+      details: {
+        nestedRelativePath: relative(workspace.path, nestedWorkspace),
+      },
+    };
+  }
   try {
     const distStats = await lstat(join(workspace.path, "dist"));
     if (distStats.isSymbolicLink()) {
@@ -178,6 +222,7 @@ export async function runDevelopPreflight(options: {
     const pluginSource = await validatePluginSource({
       workspacePath: workspace.path,
       timeoutMs: options.timeoutMs,
+      signal: options.signal,
     });
     if (!pluginSource.ok) {
       return {

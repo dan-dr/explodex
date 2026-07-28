@@ -376,10 +376,10 @@ export async function saveDevInstanceState(options: {
 
   await adapters.fs.mkdir(parent, { recursive: true, mode: DEV_DIRECTORY_MODE });
   await adapters.fs.writeFile(tempPath, bytes);
-  // Production writeFile uses mode 0600; memory fixtures seed 0600 as well.
-  await adapters.fs.rename(tempPath, statePath);
-
-  const stat = await adapters.fs.stat(statePath);
+  // Perform every fallible privacy validation against the temporary inode.
+  // Once rename publishes the replacement there must be no later exception
+  // that can falsely imply the prior canonical state was preserved.
+  const stat = await adapters.fs.stat(tempPath);
   if (stat.kind === "file" && stat.mode !== undefined) {
     // Accept either exact 0600 or OS-reported modes that include the permission bits.
     const modeBits = stat.mode & 0o777;
@@ -395,6 +395,8 @@ export async function saveDevInstanceState(options: {
       }
     }
   }
+  // Production writeFile uses mode 0600; memory fixtures seed 0600 as well.
+  await adapters.fs.rename(tempPath, statePath);
 }
 
 /** Documented key set for public state exposure (VAL-DEV-003). */

@@ -9,7 +9,11 @@ import {
   type PreparedMainApplyTarget,
 } from "../../src/host/main-apply.ts";
 import { authorizeMainApplyCheckpoint } from "../../src/commands/main-apply.ts";
-import type { GenerationRecord } from "../../src/plugin/generation.ts";
+import { baselineExpression } from "../../src/host/main-apply-system.ts";
+import {
+  computeGenerationId,
+  type GenerationRecord,
+} from "../../src/plugin/generation.ts";
 import type { PluginPayloadSnapshot } from "../../src/plugin/approval-transaction.ts";
 
 const MAIN_TARGET: TargetIdentity = {
@@ -41,9 +45,10 @@ const DEV_TARGET: TargetIdentity = {
   frameId: "dev-frame",
 };
 
+const INPUT_DIGESTS = { "src/index.ts": "b".repeat(64) };
 const GENERATION: GenerationRecord = {
   schemaVersion: 1,
-  generationId: "generation-main",
+  generationId: computeGenerationId(INPUT_DIGESTS),
   pluginId: "safe-main",
   version: "opaque-1",
   mapMode: "required",
@@ -52,7 +57,7 @@ const GENERATION: GenerationRecord = {
     version: "1.2.0",
     runtimeSha256: "a".repeat(64),
   },
-  inputDigests: { "src/index.ts": "b".repeat(64) },
+  inputDigests: INPUT_DIGESTS,
   outputDigests: {
     "index.js": "c".repeat(64),
     "index.js.map": "d".repeat(64),
@@ -119,6 +124,7 @@ const STAGED = createStagedMainArtifactReceipt({
   sdkRuntimeIdentity: PREPARED.sdkRuntimeIdentity,
   devValidatedTarget: DEV_TARGET,
   devValidatedAt: "2026-07-28T01:10:00.000Z",
+  validationOperationId: "develop-main-validation",
   compatibilityKeyHash: PREPARED.compatibilityKeyHash,
 });
 if (!STAGED.ok) throw new Error(STAGED.message);
@@ -227,6 +233,91 @@ function adapters(overrides: Partial<MainApplyAdapters> = {}): {
 }
 
 describe("M4-F08 conditional authoring-main apply", () => {
+  test("production baseline inventories ephemeral plugins and navigation facts without source delivery", () => {
+    const globalRecord = globalThis as unknown as Record<string, unknown>;
+    const saved = new Map<string, PropertyDescriptor | undefined>();
+    for (const key of ["Explodex", "location", "history", "document"]) {
+      saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    }
+    try {
+      Object.defineProperty(globalThis, "location", {
+        configurable: true,
+        value: {
+          href: "app://-/c/thread-1",
+          pathname: "/c/thread-1",
+          search: "",
+          hash: "",
+        },
+      });
+      Object.defineProperty(globalThis, "history", {
+        configurable: true,
+        value: {
+          length: 4,
+          state: { selectedThreadId: "thread-1" },
+        },
+      });
+      Object.defineProperty(globalThis, "document", {
+        configurable: true,
+        value: {
+          querySelector() {
+            return {
+              getAttribute() {
+                return "/c/thread-1";
+              },
+            };
+          },
+        },
+      });
+      globalRecord.Explodex = {
+        version: "1.2.0",
+        __explodexSdkRuntimeRequestMark:
+          `${PREPARED.sdkRuntimeIdentity.sha256}:prior`,
+        __explodexPluginApplicationStatus() {
+          return null;
+        },
+        __explodexPluginApplicationInventory() {
+          return [{
+            identity: {
+              id: "ephemeral-unrelated",
+              version: "live-1",
+              payloadSha256: "9".repeat(64),
+            },
+            lifecycle: "dynamic",
+            generation: 7,
+          }, {
+            identity: SNAPSHOT.identity,
+            lifecycle: "dynamic",
+            generation: 8,
+          }];
+        },
+      };
+      const baseline = Function(
+        `return ${baselineExpression({
+          sdkRuntimeSha256: PREPARED.sdkRuntimeIdentity.sha256,
+          stagedPluginId: SNAPSHOT.identity.id,
+        })}`,
+      )() as Record<string, unknown>;
+      expect(baseline).toMatchObject({
+        historyLength: 4,
+        selectedThread: "/c/thread-1",
+        unrelatedPlugins: {
+          "ephemeral-unrelated": {
+            version: "live-1",
+            payloadSha256: "9".repeat(64),
+            lifecycle: "dynamic",
+            generation: 7,
+          },
+        },
+      });
+      expect(JSON.stringify(baseline)).not.toContain(SNAPSHOT.identity.id);
+    } finally {
+      for (const [key, descriptor] of saved) {
+        if (descriptor === undefined) delete globalRecord[key];
+        else Object.defineProperty(globalThis, key, descriptor);
+      }
+    }
+  });
+
   test("JSON or non-TTY mode cannot manufacture an interactive checkpoint", async () => {
     expect(await authorizeMainApplyCheckpoint({
       json: true,

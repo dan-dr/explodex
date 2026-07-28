@@ -16,7 +16,7 @@ export type DevVerifiedLaunch = {
 export type DevLifecycleLaunchAdapter = (options: {
   onSpawn(identity: {
     pid: number;
-    processStartedAt: string;
+    processStartedAt: string | null;
   }): Promise<void>;
 }) => Promise<DevVerifiedLaunch>;
 

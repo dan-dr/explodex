@@ -181,6 +181,7 @@ export async function runPluginUpdateReviewOperation(options: {
     stageBounds: { cdpEvaluationMs: options.timeoutMs },
   });
   if (!operation.ok) {
+    const cleanupContext = holder.value;
     return {
       ok: false,
       operationId: operation.operationId,
@@ -190,6 +191,14 @@ export async function runPluginUpdateReviewOperation(options: {
         stage: operation.error.stage,
         residualInventory: operation.residualInventory,
       },
+      ...(cleanupContext === null
+        ? {}
+        : {
+            cleanupProtocol: {
+              nonce: cleanupContext.nonce,
+              target: cleanupContext.target,
+            },
+          }),
       sourceDelivered: false,
       authorityChanged: false,
     };

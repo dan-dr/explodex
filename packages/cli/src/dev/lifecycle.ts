@@ -103,7 +103,7 @@ function startingState(
 function spawnedStartingState(options: {
   state: DevInstanceState;
   pid: number;
-  processStartedAt: string;
+  processStartedAt: string | null;
   updatedAt: string;
 }): DevInstanceState {
   return {
@@ -524,7 +524,24 @@ async function transitionReadyToStopped(options: {
       options.state,
     );
   }
-  const termination = await options.terminate(stopping);
+  let termination: DevTerminationResult;
+  try {
+    termination = await options.terminate(stopping);
+  } catch (error: unknown) {
+    termination = {
+      ok: false,
+      confirmedExit: false,
+      code: "operation.timeout",
+      message: error instanceof Error
+        ? error.message
+        : "Graceful termination exceeded its cleanup bound.",
+      method: null,
+      details: {
+        state: "stopping",
+        residualDisposition: "unknown",
+      },
+    };
+  }
   if (!termination.ok || !termination.confirmedExit) {
     const failedStopping: DevInstanceState = {
       ...stopping,

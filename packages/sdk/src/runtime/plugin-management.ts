@@ -29,10 +29,20 @@ export type PluginManagementRecord = {
   application: PluginManagementApplication;
 };
 
+export type PluginManagementCommandSet = {
+  enable: string | null;
+  review: string | null;
+  refresh: string;
+  update: string;
+  disable: string;
+  remove: string | null;
+};
+
 export type PluginManagementRequest = {
   schemaVersion: 1;
   target: "main" | "development";
   plugins: PluginManagementRecord[];
+  commands: Record<string, PluginManagementCommandSet>;
 };
 
 export type PluginManagementControl = {
@@ -222,29 +232,6 @@ function identityKey(value: PluginManagementIdentity): string {
   return `${value.version}\0${value.payloadSha256}`;
 }
 
-function shellArgument(value: string): string {
-  if (/^[a-zA-Z0-9._:@%+=,-]+$/u.test(value)) return value;
-  return `'${value.replaceAll("'", `'\"'\"'`)}'`;
-}
-
-function identityCommand(
-  prefix: string,
-  id: string,
-  identity: PluginManagementIdentity,
-  target: PluginManagementRequest["target"],
-): string {
-  return [
-    prefix,
-    shellArgument(id),
-    "--artifact-version",
-    shellArgument(identity.version),
-    "--payload-sha256",
-    identity.payloadSha256,
-    "--target",
-    target,
-  ].join(" ");
-}
-
 function control(
   action: PluginManagementControl["action"],
   command: string,
@@ -263,17 +250,18 @@ export function buildPluginManagementModel(
 ): PluginManagementModel | PluginManagementFailure {
   if (
     !isRecord(value) ||
-    !exactKeys(value, ["schemaVersion", "target", "plugins"]) ||
+    !exactKeys(value, ["schemaVersion", "target", "plugins", "commands"]) ||
     value.schemaVersion !== 1 ||
     (value.target !== "main" && value.target !== "development") ||
-    !Array.isArray(value.plugins)
+    !Array.isArray(value.plugins) ||
+    !isRecord(value.commands)
   ) {
     return {
       ok: false,
       message: "Plugin management metadata was malformed.",
     };
   }
-  const target = value.target;
+  const commands = value.commands;
   const records: PluginManagementRecord[] = [];
   const ids = new Set<string>();
   for (const candidate of value.plugins) {
@@ -287,58 +275,77 @@ export function buildPluginManagementModel(
     ids.add(parsed.id);
     records.push(parsed);
   }
+  if (
+    Object.keys(commands).length !== records.length ||
+    records.some((record) => {
+      const set = commands[record.id];
+      return !isRecord(set) ||
+        !exactKeys(set, [
+          "enable",
+          "review",
+          "refresh",
+          "update",
+          "disable",
+          "remove",
+        ]) ||
+        (
+          set.enable !== null &&
+          (typeof set.enable !== "string" || set.enable.length === 0)
+        ) ||
+        (
+          set.review !== null &&
+          (typeof set.review !== "string" || set.review.length === 0)
+        ) ||
+        typeof set.refresh !== "string" ||
+        set.refresh.length === 0 ||
+        typeof set.update !== "string" ||
+        set.update.length === 0 ||
+        typeof set.disable !== "string" ||
+        set.disable.length === 0 ||
+        (
+          set.remove !== null &&
+          (typeof set.remove !== "string" || set.remove.length === 0)
+        );
+    })
+  ) {
+    return {
+      ok: false,
+      message: "Plugin management command metadata was malformed.",
+    };
+  }
+  const validatedCommands = commands as Record<
+    string,
+    PluginManagementCommandSet
+  >;
   return {
     ok: true,
     hasResidentListener: false,
     guidance:
       "Run the exact bounded command shown for each action. This page has no resident Explodex listener and never reports success by itself.",
     plugins: records.map((record) => {
-      const pendingOrFirst =
-        record.pendingReview[0] ?? record.installed[0] ?? null;
-      const enabledOrFirst = record.enabled ?? record.installed[0] ?? null;
+      const exactCommands = validatedCommands[record.id]!;
       const controls: PluginManagementControl[] = [];
-      if (pendingOrFirst !== null) {
+      if (exactCommands.enable !== null) {
         controls.push(control(
           "enable",
-          identityCommand(
-            "explodex plugin review",
-            record.id,
-            pendingOrFirst,
-            target,
-          ),
+          exactCommands.enable,
         ));
       }
-      if (pendingOrFirst !== null) {
+      if (exactCommands.review !== null) {
         controls.push(control(
           "review",
-          identityCommand(
-            "explodex plugin review",
-            record.id,
-            pendingOrFirst,
-            target,
-          ),
+          exactCommands.review,
         ));
       }
       controls.push(
-        control(
-          "refresh",
-          `explodex plugin refresh --target ${target}`,
-        ),
-        control("update", "explodex plugin update check"),
-        control(
-          "disable",
-          `explodex plugin disable ${shellArgument(record.id)} --target ${target}`,
-        ),
+        control("refresh", exactCommands.refresh),
+        control("update", exactCommands.update),
+        control("disable", exactCommands.disable),
       );
-      if (enabledOrFirst !== null) {
+      if (exactCommands.remove !== null) {
         controls.push(control(
           "remove",
-          identityCommand(
-            "explodex plugin remove",
-            record.id,
-            enabledOrFirst,
-            target,
-          ),
+          exactCommands.remove,
         ));
       }
       return {

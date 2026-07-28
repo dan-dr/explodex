@@ -227,10 +227,12 @@ export default definePlugin({
 
   test("coalesces bursts, invalidates a stale build, and applies only the newest generation", async () => {
     const staleBuild = deferred<DevelopBuildResult>();
+    let staleSignal: AbortSignal | undefined;
     const fixture = generationHarness({
       async build(generation, signal) {
         if (generation === 2) {
           expect(signal?.aborted).toBe(false);
+          staleSignal = signal;
           return staleBuild.promise;
         }
         return {
@@ -250,14 +252,15 @@ export default definePlugin({
     fixture.change();
     await waitFor(() => fixture.calls.includes("build:2"));
     fixture.change();
-    await waitFor(() => fixture.lines.some((line) => {
-      const event = JSON.parse(line) as { type?: string; generation?: number };
-      return event.type === "build-started" && event.generation === 3;
-    }));
+    await waitFor(() => staleSignal?.aborted === true);
     staleBuild.resolve({
       ok: true,
       pluginIdentity: identity("dev-stale", "d"),
     });
+    await waitFor(() => fixture.lines.some((line) => {
+      const event = JSON.parse(line) as { type?: string; generation?: number };
+      return event.type === "build-started" && event.generation === 3;
+    }));
     await waitFor(() => fixture.calls.includes("apply:3"));
     fixture.stop();
 

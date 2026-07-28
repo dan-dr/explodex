@@ -19,6 +19,8 @@ function inside(parent: string, child: string): boolean {
 }
 
 export type DevRootSelection = {
+  /** Exact normalized path supplied by the caller before existing-ancestor realpath. */
+  requestedRootPath?: string;
   rootPath: string;
   layout: DevLayoutPaths;
   explicit: boolean;
@@ -71,6 +73,7 @@ export function resolveDevRootSelection(options: {
   const raw = options.explicitRoot;
   if (raw === undefined || raw === null || raw === "") {
     return {
+      requestedRootPath: defaultRootPath,
       rootPath: defaultRootPath,
       layout: describeDevLayout(defaultRootPath),
       explicit: false,
@@ -83,6 +86,7 @@ export function resolveDevRootSelection(options: {
   }
   const rootPath = normalized(resolve(raw));
   return {
+    requestedRootPath: rootPath,
     rootPath,
     layout: describeDevLayout(rootPath),
     explicit: true,
@@ -93,8 +97,9 @@ export function resolveDevRootSelection(options: {
 
 /**
  * Canonicalize through the deepest existing ancestor before creation. A missing
- * child beneath the macOS `/tmp` alias is therefore recorded under `/private/tmp`;
- * an existing final root symlink remains rejected by validation.
+ * child beneath the macOS `/tmp` alias is therefore recorded under `/private/tmp`.
+ * The original normalized request remains attached to the selection so validation
+ * can reject user-controlled symlink ancestors before their target is accepted.
  */
 export async function canonicalizeDevRootSelection(options: {
   fs: HostFileSystem;
@@ -186,6 +191,10 @@ async function firstSymlinkAncestor(
   return null;
 }
 
+function isAllowedPlatformAlias(path: string): boolean {
+  return path === "/tmp";
+}
+
 async function listDirectory(
   fs: HostFileSystem,
   path: string,
@@ -238,15 +247,22 @@ export async function validateDevRootSelection(options: {
   }
 
   try {
-    const symlink = await firstSymlinkAncestor(fs, requestedRoot);
+    const symlink = await firstSymlinkAncestor(
+      fs,
+      selection.requestedRootPath ?? requestedRoot,
+    );
     if (symlink !== null) {
+      if (isAllowedPlatformAlias(symlink)) {
+        // `/tmp` is the documented macOS platform alias to `/private/tmp`.
+      } else {
       return {
         ok: false,
         code: "root_symlink",
         message: `Development root or ancestor is a symlink: ${symlink}`,
-        requestedRoot,
+        requestedRoot: selection.requestedRootPath ?? requestedRoot,
         fallbackUsed: false,
       };
+      }
     }
 
     const stat = await fs.stat(requestedRoot);

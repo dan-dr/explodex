@@ -11,6 +11,8 @@ import { dirname, join, resolve } from "node:path";
 import { satisfiesSdkRange } from "@explodex/sdk";
 import type { TargetIdentity } from "../cdp/types.ts";
 import type { GenerationRecord } from "../plugin/generation.ts";
+import { computeGenerationId } from "../plugin/generation.ts";
+import { evaluatePublishableGraduation } from "./graduation.ts";
 
 export type MainStagingArtifactIdentity = {
   id: string;
@@ -33,6 +35,7 @@ export type StagedMainArtifactReceipt = {
   sdkRuntimeSha256: string;
   devValidatedTarget: TargetIdentity;
   devValidatedAt: string;
+  validationOperationId: string;
   compatibilityKeyHash: string;
 };
 
@@ -42,6 +45,7 @@ export type MainStagingFailure = {
     | "develop.local-sdk-not-publishable"
     | "develop.publishable-rebuild-required"
     | "develop.dev-revalidation-required"
+    | "develop.main-transfer-ineligible"
     | "main.lifecycle-protected"
     | "main.staged-artifact-changed"
     | "main.sdk-runtime-changed"
@@ -73,12 +77,32 @@ function exactArtifact(
 
 function validGenerationIdentity(generation: GenerationRecord): boolean {
   return generation.schemaVersion === 1 &&
+    generation.mapMode === "required" &&
+    typeof generation.generationId === "string" &&
     generation.generationId.length > 0 &&
+    typeof generation.pluginId === "string" &&
     generation.pluginId.length > 0 &&
+    typeof generation.version === "string" &&
     generation.version.length > 0 &&
+    typeof generation.payloadSha256 === "string" &&
     isSha256(generation.payloadSha256) &&
+    generation.inputDigests !== null &&
+    typeof generation.inputDigests === "object" &&
+    Object.keys(generation.inputDigests).length > 0 &&
+    Object.values(generation.inputDigests).every((digest) =>
+      typeof digest === "string" && isSha256(digest)
+    ) &&
+    generation.outputDigests !== null &&
+    typeof generation.outputDigests === "object" &&
+    Object.keys(generation.outputDigests).length > 0 &&
+    Object.values(generation.outputDigests).every((digest) =>
+      typeof digest === "string" && isSha256(digest)
+    ) &&
+    computeGenerationId(generation.inputDigests) === generation.generationId &&
     generation.sdkInput !== undefined &&
+    typeof generation.sdkInput.version === "string" &&
     generation.sdkInput.version.length > 0 &&
+    typeof generation.sdkInput.runtimeSha256 === "string" &&
     isSha256(generation.sdkInput.runtimeSha256);
 }
 
@@ -101,6 +125,7 @@ export function createStagedMainArtifactReceipt(options: {
   sdkRuntimeIdentity: { version: string; sha256: string };
   devValidatedTarget: TargetIdentity;
   devValidatedAt: string;
+  validationOperationId?: string;
   compatibilityKeyHash: string;
 }): MainStagingResult {
   const generation = options.generation;
@@ -142,12 +167,33 @@ export function createStagedMainArtifactReceipt(options: {
       options.sdkRuntimeIdentity.sha256 ||
     !isSha256(options.sdkRuntimeIdentity.sha256) ||
     !isSha256(options.compatibilityKeyHash) ||
+    options.validationOperationId === undefined ||
+    options.validationOperationId.length === 0 ||
     !Number.isFinite(Date.parse(options.devValidatedAt))
   ) {
     return receiptFailure(
       "develop.dev-revalidation-required",
       "The development receipt does not match one exact publishable SDK and compatibility identity.",
     );
+  }
+  const graduation = evaluatePublishableGraduation({
+    generation,
+    artifact: options.artifact,
+    devValidation: {
+      generationId: generation.generationId,
+      validationOperationId: options.validationOperationId,
+      pluginIdentity: {
+        id: options.artifact.id,
+        version: options.artifact.version,
+        payloadSha256: options.artifact.payloadSha256,
+      },
+      sdkRuntimeIdentity: options.sdkRuntimeIdentity,
+      target: options.devValidatedTarget,
+    },
+    mainSdkRuntime: options.sdkRuntimeIdentity,
+  });
+  if (!graduation.ok) {
+    return receiptFailure(graduation.code, graduation.message);
   }
   return {
     ok: true,
@@ -166,6 +212,7 @@ export function createStagedMainArtifactReceipt(options: {
         ...options.devValidatedTarget,
       }),
       devValidatedAt: options.devValidatedAt,
+      validationOperationId: options.validationOperationId,
       compatibilityKeyHash: options.compatibilityKeyHash,
     }),
   };
@@ -245,6 +292,28 @@ export function validateStagedMainArtifact(options: {
       "compatibility.drifted",
       "The current exact compatibility proof differs from the staged dev-validation proof.",
     );
+  }
+  const graduation = evaluatePublishableGraduation({
+    generation,
+    artifact: options.artifact,
+    devValidation: {
+      generationId: options.receipt.generationId,
+      validationOperationId: options.receipt.validationOperationId,
+      pluginIdentity: {
+        id: options.receipt.id,
+        version: options.receipt.version,
+        payloadSha256: options.receipt.payloadSha256,
+      },
+      sdkRuntimeIdentity: {
+        version: options.receipt.sdkRuntimeVersion,
+        sha256: options.receipt.sdkRuntimeSha256,
+      },
+      target: options.receipt.devValidatedTarget,
+    },
+    mainSdkRuntime: options.mainSdkRuntime,
+  });
+  if (!graduation.ok) {
+    return receiptFailure(graduation.code, graduation.message);
   }
   return { ok: true };
 }
@@ -332,6 +401,7 @@ export function parseStagedMainArtifactReceipt(
       "sdkRuntimeSha256",
       "devValidatedTarget",
       "devValidatedAt",
+      "validationOperationId",
       "compatibilityKeyHash",
     ]) ||
     typeof value.id !== "string" ||
@@ -350,6 +420,8 @@ export function parseStagedMainArtifactReceipt(
     !isSha256(String(value.sdkRuntimeSha256)) ||
     typeof value.devValidatedAt !== "string" ||
     !Number.isFinite(Date.parse(value.devValidatedAt)) ||
+    typeof value.validationOperationId !== "string" ||
+    value.validationOperationId.length === 0 ||
     !isSha256(String(value.compatibilityKeyHash))
   ) {
     return null;
@@ -369,6 +441,7 @@ export function parseStagedMainArtifactReceipt(
     sdkRuntimeSha256: String(value.sdkRuntimeSha256),
     devValidatedTarget: target,
     devValidatedAt: value.devValidatedAt,
+    validationOperationId: value.validationOperationId,
     compatibilityKeyHash: String(value.compatibilityKeyHash),
   };
 }

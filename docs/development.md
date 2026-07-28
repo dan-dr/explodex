@@ -98,27 +98,52 @@ explodex --json plugin develop . \
   --sdk-source /absolute/path/to/explodex/packages/sdk
 ```
 
-The foreground operation builds and validates SDK generation N before starting
-plugin generation N. A newer SDK generation invalidates dependent older plugin
-work. Pre-evaluation SDK failures preserve the prior complete live pair without
-restarting; only classified post-evaluation SDK runtime contamination permits
-one exact owned-development restart attempt. Local SDK paths and authority do
-not enter JSONL events, maps, checksums, archives, plugin metadata, or persisted
-activation state.
+The foreground operation completes SDK generation N and plugin generation N
+before it probes or applies the pair. Shared `dist/` publication and renderer
+application are serialized. A newer request can invalidate an older build
+before commit, but an apply that has crossed renderer evaluation settles before
+the next apply starts. Pre-evaluation SDK failures preserve the prior complete
+live pair without restarting. Only classified post-evaluation SDK runtime
+contamination permits one bounded restart using the operation-frozen prior
+compatibility proof. Local SDK paths and authority do not enter JSONL events,
+maps, checksums, archives, plugin metadata, or persisted activation state.
 
-Local-SDK generations are dev-only. Packaging, registry recommendation, and
-authoring-main transfer remain blocked until the plugin is rebuilt without
-`--sdk-source` against publishable SDK inputs. If that clean rebuild changes
-the payload identity, validate the exact new artifact on owned development
-again before it can graduate to the separately authorized hot main path. The
-workflow never rewrites the plugin's `@explodex/sdk` peer range or lockfile.
+Local-SDK generations are dev-only. `.explodex-generation.json` is untrusted
+workspace metadata, not publication authority. Packaging independently rebuilds
+the same source against the exact published SDK in disposable storage and
+requires byte-identical output. Main staging requires one immutable receipt
+binding the verified generation, artifact payload, published SDK identity,
+owned development target, and validation operation.
 
-1. Create `plugins/<id>/plugin.json`.
-2. Create `plugins/<id>/index.js`.
-3. Register via `Explodex.plugins.register`.
-4. Return a teardown that removes listeners, timers, observers, and mounted UI.
-5. Run `bun run validate`.
-6. Run `bun run inject` (or `bun run dev` for a fresh session).
+The public V1 workflow is:
+
+1. Run `explodex --json dev status` with the exact `--home` and optional
+   `--dev-root` context.
+2. Use only the lifecycle operation authorized by that result. Recovery is
+   allowed only when status reports the predicate-specific recovery eligibility.
+3. Run public build, validation, and package operations with `--json`.
+4. Run `explodex --json plugin develop <workspace>`. Stdout is one JSONL stream
+   owned by the foreground command. Dispatch owns `SIGINT`/`SIGTERM`, cleanup
+   settles before exactly one terminal record, and cleanup residue supplements
+   rather than replaces the primary terminal reason.
+5. For management, execute only the exact command rendered by the CLI. Each
+   command carries the selected home/root context and reports success only
+   after installed, enabled, live identity, lifecycle, and boundary facts
+   correlate.
+6. For a hot-safe main transfer, complete the publishable rebuild and exact
+   owned-development revalidation, retain the staged receipt, then run the
+   public staged `main apply` flow. A fresh interactive checkpoint authorizes
+   only the staged artifact for one exact main process, target, context,
+   compatibility key, and SDK identity. The operation renews the real
+   one-operation reconciliation capability without replacing SDK bytes and
+   verifies selected-thread, navigation, SDK, and every live unrelated plugin
+   baseline before and after apply.
+
+Do not substitute repository injectors, direct CDP evaluation, a reachable
+debug port, a previous authorization, or generic process signaling for these
+public operations. Interactive authentication is performed manually only in
+the exact already-running isolated development profile named by the blocker.
+Resume with a new `dev status` and a new foreground operation.
 
 Keep plugin state keys namespaced with `explodex-`. When renaming old keys, read legacy keys and write the new key on the next update.
 

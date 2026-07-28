@@ -228,8 +228,8 @@ describe("M4-F04 foreground develop operation", () => {
       "preflight",
       "watcher:open",
       "target:open",
-      "apply",
       "wait",
+      "apply",
       "target:close",
       "watcher:close",
       "cleanup",
@@ -242,6 +242,32 @@ describe("M4-F04 foreground develop operation", () => {
       type: "terminal",
       reason: "blocked",
       error: { code: "cdp.target-lost" },
+    });
+  });
+
+  test("cleanup residue preserves the primary target-loss classification", async () => {
+    const fixture = harness();
+    fixture.adapters.cleanup = async () => ({
+      ok: false,
+      residuals: ["watcher"],
+    });
+    const running = runForegroundDevelop({
+      operationId: "target-loss-with-residue",
+      adapters: fixture.adapters,
+    });
+    await Bun.sleep(0);
+    fixture.triggerTargetLoss();
+    const result = await running;
+    expect(result).toMatchObject({
+      reason: "blocked",
+      error: {
+        code: "cdp.target-lost",
+        details: {
+          cleanupResidue: {
+            residuals: ["watcher"],
+          },
+        },
+      },
     });
   });
 
@@ -391,7 +417,9 @@ describe("M4-F04 foreground develop operation", () => {
       error: {
         code: "develop.cleanup-failed",
         details: {
-          residuals: expect.arrayContaining(["target-monitor"]),
+          cleanupResidue: {
+            residuals: expect.arrayContaining(["target-monitor"]),
+          },
         },
       },
     });

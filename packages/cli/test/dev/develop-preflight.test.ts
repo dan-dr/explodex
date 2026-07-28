@@ -125,4 +125,44 @@ describe("M4-F04 develop preflight", () => {
       await fixture.cleanup();
     }
   });
+
+  test("rejects a nested plugin workspace before build or CDP work", async () => {
+    const fixture = await createValidWorkspace({
+      name: "explodex-plugin-nested-root",
+    });
+    try {
+      await writeWorkspaceFile(
+        fixture.workspace,
+        "examples/nested/package.json",
+        `${JSON.stringify({ name: "nested", version: "1.0.0" })}\n`,
+      );
+      await writeWorkspaceFile(
+        fixture.workspace,
+        "examples/nested/explodex.config.ts",
+        "export default {};\n",
+      );
+      await writeWorkspaceFile(
+        fixture.workspace,
+        "examples/nested/src/index.ts",
+        "export default {};\n",
+      );
+      const result = await runDevelopPreflight({
+        workspacePath: fixture.workspace,
+        osHome: join(fixture.root, "home"),
+        explodexHome: join(fixture.root, "home", ".explodex"),
+        explicitRoot: join(fixture.root, "dev-root"),
+        timeoutMs: 60_000,
+        ...forbiddenLiveAdapters(),
+      });
+      expect(result).toMatchObject({
+        ok: false,
+        code: "develop.workspace-unsafe",
+        details: {
+          nestedRelativePath: "examples/nested",
+        },
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  });
 });

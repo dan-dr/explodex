@@ -157,6 +157,14 @@ async function records(options: {
 
 function expression(options: {
   plugins: PluginManagementObservation[];
+  commands: Record<string, {
+    enable: string | null;
+    review: string | null;
+    refresh: string;
+    update: string;
+    disable: string;
+    remove: string | null;
+  }>;
   openUi: boolean;
 }): string {
   return `(async () => {
@@ -263,6 +271,7 @@ function expression(options: {
     schemaVersion: 1,
     target: "development",
     plugins,
+    commands: ${JSON.stringify(options.commands)},
   });
   if (!model || model.ok !== true) {
     return {
@@ -279,6 +288,70 @@ function expression(options: {
 })()`;
 }
 
+function shellArgument(value: string): string {
+  if (/^[a-zA-Z0-9._:@%+=,-]+$/u.test(value)) return value;
+  return `'${value.replaceAll("'", `'\"'\"'`)}'`;
+}
+
+function exactManagementCommands(options: {
+  plugins: readonly PluginManagementObservation[];
+  explodexHome: string;
+  explicitRoot?: string | null;
+}): Record<string, {
+  enable: string | null;
+  review: string | null;
+  refresh: string;
+  update: string;
+  disable: string;
+  remove: string | null;
+}> {
+  const prefix = [
+    "explodex",
+    "--home",
+    shellArgument(options.explodexHome),
+    ...(options.explicitRoot === null || options.explicitRoot === undefined
+      ? []
+      : ["--dev-root", shellArgument(resolve(options.explicitRoot))]),
+  ].join(" ");
+  const identityCommand = (
+    operation: "review" | "remove",
+    id: string,
+    identity: ManagementIdentity,
+  ) => [
+    prefix,
+    "plugin",
+    operation,
+    shellArgument(id),
+    "--artifact-version",
+    shellArgument(identity.version),
+    "--payload-sha256",
+    identity.payloadSha256,
+    "--target",
+    "development",
+  ].join(" ");
+  return Object.fromEntries(options.plugins.map((plugin) => {
+    const pending = plugin.pendingReview[0] ?? plugin.installed[0] ?? null;
+    const removable = plugin.enabled ?? plugin.installed[0] ?? null;
+    const review = pending === null
+      ? null
+      : identityCommand("review", plugin.id, pending);
+    return [
+      plugin.id,
+      {
+        enable: review,
+        review,
+        refresh: `${prefix} plugin refresh --target development`,
+        update: `${prefix} plugin update check`,
+        disable:
+          `${prefix} plugin disable ${shellArgument(plugin.id)} --target development`,
+        remove: removable === null
+          ? null
+          : identityCommand("remove", plugin.id, removable),
+      },
+    ];
+  }));
+}
+
 function persistedFieldsMatch(
   expected: PluginManagementObservation,
   observed: PluginManagementObservation,
@@ -290,6 +363,79 @@ function persistedFieldsMatch(
     JSON.stringify(expected.enabled) === JSON.stringify(observed.enabled) &&
     JSON.stringify(expected.pendingReview) ===
       JSON.stringify(observed.pendingReview);
+}
+
+function trustedApplicationObservation(
+  expected: PluginManagementObservation,
+  observed: PluginManagementObservation["application"],
+): PluginManagementObservation["application"] | null {
+  const installed = new Set(
+    expected.installed.map((identity) =>
+      `${identity.version}\0${identity.payloadSha256}`
+    ),
+  );
+  if (
+    observed.observedIdentity !== null &&
+    !installed.has(
+      `${observed.observedIdentity.version}\0${observed.observedIdentity.payloadSha256}`,
+    )
+  ) return null;
+  const enabledMatches = expected.enabled !== null &&
+    observed.observedIdentity !== null &&
+    expected.enabled.version === observed.observedIdentity.version &&
+    expected.enabled.payloadSha256 ===
+      observed.observedIdentity.payloadSha256;
+  const lifecycle = expected.application.lifecycle;
+  let status: PluginManagementObservation["application"]["status"];
+  let boundary: PluginManagementObservation["application"]["boundary"];
+  let message: string;
+  if (enabledMatches) {
+    status = "applied";
+    boundary = "none";
+    message = "The exact enabled identity is applied in this inspected renderer.";
+  } else if (expected.enabled !== null) {
+    if (lifecycle === "renderer-start") {
+      status = "boundary-required";
+      boundary = "renderer";
+      message = "Persisted intent requires an owned development renderer boundary.";
+    } else if (lifecycle === "app-start") {
+      status = "boundary-required";
+      boundary = "app";
+      message = "Persisted intent requires an owned development app boundary.";
+    } else {
+      status = "apply-pending";
+      boundary = "none";
+      message = "Persisted dynamic intent is not applied in this inspected renderer.";
+    }
+  } else if (observed.observedIdentity !== null) {
+    if (lifecycle === "renderer-start" || lifecycle === "app-start") {
+      status = "boundary-required";
+      boundary = lifecycle === "renderer-start" ? "renderer" : "app";
+      message =
+        "Intent is disabled, but the previously applied effect remains until its owned development boundary.";
+    } else {
+      status = "failed";
+      boundary = "none";
+      message =
+        "Disabled dynamic intent is still observed; run the exact disable command again.";
+    }
+  } else {
+    status = "not-applicable";
+    boundary = "none";
+    message = "No enabled intent or live application is observed.";
+  }
+  if (
+    observed.status !== status ||
+    observed.lifecycle !== lifecycle ||
+    observed.boundary !== boundary
+  ) return null;
+  return {
+    status,
+    lifecycle,
+    boundary,
+    observedIdentity: observed.observedIdentity,
+    message,
+  };
 }
 
 export function parsePluginManagementResponse(
@@ -326,15 +472,20 @@ export function parsePluginManagementResponse(
         !persistedFieldsMatch(expected, observed);
     })
   ) return null;
+  const correlated = expectedPlugins.map((expected) => {
+    const observed = byId.get(expected.id)!;
+    return trustedApplicationObservation(expected, observed.application);
+  });
+  if (correlated.some((application) => application === null)) return null;
   return {
     ok: record["ok"],
     ...(typeof record["code"] === "string" ? { code: record["code"] } : {}),
     ...(typeof record["message"] === "string"
       ? { message: record["message"] }
       : {}),
-    plugins: expectedPlugins.map((expected) => ({
+    plugins: expectedPlugins.map((expected, index) => ({
       ...expected,
-      application: byId.get(expected.id)!.application,
+      application: correlated[index]!,
     })),
     uiOpened: record["uiOpened"],
   };
@@ -477,6 +628,11 @@ export async function inspectPluginManagementOnDevelopmentTarget(options: {
     };
   }
   const expected = prepared.value;
+  const commands = exactManagementCommands({
+    plugins,
+    explodexHome: options.explodexHome,
+    explicitRoot: options.explicitRoot,
+  });
   const operation = await runExactTargetOperation({
     runtime,
     operation: options.openUi
@@ -515,6 +671,7 @@ export async function inspectPluginManagementOnDevelopmentTarget(options: {
     evaluate: {
       expression: expression({
         plugins,
+        commands,
         openUi: options.openUi,
       }),
     },

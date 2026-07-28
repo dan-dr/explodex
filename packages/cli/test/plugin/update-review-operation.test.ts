@@ -104,6 +104,7 @@ class UpdateCdpAdapter implements CdpAdapter {
         expect(request.expression).toContain(
           '"enabledPluginIdentities":[{"id":"alpha"',
         );
+        if (this.outcome instanceof Error) throw this.outcome;
         return { value: this.outcome };
       },
       close: async () => {
@@ -226,5 +227,24 @@ describe("M4-F03 exact-target update selection", () => {
       expect(adapter.closed).toBe(true);
       expect(adapter.cleanupEvaluations).toBe(1);
     }
+  });
+
+  test("returns exact cleanup authority when target evaluation fails after review creation", async () => {
+    const { adapter, result } = await run(
+      new Error("renderer evaluation failed"),
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      cleanupProtocol: {
+        nonce: NONCE,
+        target: {
+          targetId: TARGET.id,
+          executionContextUniqueId: CONTEXT.uniqueId,
+        },
+      },
+      sourceDelivered: false,
+      authorityChanged: false,
+    });
+    expect(adapter.cleanupEvaluations).toBe(1);
   });
 });

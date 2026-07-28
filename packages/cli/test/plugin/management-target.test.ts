@@ -61,4 +61,40 @@ describe("M4-F03 management target response correlation", () => {
       }, [LOCAL])).toBeNull();
     }
   });
+
+  test("rejects impossible installed, enabled, lifecycle, and boundary claims", () => {
+    const invalidApplications = [
+      {
+        status: "applied",
+        lifecycle: "dynamic",
+        boundary: "none",
+        observedIdentity: {
+          version: "foreign",
+          payloadSha256: "b".repeat(64),
+        },
+        message: "Foreign identity.",
+      },
+      {
+        status: "boundary-required",
+        lifecycle: "dynamic",
+        boundary: "renderer",
+        observedIdentity: null,
+        message: "Impossible dynamic boundary.",
+      },
+      {
+        status: "applied",
+        lifecycle: "renderer-start",
+        boundary: "none",
+        observedIdentity: LOCAL.enabled,
+        message: "Wrong lifecycle.",
+      },
+    ] as const;
+    for (const application of invalidApplications) {
+      expect(parsePluginManagementResponse({
+        ok: true,
+        plugins: [{ ...LOCAL, application }],
+        uiOpened: false,
+      }, [LOCAL])).toBeNull();
+    }
+  });
 });

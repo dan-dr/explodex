@@ -18,7 +18,7 @@ import {
 } from "../plugin/reconciliation.ts";
 import { readVerifiedSdkRuntimeSource } from "../plugin/review-target.ts";
 import { targetIdentitiesEqual } from "../plugin/review-protocol.ts";
-import { readGenerationRecord } from "../plugin/generation.ts";
+import { readVerifiedGenerationOutput } from "../plugin/generation.ts";
 import {
   createDefaultRuntimeAdapters,
   type RuntimeAdapters,
@@ -163,9 +163,9 @@ function isPreparedSystem(
   return "public" in value;
 }
 
-function baselineExpression(options: {
+export function baselineExpression(options: {
   sdkRuntimeSha256: string;
-  unrelatedPluginIds: readonly string[];
+  stagedPluginId: string;
 }): string {
   return `(() => {
   const runtime = globalThis.Explodex;
@@ -179,30 +179,51 @@ function baselineExpression(options: {
     throw new Error("Protected main does not contain the exact unchanged SDK runtime");
   }
   const status = runtime["__explodexPluginApplicationStatus"];
-  if (typeof status !== "function") {
-    throw new Error("Protected main plugin status surface is unavailable");
+  const inventory = runtime["__explodexPluginApplicationInventory"];
+  if (typeof status !== "function" || typeof inventory !== "function") {
+    throw new Error("Protected main plugin inventory surface is unavailable");
   }
+  const historyState = JSON.stringify(globalThis.history && globalThis.history.state);
+  const navigationEntries = JSON.stringify(
+    globalThis.performance && typeof globalThis.performance.getEntriesByType === "function"
+      ? globalThis.performance.getEntriesByType("navigation").map((entry) => ({
+          name: entry.name,
+          entryType: entry.entryType,
+          startTime: entry.startTime,
+          duration: entry.duration,
+          type: entry.type,
+        }))
+      : [],
+  );
+  const selectedThread = globalThis.document &&
+    globalThis.document.querySelector(
+      'a[aria-current="page"][href*="/c/"], a[aria-current="page"][href*="/thread/"]',
+    );
   return {
     schemaVersion: 1,
     url: String(globalThis.location && globalThis.location.href || ""),
     timeOrigin: Number(globalThis.performance && globalThis.performance.timeOrigin),
     historyLength: Number(globalThis.history && globalThis.history.length),
+    historyState: historyState === undefined ? "undefined" : historyState,
+    navigationEntries,
     route: globalThis.location
       ? String(globalThis.location.pathname + globalThis.location.search + globalThis.location.hash)
       : null,
+    selectedThread: selectedThread
+      ? String(selectedThread.getAttribute("href") || "")
+      : null,
     sdkRuntimeVersion: String(runtime.version || ""),
     sdkRuntimeSha256: requestMark.slice(0, 64),
-    unrelatedPlugins: Object.fromEntries(
-      ${JSON.stringify(options.unrelatedPluginIds)}.map((id) => {
-        const observed = status(id);
-        return [id, observed && observed.identity
-          ? {
-              version: observed.identity.version,
-              payloadSha256: observed.identity.payloadSha256,
-            }
-          : null];
-      }),
-    ),
+    unrelatedPlugins: Object.fromEntries(inventory()
+      .filter((entry) => entry.identity.id !== ${
+        JSON.stringify(options.stagedPluginId)
+      })
+      .map((entry) => [entry.identity.id, {
+        version: entry.identity.version,
+        payloadSha256: entry.identity.payloadSha256,
+        lifecycle: entry.lifecycle,
+        generation: entry.generation,
+      }])),
   };
 })()`;
 }
@@ -225,7 +246,11 @@ function parseBaseline(options: {
     typeof value.historyLength !== "number" ||
     !Number.isInteger(value.historyLength) ||
     value.historyLength < 0 ||
+    typeof value.historyState !== "string" ||
+    typeof value.navigationEntries !== "string" ||
     (value.route !== null && typeof value.route !== "string") ||
+    (value.selectedThread !== null &&
+      typeof value.selectedThread !== "string") ||
     typeof value.sdkRuntimeVersion !== "string" ||
     typeof value.sdkRuntimeSha256 !== "string" ||
     !isRecord(value.unrelatedPlugins)
@@ -235,20 +260,26 @@ function parseBaseline(options: {
   const unrelatedPlugins: MainApplyBaseline["unrelatedPlugins"] = {};
   for (const id of Object.keys(value.unrelatedPlugins).sort()) {
     const identity = value.unrelatedPlugins[id];
-    if (identity === null) {
-      unrelatedPlugins[id] = null;
-      continue;
-    }
     if (
       !isRecord(identity) ||
       typeof identity.version !== "string" ||
-      typeof identity.payloadSha256 !== "string"
+      typeof identity.payloadSha256 !== "string" ||
+      (
+        identity.lifecycle !== "dynamic" &&
+        identity.lifecycle !== "renderer-start" &&
+        identity.lifecycle !== "app-start"
+      ) ||
+      typeof identity.generation !== "number" ||
+      !Number.isInteger(identity.generation) ||
+      identity.generation < 1
     ) {
       return null;
     }
     unrelatedPlugins[id] = {
       version: identity.version,
       payloadSha256: identity.payloadSha256,
+      lifecycle: identity.lifecycle,
+      generation: identity.generation,
     };
   }
   return {
@@ -259,7 +290,10 @@ function parseBaseline(options: {
     url: value.url,
     timeOrigin: value.timeOrigin,
     historyLength: value.historyLength,
+    historyState: value.historyState,
+    navigationEntries: value.navigationEntries,
     route: value.route,
+    selectedThread: value.selectedThread,
     sdkRuntimeVersion: value.sdkRuntimeVersion,
     sdkRuntimeSha256: value.sdkRuntimeSha256,
     unrelatedPlugins,
@@ -331,7 +365,7 @@ export function createSystemMainApplyAdapters(options: {
       return captureEphemeralPluginArtifact(input);
     },
     readGeneration(input) {
-      return readGenerationRecord(resolve(input.artifactPath));
+      return readVerifiedGenerationOutput(resolve(input.artifactPath));
     },
     async inspectMain(input) {
       const observed = await inspect(input.signal);
@@ -402,14 +436,6 @@ export function createSystemMainApplyAdapters(options: {
           sourceDelivered: false,
         };
       }
-      const unrelatedIds = loadedState.status === "valid"
-        ? Object.keys(loadedState.state.plugins)
-          .filter((id) =>
-            id !== input.snapshot.identity.id &&
-            loadedState.state.plugins[id]?.enabled !== null
-          )
-          .sort()
-        : [];
       const sdkRuntime = await resolveSdkRuntimeIdentityForCli();
       let sdkRuntimeSource: string;
       try {
@@ -472,7 +498,7 @@ export function createSystemMainApplyAdapters(options: {
           evaluate: {
             expression: baselineExpression({
               sdkRuntimeSha256: input.prepared.sdkRuntimeIdentity.sha256,
-              unrelatedPluginIds: unrelatedIds,
+              stagedPluginId: input.snapshot.identity.id,
             }),
             onBeforeEvaluation({ target }) {
               if (!targetIdentitiesEqual(target, input.prepared.target)) {
@@ -522,18 +548,6 @@ export function createSystemMainApplyAdapters(options: {
           sourceDelivered: false,
         };
       }
-      const snapshots = [
-        ...enabled.snapshots.filter((snapshot) =>
-          snapshot.identity.id !== input.snapshot.identity.id
-        ),
-        input.snapshot,
-      ].sort((left, right) =>
-        left.identity.id < right.identity.id
-          ? -1
-          : left.identity.id > right.identity.id
-            ? 1
-            : 0
-      );
       const application = await runEnabledPluginApplicationOperation({
         runtime: await runtimeAdapters(),
         operationId: input.operationId,
@@ -567,7 +581,7 @@ export function createSystemMainApplyAdapters(options: {
         sdkRuntimeSource,
         requireExistingSdkRuntimeSha256:
           input.prepared.sdkRuntimeIdentity.sha256,
-        snapshots,
+        snapshots: [input.snapshot],
         timeoutMs: options.timeoutMs,
         signal: input.signal,
         lifecycleBoundary: "current",

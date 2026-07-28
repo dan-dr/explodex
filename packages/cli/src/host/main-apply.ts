@@ -50,12 +50,20 @@ export type MainApplyBaseline = {
   url: string;
   timeOrigin: number;
   historyLength: number;
+  historyState?: string;
+  navigationEntries?: string;
   route: string | null;
+  selectedThread?: string | null;
   sdkRuntimeVersion: string;
   sdkRuntimeSha256: string;
   unrelatedPlugins: Record<
     string,
-    { version: string; payloadSha256: string } | null
+    {
+      version: string;
+      payloadSha256: string;
+      lifecycle?: "dynamic" | "renderer-start" | "app-start";
+      generation?: number;
+    } | null
   >;
 };
 

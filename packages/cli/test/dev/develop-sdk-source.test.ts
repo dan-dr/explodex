@@ -246,6 +246,7 @@ describe("M4-F06 explicit local SDK development", () => {
     const calls: string[] = [];
     const lines: string[] = [];
     const stale = deferred<DevelopBuildResult>();
+    let staleSignal: AbortSignal | undefined;
     let onChange: (() => void) | null = null;
     let onStop: (() => void) | null = null;
     const adapters: DevelopRuntimeAdapters = {
@@ -261,6 +262,7 @@ describe("M4-F06 explicit local SDK development", () => {
       async buildGeneration({ generation, signal }) {
         calls.push(`sdk:${generation}:start`);
         if (generation === 1) {
+          staleSignal = signal;
           const built = await stale.promise;
           calls.push(`sdk:${generation}:done:${signal?.aborted === true}`);
           return built;
@@ -295,12 +297,13 @@ describe("M4-F06 explicit local SDK development", () => {
     });
     await waitFor(() => calls.includes("sdk:1:start"));
     invoke(onChange, "change");
-    await waitFor(() => calls.includes("sdk:2:start"));
+    await waitFor(() => staleSignal?.aborted === true);
     stale.resolve({
       ok: true,
       pluginIdentity: pluginIdentity(1),
       sdkRuntimeIdentity: sdkIdentity(1),
     });
+    await waitFor(() => calls.includes("sdk:2:start"));
     await waitFor(() => calls.includes("apply:2"));
     invoke(onStop, "stop");
     const result = await running;
@@ -870,16 +873,24 @@ export default definePlugin({
           : null,
         devValidation: cleanBuild.ok
           ? {
+              generationId: cleanGeneration!.generationId,
+              validationOperationId: "develop-clean-validation",
               pluginIdentity: {
                 id: cleanBuild.report.id,
                 version: cleanBuild.report.version,
                 payloadSha256: cleanBuild.payloadSha256,
               },
-              sdkRuntimeIdentity: sdkIdentity(1),
+              sdkRuntimeIdentity: {
+                version: cleanGeneration!.sdkInput!.version,
+                sha256: cleanGeneration!.sdkInput!.runtimeSha256,
+              },
               target: TARGET,
             }
           : null,
-        mainSdkRuntime: sdkIdentity(1),
+        mainSdkRuntime: {
+          version: cleanGeneration!.sdkInput!.version,
+          sha256: cleanGeneration!.sdkInput!.runtimeSha256,
+        },
       })).toEqual({ ok: true });
     } finally {
       await Promise.all([
@@ -899,6 +910,8 @@ export default definePlugin({
       sdkRange: "^1.2.0",
     };
     const validation = {
+      generationId: publishable.generationId,
+      validationOperationId: "develop-graduation-validation",
       pluginIdentity: {
         id: "sample",
         version: "dev-1",

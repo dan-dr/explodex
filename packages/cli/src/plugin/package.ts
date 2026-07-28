@@ -4,14 +4,25 @@
  * Writes no archive on validation failure.
  */
 
-import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import {
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { basename, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import {
   buildNamedRootArchive,
   loadPayloadEntries,
   writeArchiveFile,
 } from "./archive.ts";
 import { validateInstallablePayloadDir } from "./artifact-validate.ts";
+import { buildPluginWorkspace } from "./build.ts";
 import { listInstallableFiles } from "./dist-files.ts";
 import {
   readGenerationRecord,
@@ -52,7 +63,15 @@ export async function packagePluginWorkspace(options: {
   outputDir: string;
   timeoutMs: number;
   env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
 }): Promise<PluginPackageResult> {
+  if (options.signal?.aborted) {
+    return {
+      ok: false,
+      code: "operation.interrupted",
+      message: "Plugin packaging was interrupted.",
+    };
+  }
   const workspacePath = resolve(options.workspacePath);
   const outputDir = resolve(options.outputDir);
   const recordedGeneration = await readGenerationRecord(
@@ -66,11 +85,11 @@ export async function packagePluginWorkspace(options: {
         "This generation was built with a local SDK source and is dev-only. Rebuild against publishable SDK inputs before packaging.",
     };
   }
-
   const verified = await verifyDistGeneration({
     workspacePath,
     timeoutMs: options.timeoutMs,
     env: options.env,
+    signal: options.signal,
   });
   if (!verified.ok) {
     return {
@@ -93,6 +112,7 @@ export async function packagePluginWorkspace(options: {
     workspacePath,
     timeoutMs: options.timeoutMs,
     env: options.env,
+    signal: options.signal,
   });
   if (!source.ok) {
     return {
@@ -100,6 +120,62 @@ export async function packagePluginWorkspace(options: {
       code: source.code,
       message: source.message,
       details: source.details,
+    };
+  }
+  // The generation record is workspace-owned metadata, so independently
+  // rebuild the same source in disposable storage against the CLI's published
+  // SDK and require byte-identical payload output before distribution.
+  const proofRoot = await mkdtemp(join(tmpdir(), "explodex-publishable-proof-"));
+  const proofWorkspace = join(proofRoot, basename(workspacePath));
+  let publishableProof:
+    | Awaited<ReturnType<typeof buildPluginWorkspace>>
+    | null = null;
+  try {
+    await cp(workspacePath, proofWorkspace, {
+      recursive: true,
+      filter(sourcePath) {
+        const relativePath = sourcePath.slice(workspacePath.length)
+          .replace(/^[/\\]/u, "");
+        const first = relativePath.split(/[/\\]/u)[0];
+        return first !== "dist" &&
+          first !== ".git";
+      },
+    });
+    publishableProof = await buildPluginWorkspace({
+      workspacePath: proofWorkspace,
+      timeoutMs: options.timeoutMs,
+      env: options.env,
+      signal: options.signal,
+    });
+  } catch {
+    publishableProof = null;
+  } finally {
+    await rm(proofRoot, { recursive: true, force: true });
+  }
+  if (
+    publishableProof === null ||
+    !publishableProof.ok ||
+    publishableProof.payloadSha256 !== verified.payloadSha256
+  ) {
+    return {
+      ok: false,
+      code: "develop.publishable-rebuild-required",
+      message:
+        "Independent published-SDK rebuild did not reproduce the exact distribution payload.",
+      details: {
+        proofCode: publishableProof === null
+          ? "proof-unavailable"
+          : publishableProof.ok
+          ? "payload-mismatch"
+          : publishableProof.code,
+      },
+    };
+  }
+  if (options.signal?.aborted) {
+    return {
+      ok: false,
+      code: "operation.interrupted",
+      message: "Plugin packaging was interrupted.",
     };
   }
 
@@ -165,6 +241,13 @@ export async function packagePluginWorkspace(options: {
       message: "Packaged archiveSha256 mismatch after round-trip.",
     };
   }
+  if (options.signal?.aborted) {
+    return {
+      ok: false,
+      code: "operation.interrupted",
+      message: "Plugin packaging was interrupted.",
+    };
+  }
 
   await mkdir(outputDir, { recursive: true });
   const finalPath = join(outputDir, archive.archiveFileName);
@@ -183,6 +266,9 @@ export async function packagePluginWorkspace(options: {
 
   try {
     await writeFile(stagingPath, archive.archiveBytes);
+    if (options.signal?.aborted) {
+      throw new Error("Plugin packaging was interrupted.");
+    }
     // Atomic replace of the final archive name.
     await rm(finalPath, { force: true });
     await rename(stagingPath, finalPath);
@@ -205,8 +291,14 @@ export async function packagePluginWorkspace(options: {
     }
     return {
       ok: false,
-      code: "plugin.package.failed",
-      message: error instanceof Error ? error.message : "Plugin package failed",
+      code: options.signal?.aborted
+        ? "operation.interrupted"
+        : "plugin.package.failed",
+      message: options.signal?.aborted
+        ? "Plugin packaging was interrupted."
+        : error instanceof Error
+          ? error.message
+          : "Plugin package failed",
     };
   }
 

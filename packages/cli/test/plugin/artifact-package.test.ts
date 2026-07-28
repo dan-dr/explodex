@@ -541,6 +541,17 @@ describe("VAL-SDK-031 archives use one canonical named top-level directory", () 
 });
 
 describe("VAL-SDK-034 standalone artifact validation is source-free and exact", () => {
+  test("pre-aborted validation stops before reading the artifact", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const result = await validateStandaloneArtifact("/path/that-must-not-be-read", {
+      signal: controller.signal,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected interruption");
+    expect(result.code).toBe("operation.interrupted");
+  });
+
   test("validates copied dist and archive without workspace/toolchain", async () => {
     const { workspace, cleanup } = await buildFixture("explodex-plugin-standalone");
     try {

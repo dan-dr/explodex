@@ -209,11 +209,100 @@ export async function readGenerationRecord(
   try {
     const raw = JSON.parse(await readFile(join(distPath, GENERATION_FILE), "utf8")) as unknown;
     if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
-    const value = raw as GenerationRecord;
-    if (value.schemaVersion !== 1) return null;
-    if (typeof value.generationId !== "string") return null;
-    if (typeof value.payloadSha256 !== "string") return null;
-    return value;
+    const value = raw as Record<string, unknown>;
+    const allowed = new Set([
+      "schemaVersion",
+      "generationId",
+      "pluginId",
+      "version",
+      "mapMode",
+      "sdkInput",
+      "inputDigests",
+      "outputDigests",
+      "payloadSha256",
+    ]);
+    if (
+      Object.keys(value).some((key) => !allowed.has(key)) ||
+      value.schemaVersion !== 1 ||
+      typeof value.generationId !== "string" ||
+      !/^[a-f0-9]{64}$/u.test(value.generationId) ||
+      typeof value.pluginId !== "string" ||
+      value.pluginId.length === 0 ||
+      typeof value.version !== "string" ||
+      value.version.length === 0 ||
+      value.mapMode !== "required" ||
+      typeof value.payloadSha256 !== "string" ||
+      !/^[a-f0-9]{64}$/u.test(value.payloadSha256) ||
+      value.inputDigests === null ||
+      typeof value.inputDigests !== "object" ||
+      Array.isArray(value.inputDigests) ||
+      value.outputDigests === null ||
+      typeof value.outputDigests !== "object" ||
+      Array.isArray(value.outputDigests)
+    ) return null;
+    const inputDigests = value.inputDigests as Record<string, unknown>;
+    const outputDigests = value.outputDigests as Record<string, unknown>;
+    if (
+      Object.keys(inputDigests).length === 0 ||
+      Object.keys(outputDigests).length === 0 ||
+      Object.entries(inputDigests).some(([path, digest]) =>
+        path.length === 0 ||
+        typeof digest !== "string" ||
+        !/^[a-f0-9]{64}$/u.test(digest)
+      ) ||
+      Object.entries(outputDigests).some(([path, digest]) =>
+        path.length === 0 ||
+        typeof digest !== "string" ||
+        !/^[a-f0-9]{64}$/u.test(digest)
+      )
+    ) return null;
+    const sdkInput = value.sdkInput as GenerationRecord["sdkInput"];
+    if (!validSdkInput(sdkInput)) return null;
+    const record: GenerationRecord = {
+      schemaVersion: 1,
+      generationId: value.generationId,
+      pluginId: value.pluginId,
+      version: value.version,
+      mapMode: "required",
+      sdkInput,
+      inputDigests: inputDigests as Record<string, string>,
+      outputDigests: outputDigests as Record<string, string>,
+      payloadSha256: value.payloadSha256,
+    };
+    if (computeGenerationId(record.inputDigests) !== record.generationId) {
+      return null;
+    }
+    return record;
+  } catch {
+    return null;
+  }
+}
+
+export async function readVerifiedGenerationOutput(
+  distPath: string,
+): Promise<GenerationRecord | null> {
+  const resolved = resolve(distPath);
+  const generation = await readGenerationRecord(resolved);
+  if (generation === null) return null;
+  try {
+    const checksums = await readChecksums(resolved);
+    const verified = await verifyDistAgainstChecksums(resolved, checksums);
+    if (!verified.ok) return null;
+    if (computePayloadSha256(checksums) !== generation.payloadSha256) {
+      return null;
+    }
+    const installable = await listInstallableFiles(resolved);
+    if (
+      installable.length !== Object.keys(generation.outputDigests).length
+    ) return null;
+    for (const relative of installable) {
+      const expected = generation.outputDigests[relative];
+      if (
+        expected === undefined ||
+        await digestFile(join(resolved, relative)) !== expected
+      ) return null;
+    }
+    return generation;
   } catch {
     return null;
   }
@@ -317,6 +406,7 @@ export async function verifyDistGeneration(options: {
     workspacePath,
     timeoutMs: options.timeoutMs,
     env: options.env,
+    signal: options.signal,
   });
   if (!source.ok) {
     return {

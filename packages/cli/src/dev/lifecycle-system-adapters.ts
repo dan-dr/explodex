@@ -146,9 +146,16 @@ export function createProductionDevLaunch(options: {
       stderrPath: join(options.logsPath, "dev.stderr.log"),
       inheritHostEnvironment: true,
     });
+    // Publish raw spawn authority before any fallible identity inspection.
+    // A later failure can therefore report the exact surviving PID and require
+    // explicit recovery even when the kernel start timestamp is not yet known.
+    await onSpawn({
+      pid: spawned.pid,
+      processStartedAt: null,
+    });
     const deadline = Date.now() + options.timeoutMs;
     let startedAt: string | null = null;
-    let announced = false;
+    let announcedIdentity = false;
     let lastReason = "Development process did not become ready.";
     while (Date.now() < deadline) {
       if (options.signal?.aborted) {
@@ -165,12 +172,12 @@ export function createProductionDevLaunch(options: {
         break;
       }
       startedAt = identity.processStartedAt;
-      if (!announced) {
+      if (!announcedIdentity) {
         await onSpawn({
           pid: spawned.pid,
           processStartedAt: startedAt,
         });
-        announced = true;
+        announcedIdentity = true;
       }
 
       const processes = await options.statusAdapters.process.list({
@@ -376,6 +383,41 @@ export function createProductionDevTermination(options: {
       expectedTargetId: state.targetId,
       expectedContextUniqueId: state.executionContextUniqueId,
       requireCompleteEndpointOwnershipForSignal: true,
+      beforeExactSignal: async () => {
+        const finalSnapshot = await inspectDevInstanceStatus({
+          osHome: options.osHome,
+          explodexHome: options.explodexHome,
+          explicitRoot: options.explicitRoot,
+          operation: "recover",
+          signal: undefined,
+          hostAdapters: options.hostAdapters,
+          statusAdapters: options.statusAdapters,
+          cdp: options.cdp,
+        });
+        const finalState = finalSnapshot.state;
+        if (
+          finalSnapshot.assessment.recoveryEligibility !==
+            "fully-owned-live" ||
+          finalState === null ||
+          finalState.rootPath !== state.rootPath ||
+          finalState.pid !== state.pid ||
+          finalState.processStartedAt !== state.processStartedAt ||
+          finalState.targetId !== state.targetId ||
+          finalState.executionContextUniqueId !==
+            state.executionContextUniqueId ||
+          finalState.appBuild !== state.appBuild ||
+          finalState.frozenHost === null ||
+          state.frozenHost === null ||
+          !frozenHostEquals(finalState.frozenHost, state.frozenHost)
+        ) {
+          return {
+            ok: false as const,
+            reason:
+              "Complete development ownership drifted before exact SIGTERM.",
+          };
+        }
+        return { ok: true as const };
+      },
       privateRoots: [
         state.electronUserDataPath,
         state.codexHomePath,
@@ -383,7 +425,7 @@ export function createProductionDevTermination(options: {
       ],
       signal: options.signal,
     });
-    const elapsedMs = Date.now() - started;
+    const elapsedMs = stopped.elapsedMs ?? Date.now() - started;
     if (
       stopped.stopped &&
       stopped.portReleased &&
@@ -401,16 +443,23 @@ export function createProductionDevTermination(options: {
     return {
       ok: false,
       confirmedExit: false,
-      code:
+      code: stopped.code ?? (
         !stopped.stopped && elapsedMs >= options.timeoutMs
           ? "operation.timeout"
-          : "dev.termination-failed",
+          : "dev.termination-failed"
+      ),
       message:
         stopped.reason ??
         `Exact development process did not terminate during dev.${options.kind}.`,
       method: stopped.method === "none" ? null : stopped.method,
       elapsedMs,
-      boundMs: options.timeoutMs,
+      boundMs: stopped.boundMs ?? options.timeoutMs,
+      details: {
+        residualDisposition: stopped.residualDisposition ?? "unknown",
+        stopped: stopped.stopped,
+        portReleased: stopped.portReleased,
+        uncertain: stopped.uncertain,
+      },
     };
   };
 }

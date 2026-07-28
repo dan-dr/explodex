@@ -447,10 +447,17 @@ function validateDevelop(text, expectedOperationId) {
   }
   const events = records.slice(0, -1);
   let lastApply = null;
+  let frozenTarget = null;
   let highestGeneration = 0;
   const generationBuilds = new Map();
   events.forEach((record, index) => {
     validateEvent(record, index, operationId, index + 1);
+    if ("target" in record) {
+      if (frozenTarget === null) frozenTarget = record.target;
+      else if (!same(frozenTarget, record.target)) {
+        fail("Develop target identity changed within the stream.");
+      }
+    }
     if (record.generation < highestGeneration) {
       fail("Develop generation identity moved backwards.");
     }
@@ -473,16 +480,23 @@ function validateDevelop(text, expectedOperationId) {
     }
     if (record.type === "apply-succeeded") lastApply = record;
     if (
-      record.type === "blocked" &&
+      (record.type === "blocked" || record.type === "target-lost") &&
       index !== events.length - 1
     ) {
-      fail("A blocked event must be the final nonterminal record.");
+      fail("A blocked or target-lost event must be the final nonterminal record.");
     }
   });
   if (integer(terminal.lastSequence, "terminal.lastSequence") !== events.length) {
     fail("terminal.lastSequence must equal the final event sequence or 0.");
   }
   validateLastGood(terminal.lastGood, lastApply);
+  if (
+    terminal.lastGood !== null &&
+    frozenTarget !== null &&
+    !same(terminal.lastGood.target, frozenTarget)
+  ) {
+    fail("terminal.lastGood target must match the frozen stream target.");
+  }
   if (terminal.reason === "blocked") {
     const finalEvent = events.at(-1);
     if (
@@ -525,6 +539,98 @@ function findRecord(value, predicate, seen = new Set()) {
   return null;
 }
 
+function validateAuthBlocker(auth) {
+  exactKeys(
+    auth,
+    [
+      "blocker",
+      "authMode",
+      "projectedAuthAdvertised",
+      "role",
+      "rootPath",
+      "electronUserDataPath",
+      "codexHomePath",
+      "target",
+      "requiredAction",
+      "credentialHandling",
+      "devRemainsRunning",
+      "resume",
+    ],
+    [],
+    "auth",
+  );
+  if (
+    auth.blocker !== "authentication" ||
+    auth.authMode !== "interactive" ||
+    auth.projectedAuthAdvertised !== false ||
+    auth.role !== "development" ||
+    auth.devRemainsRunning !== true
+  ) fail("auth blocker facts are invalid.");
+  nonEmpty(auth.rootPath, "auth.rootPath");
+  nonEmpty(auth.electronUserDataPath, "auth.electronUserDataPath");
+  nonEmpty(auth.codexHomePath, "auth.codexHomePath");
+  nonEmpty(auth.requiredAction, "auth.requiredAction");
+  exactKeys(
+    auth.target,
+    [
+      "role",
+      "pid",
+      "processStartedAt",
+      "port",
+      "targetId",
+      "executionContextId",
+      "executionContextUniqueId",
+      "appVersion",
+      "appBuild",
+    ],
+    [],
+    "auth.target",
+  );
+  if (auth.target.role !== "development" || auth.target.port !== 9444) {
+    fail("auth.target must be the exact development target on port 9444.");
+  }
+  integer(auth.target.pid, "auth.target.pid", 1);
+  integer(auth.target.executionContextId, "auth.target.executionContextId", 1);
+  for (const key of [
+    "processStartedAt",
+    "targetId",
+    "executionContextUniqueId",
+    "appVersion",
+    "appBuild",
+  ]) nonEmpty(auth.target[key], `auth.target.${key}`);
+  exactKeys(
+    auth.credentialHandling,
+    ["cliEntryAllowed", "mainStateCopyAllowed", "automaticProjection"],
+    [],
+    "auth.credentialHandling",
+  );
+  if (
+    auth.credentialHandling.cliEntryAllowed !== false ||
+    auth.credentialHandling.mainStateCopyAllowed !== false ||
+    auth.credentialHandling.automaticProjection !== false
+  ) fail("auth credential handling facts are invalid.");
+  exactKeys(
+    auth.resume,
+    [
+      "firstOperation",
+      "recoveryOperation",
+      "continuationOperation",
+      "requiresNewPublicOperation",
+      "reusesBlockedOutput",
+    ],
+    [],
+    "auth.resume",
+  );
+  if (
+    auth.resume.firstOperation !== "dev.status" ||
+    auth.resume.recoveryOperation !== "dev.recover" ||
+    auth.resume.continuationOperation !== "plugin.develop" ||
+    auth.resume.requiresNewPublicOperation !== true ||
+    auth.resume.reusesBlockedOutput !== false
+  ) fail("auth resume facts are invalid.");
+  return auth;
+}
+
 function blockerQuestion(error) {
   const auth = findRecord(
     error.details,
@@ -534,6 +640,7 @@ function blockerQuestion(error) {
       value.role === "development",
   );
   if (error.code === "auth.required" && auth !== null) {
+    validateAuthBlocker(auth);
     const target = isRecord(auth.target) ? auth.target : {};
     return {
       code: error.code,
@@ -551,6 +658,26 @@ function blockerQuestion(error) {
         `I will run a new public dev status and plugin develop operation before any mutation.`,
     };
   }
+  if (error.code === "auth.required") {
+    fail("auth.required requires exact validated interactive auth details.");
+  }
+  const exactTarget = findRecord(
+    error.details,
+    (value) =>
+      (value.role === "main" || value.role === "development") &&
+      "targetId" in value &&
+      "executionContextUniqueId" in value &&
+      "browserIdentity" in value,
+  );
+  if (exactTarget !== null) validateTarget(exactTarget, "blocker.target");
+  const runningFacts = findRecord(
+    error.details,
+    (value) =>
+      typeof value.devRemainsRunning === "boolean" ||
+      typeof value.mainRemainsRunning === "boolean",
+  );
+  const role = exactTarget?.role ??
+    (error.code.startsWith("main.") ? "main" : "development");
   const actions = {
     "cdp.target-lost":
       "Restore the exact development target or use the public development status/recover lifecycle.",
@@ -563,15 +690,21 @@ function blockerQuestion(error) {
   };
   return {
     code: error.code,
-    role: "development",
-    target: null,
+    role,
+    target: exactTarget,
     requiredAction:
       actions[error.code] ??
       "Complete the named manual action without changing unrelated targets.",
     continuationOperation: "plugin.develop",
     verificationOperation: "dev.status",
-    devRemainsRunning: null,
-    mainRemainsRunning: true,
+    devRemainsRunning:
+      typeof runningFacts?.devRemainsRunning === "boolean"
+        ? runningFacts.devRemainsRunning
+        : null,
+    mainRemainsRunning:
+      typeof runningFacts?.mainRemainsRunning === "boolean"
+        ? runningFacts.mainRemainsRunning
+        : null,
     prompt:
       `${error.message} Complete the required action, then confirm. ` +
       `I will use a new public status, recover, or explicit operation before resuming.`,

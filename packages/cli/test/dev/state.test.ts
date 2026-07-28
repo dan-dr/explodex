@@ -147,6 +147,43 @@ describe("development state (VAL-DEV-003)", () => {
     expect(loaded?.status).toBe("stopped");
   });
 
+  test("rejects an unsafe temporary inode before publishing canonical state", async () => {
+    const fs = new MemoryFileSystem();
+    const root = "/tmp/homes/state-mode/.explodex/dev/plugin-dev";
+    const layoutResult = await ensureDefaultDevLayout({ fs, rootPath: root });
+    if (!layoutResult.ok) throw new Error(layoutResult.error.message);
+    const adapters = adaptersFor(fs);
+    const state = createInitialDevInstanceState({
+      layout: layoutResult.layout,
+      appPath: "/Applications/ChatGPT.app",
+      executablePath: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
+      updatedAt: "2026-07-25T12:00:00.000Z",
+    });
+    const originalWrite = fs.writeFile.bind(fs);
+    let renameCalled = false;
+    fs.writeFile = async (path, data) => {
+      await originalWrite(path, data);
+      fs.seedFile(
+        path,
+        typeof data === "string" ? data : new TextDecoder().decode(data),
+        0o644,
+      );
+    };
+    fs.rename = async () => {
+      renameCalled = true;
+    };
+    await expect(saveDevInstanceState({
+      adapters,
+      statePath: layoutResult.layout.statePath,
+      state,
+    })).rejects.toThrow(/mode must be private/);
+    expect(renameCalled).toBe(false);
+    expect(await loadDevInstanceState({
+      adapters,
+      statePath: layoutResult.layout.statePath,
+    })).toBeNull();
+  });
+
   test("malformed JSON is treated as absent rather than partially promoted", async () => {
     const fs = new MemoryFileSystem();
     const path = "/tmp/homes/state-d/.explodex/dev/plugin-dev/state.json";

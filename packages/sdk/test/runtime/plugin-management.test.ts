@@ -11,6 +11,18 @@ function request(): PluginManagementRequest {
   return {
     schemaVersion: 1,
     target: "main",
+    commands: {
+      alpha: {
+        enable: `explodex --home /exact plugin review alpha --artifact-version opaque-B --payload-sha256 ${B} --target main`,
+        review: `explodex --home /exact plugin review alpha --artifact-version opaque-B --payload-sha256 ${B} --target main`,
+        refresh: "explodex --home /exact plugin refresh --target main",
+        update: "explodex --home /exact plugin update check",
+        disable:
+          "explodex --home /exact plugin disable alpha --target main",
+        remove:
+          `explodex --home /exact plugin remove alpha --artifact-version 'opaque A' --payload-sha256 ${A} --target main`,
+      },
+    },
     plugins: [{
       id: "alpha",
       displayName: "Alpha",
@@ -73,21 +85,21 @@ describe("M3-F08 honest post-exit plugin management", () => {
     )).toBe(true);
     expect(plugin.controls.find((control) => control.action === "enable")?.command)
       .toBe(
-        `explodex plugin review alpha --artifact-version opaque-B --payload-sha256 ${B} --target main`,
+        `explodex --home /exact plugin review alpha --artifact-version opaque-B --payload-sha256 ${B} --target main`,
       );
     expect(plugin.controls.find((control) => control.action === "review")?.command)
       .toBe(
-        `explodex plugin review alpha --artifact-version opaque-B --payload-sha256 ${B} --target main`,
+        `explodex --home /exact plugin review alpha --artifact-version opaque-B --payload-sha256 ${B} --target main`,
       );
     expect(plugin.controls.find((control) => control.action === "refresh")?.command)
-      .toBe("explodex plugin refresh --target main");
+      .toBe("explodex --home /exact plugin refresh --target main");
     expect(plugin.controls.find((control) => control.action === "update")?.command)
-      .toBe("explodex plugin update check");
+      .toBe("explodex --home /exact plugin update check");
     expect(plugin.controls.find((control) => control.action === "disable")?.command)
-      .toBe("explodex plugin disable alpha --target main");
+      .toBe("explodex --home /exact plugin disable alpha --target main");
     expect(plugin.controls.find((control) => control.action === "remove")?.command)
       .toBe(
-        `explodex plugin remove alpha --artifact-version 'opaque A' --payload-sha256 ${A} --target main`,
+        `explodex --home /exact plugin remove alpha --artifact-version 'opaque A' --payload-sha256 ${A} --target main`,
       );
   });
 

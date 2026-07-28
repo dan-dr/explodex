@@ -741,6 +741,7 @@ export type DevTerminationResult =
         | null;
       elapsedMs?: number;
       boundMs?: number;
+      details?: unknown;
     };
 
 export type DevRecoverSuccess = {
@@ -867,12 +868,17 @@ export async function recoverDevInstance(options: {
             ok: false as const,
             code: terminated.code === "operation.timeout"
               ? "operation.timeout" as const
-              : "dev.recovery-failed" as const,
+              : terminated.code === "dev.ownership-uncertain"
+                ? "dev.ownership-uncertain" as const
+                : "dev.recovery-failed" as const,
             message: terminated.message,
             snapshot,
             details: {
               terminationMethod: terminated.method,
               confirmedExit: false,
+              elapsedMs: terminated.elapsedMs,
+              boundMs: terminated.boundMs,
+              residue: terminated.details,
             },
           };
         }

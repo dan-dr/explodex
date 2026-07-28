@@ -165,6 +165,10 @@ describe("M4-F07 plugin-builder machine protocol interpreter", () => {
     expect(mandatory).not.toContain("bun run inject");
     expect(mandatory).not.toContain("scripts/cdp-inject");
     expect(mandatory).toContain("Do not invoke repository injectors");
+    expect(skill).not.toContain("create under `plugins/<id>/`");
+    expect(skill).toContain(
+      "Do not use `plugins/<id>/`, `sdk/explodex-sdk.js`, `scripts/cdp-inject.ts`,",
+    );
   });
 
   test("validates exact one-shot envelope operation and identities", async () => {
@@ -346,6 +350,12 @@ describe("M4-F07 plugin-builder machine protocol interpreter", () => {
       (records) => {
         records[2]!.operationId = "stale-operation";
       },
+      (records) => {
+        records[4]!.target = {
+          ...TARGET,
+          executionContextUniqueId: "changed-context",
+        };
+      },
     ];
     for (const mutate of mutations) {
       const records = structuredClone(validDevelopRecords()) as Array<
@@ -360,6 +370,70 @@ describe("M4-F07 plugin-builder machine protocol interpreter", () => {
       expect(result.exitCode).toBe(1);
       expect(result.stderr).toContain("skill.protocol-mismatch");
     }
+  });
+
+  test("rejects post-target-loss output and forged auth blocker details", async () => {
+    const targetLost = [
+      {
+        schemaVersion: 1,
+        operationId: "lost-op",
+        sequence: 1,
+        generation: 1,
+        type: "target-lost",
+        target: TARGET,
+        details: { code: "cdp.target-lost" },
+      },
+      {
+        schemaVersion: 1,
+        operationId: "lost-op",
+        sequence: 2,
+        generation: 2,
+        type: "build-started",
+      },
+      {
+        schemaVersion: 1,
+        operationId: "lost-op",
+        type: "terminal",
+        ok: false,
+        reason: "blocked",
+        lastSequence: 2,
+        lastGood: null,
+        error: {
+          code: "cdp.target-lost",
+          message: "Target lost.",
+        },
+      },
+    ];
+    const postLoss = await interpret({
+      protocol: "develop",
+      operationId: "lost-op",
+      stdout: jsonl(targetLost),
+    });
+    expect(postLoss.exitCode).toBe(1);
+    expect(postLoss.stderr).toContain("final nonterminal");
+
+    const forgedAuth = await interpret({
+      protocol: "one-shot",
+      operation: "plugin.review",
+      stdout: JSON.stringify({
+        schemaVersion: 1,
+        ok: false,
+        operation: "plugin.review",
+        warnings: [],
+        error: {
+          code: "auth.required",
+          message: "Sign-in required.",
+          details: {
+            blocker: "authentication",
+            authMode: "interactive",
+            role: "development",
+            target: { pid: 1, port: 9444 },
+          },
+        },
+      }),
+    });
+    expect(forgedAuth.exitCode).toBe(1);
+    expect(forgedAuth.stderr).toContain("auth.");
   });
 
   test("returns a focused auth question and requires a new public verification operation", async () => {

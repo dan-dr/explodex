@@ -449,6 +449,15 @@ if (
 ) {
   throw new Error("Protected main requires the exact unchanged SDK runtime");
 }
+const adoptRequest = previousRuntime["__explodexAdoptRuntimeRequest"];
+if (
+  typeof adoptRequest !== "function" ||
+  adoptRequest(${JSON.stringify(sdkRequestIdentity)}) !== true
+) {
+  throw new Error(
+    "Protected main could not renew the one-operation reconciliation capability",
+  );
+}
 const runtime = previousRuntime;`;
   return `(
 async () => {

@@ -13,6 +13,8 @@ type ArtifactCandidate = {
 };
 
 type DevValidationReceipt = {
+  generationId?: string;
+  validationOperationId?: string;
   pluginIdentity: {
     id: string;
     version: string;
@@ -81,7 +83,23 @@ export function evaluatePublishableGraduation(options: {
   }
   if (
     options.devValidation === null ||
-    !identitiesEqual(options.artifact, options.devValidation)
+    !identitiesEqual(options.artifact, options.devValidation) ||
+    options.devValidation.validationOperationId === undefined ||
+    options.devValidation.validationOperationId.length === 0 ||
+    options.devValidation.target.role !== "development" ||
+    options.devValidation.target.port !== 9444 ||
+    options.devValidation.generationId === undefined ||
+    options.generation.generationId !==
+      options.devValidation.generationId ||
+    options.generation.pluginId !== options.artifact.id ||
+    options.generation.version !== options.artifact.version ||
+    options.generation.payloadSha256 !==
+      options.artifact.payloadSha256 ||
+    options.generation.sdkInput.kind !== "publishable" ||
+    options.generation.sdkInput.version !==
+      options.devValidation.sdkRuntimeIdentity.version ||
+    options.generation.sdkInput.runtimeSha256 !==
+      options.devValidation.sdkRuntimeIdentity.sha256
   ) {
     return {
       ok: false,

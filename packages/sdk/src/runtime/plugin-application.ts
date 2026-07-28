@@ -22,6 +22,8 @@ export const PRIVATE_DISABLE_RECONCILIATION =
   "__explodexDisableEnabledReconciliation" as const;
 export const PRIVATE_APPLICATION_STATUS =
   "__explodexPluginApplicationStatus" as const;
+export const PRIVATE_APPLICATION_INVENTORY =
+  "__explodexPluginApplicationInventory" as const;
 export const PRIVATE_UNLOAD_PLUGIN =
   "__explodexUnloadPlugin" as const;
 
@@ -97,6 +99,11 @@ export type PluginApplicationController = {
     identity: AppliedPluginIdentity;
     lifecycle: ApprovedPluginInput["lifecycle"];
   } | null;
+  inventory(): Array<{
+    identity: AppliedPluginIdentity;
+    lifecycle: ApprovedPluginInput["lifecycle"];
+    generation: number;
+  }>;
   reportRuntimeError(pluginId: string, error: unknown): void;
   unload(pluginId: string): ReturnType<PluginLifecycleHost["unload"]>;
   destroy(): Promise<void>;
@@ -642,6 +649,21 @@ export function createPluginApplicationController(options: {
             identity: { ...current.identity },
             lifecycle: current.lifecycle,
           };
+    },
+    inventory() {
+      return [...live.values()]
+        .map((entry) => ({
+          identity: { ...entry.identity },
+          lifecycle: entry.lifecycle,
+          generation: entry.generation,
+        }))
+        .sort((left, right) =>
+          left.identity.id < right.identity.id
+            ? -1
+            : left.identity.id > right.identity.id
+              ? 1
+              : 0
+        );
     },
     reportRuntimeError(pluginId, error) {
       const current = live.get(pluginId);

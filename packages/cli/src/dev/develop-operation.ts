@@ -30,6 +30,7 @@ export type DevelopInitialApplyResult =
   | {
       ok: true;
       pluginIdentity: DevelopPluginIdentity;
+      sdkRuntimeIdentity?: DevelopSdkRuntimeIdentity;
       target: TargetIdentity;
     }
   | {
@@ -89,7 +90,7 @@ export type DevelopRuntimeAdapters = {
   openWatcher(options: {
     preflight: DevelopPreflightSuccess;
     onChange: () => void;
-    onStop: () => void;
+    onStop: (error?: DevelopError) => void;
   }): Promise<DevelopOwnedResource>;
   openTargetMonitor(options: {
     preflight: DevelopPreflightSuccess;
@@ -309,7 +310,9 @@ export async function runForegroundDevelop(options: {
   let closing = false;
   const workAbort = new AbortController();
   const generationControllers = new Map<number, AbortController>();
+  const generationStages = new Map<number, "build" | "apply">();
   const generationTasks = new Set<Promise<void>>();
+  let generationSerial: Promise<void> = Promise.resolve();
   let newestGeneration = 1;
   let nextGeneration = 2;
   let queuedGeneration: number | null = null;
@@ -381,6 +384,10 @@ export async function runForegroundDevelop(options: {
   }): Promise<void> => {
     const controller = new AbortController();
     generationControllers.set(input.generation, controller);
+    generationStages.set(
+      input.generation,
+      input.pluginIdentity === undefined ? "build" : "apply",
+    );
     if (workAbort.signal.aborted) controller.abort();
     const onWorkAbort = (): void => controller.abort();
     workAbort.signal.addEventListener("abort", onWorkAbort, { once: true });
@@ -502,6 +509,7 @@ export async function runForegroundDevelop(options: {
         sdkRuntimeIdentity,
         target: preflight.target,
       });
+      generationStages.set(input.generation, "apply");
       const applied = await options.adapters.applyGeneration({
         generation: input.generation,
         preflight,
@@ -625,6 +633,13 @@ export async function runForegroundDevelop(options: {
         applied.pluginIdentity.version !== pluginIdentity.version ||
         applied.pluginIdentity.payloadSha256 !==
           pluginIdentity.payloadSha256 ||
+        (
+          applied.sdkRuntimeIdentity !== undefined &&
+          (
+            applied.sdkRuntimeIdentity.version !== sdkRuntimeIdentity.version ||
+            applied.sdkRuntimeIdentity.sha256 !== sdkRuntimeIdentity.sha256
+          )
+        ) ||
         applied.target.targetId !== preflight.target.targetId ||
         applied.target.executionContextUniqueId !==
           preflight.target.executionContextUniqueId
@@ -656,7 +671,8 @@ export async function runForegroundDevelop(options: {
       protocol.applySucceeded({
         generation: input.generation,
         pluginIdentity: applied.pluginIdentity,
-        sdkRuntimeIdentity,
+        sdkRuntimeIdentity:
+          applied.sdkRuntimeIdentity ?? sdkRuntimeIdentity,
         target: applied.target,
         appliedAt: options.adapters.nowIso(),
       });
@@ -676,6 +692,7 @@ export async function runForegroundDevelop(options: {
     } finally {
       workAbort.signal.removeEventListener("abort", onWorkAbort);
       generationControllers.delete(input.generation);
+      generationStages.delete(input.generation);
     }
   };
 
@@ -684,11 +701,11 @@ export async function runForegroundDevelop(options: {
     pluginIdentity?: DevelopPluginIdentity;
     initial: boolean;
   }): Promise<void> => {
-    newestGeneration = input.generation;
-    for (const [generation, controller] of generationControllers) {
-      if (generation < input.generation) controller.abort();
-    }
-    const task = runGeneration(input);
+    const task = generationSerial.then(() => {
+      newestGeneration = input.generation;
+      return runGeneration(input);
+    });
+    generationSerial = task.catch(() => undefined);
     generationTasks.add(task);
     void task.finally(() => generationTasks.delete(task));
     return task;
@@ -721,8 +738,12 @@ export async function runForegroundDevelop(options: {
       });
       return;
     }
-    for (const controller of generationControllers.values()) controller.abort();
     if (debounceTimer !== null) clearTimeout(debounceTimer);
+    for (const [generation, controller] of generationControllers) {
+      if (generationStages.get(generation) === "build") {
+        controller.abort();
+      }
+    }
     debounceTimer = setTimeout(() => {
       debounceTimer = null;
       if (closing || targetLost || workAbort.signal.aborted) return;
@@ -754,7 +775,11 @@ export async function runForegroundDevelop(options: {
     watcher = await options.adapters.openWatcher({
       preflight,
       onChange: queueGeneration,
-      onStop: () => stopResolve?.({ kind: "completed" }),
+      onStop: (error) => stopResolve?.(
+        error === undefined
+          ? { kind: "completed" }
+          : { kind: "runtime-failed", error },
+      ),
     });
     monitor = await options.adapters.openTargetMonitor({
       preflight,
@@ -915,12 +940,28 @@ export async function runForegroundDevelop(options: {
     })(),
   ]);
   if (residuals.length > 0) {
-    terminalReason = "runtime-failed";
-    terminalError = {
-      code: "develop.cleanup-failed",
-      message: "Foreground development cleanup left command-owned residue.",
-      details: { residuals },
-    };
+    if (terminalError === undefined) {
+      terminalReason = "runtime-failed";
+      terminalError = {
+        code: "develop.cleanup-failed",
+        message: "Foreground development cleanup left command-owned residue.",
+        details: { cleanupResidue: { residuals } },
+      };
+    } else {
+      terminalError = {
+        ...terminalError,
+        details: {
+          ...(typeof terminalError.details === "object" &&
+              terminalError.details !== null &&
+              !Array.isArray(terminalError.details)
+            ? terminalError.details as Record<string, unknown>
+            : terminalError.details === undefined
+              ? {}
+              : { primaryDetails: terminalError.details }),
+          cleanupResidue: { residuals },
+        },
+      };
+    }
   }
 
   return protocol.terminal({

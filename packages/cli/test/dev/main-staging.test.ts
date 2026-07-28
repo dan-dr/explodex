@@ -9,7 +9,10 @@ import {
   saveStagedMainArtifactReceipt,
   validateStagedMainArtifact,
 } from "../../src/dev/main-staging.ts";
-import type { GenerationRecord } from "../../src/plugin/generation.ts";
+import {
+  computeGenerationId,
+  type GenerationRecord,
+} from "../../src/plugin/generation.ts";
 
 const DEV_TARGET: TargetIdentity = {
   role: "development",
@@ -28,9 +31,10 @@ const DEV_TARGET: TargetIdentity = {
   frameId: "dev-frame",
 };
 
+const INPUT_DIGESTS = { "src/index.ts": "b".repeat(64) };
 const GENERATION: GenerationRecord = {
   schemaVersion: 1,
-  generationId: "generation-1",
+  generationId: computeGenerationId(INPUT_DIGESTS),
   pluginId: "safe-main",
   version: "opaque-1",
   mapMode: "required",
@@ -39,7 +43,7 @@ const GENERATION: GenerationRecord = {
     version: "1.2.0",
     runtimeSha256: "a".repeat(64),
   },
-  inputDigests: { "src/index.ts": "b".repeat(64) },
+  inputDigests: INPUT_DIGESTS,
   outputDigests: {
     "index.js": "c".repeat(64),
     "index.js.map": "d".repeat(64),
@@ -68,6 +72,7 @@ describe("M4-F08 staged main artifact receipts", () => {
       },
       devValidatedTarget: DEV_TARGET,
       devValidatedAt: "2026-07-28T01:01:00.000Z",
+      validationOperationId: "develop-validation-1",
       compatibilityKeyHash: "2".repeat(64),
     });
     expect(result).toMatchObject({
@@ -80,7 +85,7 @@ describe("M4-F08 staged main artifact receipts", () => {
         lifecycle: "dynamic",
         sdkRange: ARTIFACT.sdkRange,
         builtWithPublishableSdk: true,
-        generationId: "generation-1",
+        generationId: GENERATION.generationId,
         sdkRuntimeVersion: "1.2.0",
         sdkRuntimeSha256: "a".repeat(64),
         devValidatedTarget: DEV_TARGET,
@@ -107,6 +112,7 @@ describe("M4-F08 staged main artifact receipts", () => {
       },
       devValidatedTarget: DEV_TARGET,
       devValidatedAt: "2026-07-28T01:01:00.000Z",
+      validationOperationId: "develop-validation-2",
       compatibilityKeyHash: "2".repeat(64),
     })).toMatchObject({
       ok: false,
@@ -121,6 +127,7 @@ describe("M4-F08 staged main artifact receipts", () => {
       },
       devValidatedTarget: DEV_TARGET,
       devValidatedAt: "2026-07-28T01:01:00.000Z",
+      validationOperationId: "develop-validation-3",
       compatibilityKeyHash: "2".repeat(64),
     })).toMatchObject({
       ok: false,
@@ -135,6 +142,7 @@ describe("M4-F08 staged main artifact receipts", () => {
       },
       devValidatedTarget: DEV_TARGET,
       devValidatedAt: "2026-07-28T01:01:00.000Z",
+      validationOperationId: "develop-validation-4",
       compatibilityKeyHash: "2".repeat(64),
     })).toMatchObject({
       ok: false,
@@ -152,6 +160,7 @@ describe("M4-F08 staged main artifact receipts", () => {
       },
       devValidatedTarget: DEV_TARGET,
       devValidatedAt: "2026-07-28T01:01:00.000Z",
+      validationOperationId: "develop-validation-5",
       compatibilityKeyHash: "2".repeat(64),
     });
     if (!staged.ok) throw new Error(staged.message);
@@ -247,6 +256,7 @@ describe("M4-F08 staged main artifact receipts", () => {
       },
       devValidatedTarget: DEV_TARGET,
       devValidatedAt: "2026-07-28T01:01:00.000Z",
+      validationOperationId: "develop-validation-6",
       compatibilityKeyHash: "2".repeat(64),
     });
     if (!staged.ok) throw new Error(staged.message);

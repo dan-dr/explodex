@@ -6,6 +6,7 @@ import {
   createProductionDevelopAdapters,
 } from "../dev/develop-production.ts";
 import { runForegroundDevelop } from "../dev/develop-operation.ts";
+import { DevelopProtocolWriter } from "../dev/develop-protocol.ts";
 import { resolveExplodexHome } from "../home/paths.ts";
 import {
   exitCodeForError,
@@ -16,6 +17,55 @@ import {
 import type { CliIo } from "../output/write.ts";
 
 const OPERATION = "plugin.develop";
+
+function findAuthDetails(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "object" || value === null) return null;
+  if (!Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    if (
+      record.blocker === "authentication" &&
+      record.authMode === "interactive" &&
+      record.role === "development"
+    ) return record;
+    for (const nested of Object.values(record)) {
+      const found = findAuthDetails(nested);
+      if (found !== null) return found;
+    }
+    return null;
+  }
+  for (const nested of value) {
+    const found = findAuthDetails(nested);
+    if (found !== null) return found;
+  }
+  return null;
+}
+
+function humanAuthBlocker(error: {
+  code: string;
+  message: string;
+  details?: unknown;
+}): string | null {
+  if (error.code !== "auth.required") return null;
+  const auth = findAuthDetails(error.details);
+  if (auth === null) return null;
+  const target = typeof auth.target === "object" && auth.target !== null
+    ? auth.target as Record<string, unknown>
+    : {};
+  const resume = typeof auth.resume === "object" && auth.resume !== null
+    ? auth.resume as Record<string, unknown>
+    : {};
+  return [
+    error.message,
+    `isolated root: ${String(auth.rootPath ?? "unavailable")}`,
+    `isolated profile: ${String(auth.electronUserDataPath ?? "unavailable")}`,
+    `target: PID ${String(target.pid ?? "unavailable")} start=${String(target.processStartedAt ?? "unavailable")} port=${String(target.port ?? "unavailable")} target=${String(target.targetId ?? "unavailable")} context=${String(target.executionContextUniqueId ?? "unavailable")}`,
+    `required action: ${String(auth.requiredAction ?? "Sign in manually in the exact isolated development window.")}`,
+    `continue with a new bounded ${String(resume.firstOperation ?? "dev.status")} operation, then ${String(resume.continuationOperation ?? "plugin.develop")}.`,
+    "Do not enter credentials in Explodex or copy authoring-main state.",
+    `error.code: ${error.code}`,
+    "",
+  ].join("\n");
+}
 
 type ParsedDevelopArgs =
   | { ok: true; workspace: string | null; sdkSource: string | null }
@@ -141,10 +191,6 @@ export async function runPluginDevelop(options: {
     });
   }
   const operationId = `develop-${randomUUID()}`;
-  const foregroundAbort = new AbortController();
-  const onForegroundSignal = (): void => foregroundAbort.abort();
-  process.once("SIGINT", onForegroundSignal);
-  process.once("SIGTERM", onForegroundSignal);
   let result: Awaited<ReturnType<typeof runForegroundDevelop>>;
   try {
     const adapters = await createProductionDevelopAdapters({
@@ -155,19 +201,41 @@ export async function runPluginDevelop(options: {
       explicitRoot:
         options.globals.devRoot ?? options.env.EXPLODEX_DEV_ROOT ?? null,
       timeoutMs: options.globals.timeoutMs,
-      signal: foregroundAbort.signal,
+      signal: options.signal,
       writeLine(line) {
         if (options.globals.json) options.io.stdout.write(`${line}\n`);
       },
     });
     result = await runForegroundDevelop({
       operationId,
-      signal: foregroundAbort.signal,
+      signal: options.signal,
       adapters,
     });
-  } finally {
-    process.removeListener("SIGINT", onForegroundSignal);
-    process.removeListener("SIGTERM", onForegroundSignal);
+  } catch (error: unknown) {
+    const protocol = new DevelopProtocolWriter({
+      operationId,
+      writeLine(line) {
+        if (options.globals.json) options.io.stdout.write(`${line}\n`);
+      },
+    });
+    const interrupted = options.signal?.aborted === true;
+    result = protocol.terminal({
+      ok: false,
+      reason: interrupted ? "interrupted" : "preflight-failed",
+      error: interrupted
+        ? {
+            code: "operation.interrupted",
+            message: "Foreground development was interrupted.",
+          }
+        : {
+            code: "develop.adapter-initialization-failed",
+            message:
+              "Foreground development adapters could not be initialized.",
+            details: {
+              cause: error instanceof Error ? error.name : "unknown",
+            },
+          },
+    });
   }
   const exitCode = result.ok
     ? 0
@@ -206,10 +274,12 @@ export async function runPluginDevelop(options: {
     }),
     exitCode,
     humanStdout: "",
-    humanStderr: [
-      result.error?.message ?? "Foreground development failed.",
-      `error.code: ${result.error?.code ?? "develop.runtime-failed"}`,
-      "",
-    ].join("\n"),
+    humanStderr: result.error === undefined
+      ? "Foreground development failed.\nerror.code: develop.runtime-failed\n"
+      : humanAuthBlocker(result.error) ?? [
+          result.error.message,
+          `error.code: ${result.error.code}`,
+          "",
+        ].join("\n"),
   };
 }

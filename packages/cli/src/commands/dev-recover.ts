@@ -115,6 +115,38 @@ export async function runDevRecover(options: {
         expectedTargetId: state.targetId,
         expectedContextUniqueId: state.executionContextUniqueId,
         requireCompleteEndpointOwnershipForSignal: true,
+        beforeExactSignal: async () => {
+          const finalSnapshot = await inspectDevInstanceStatus({
+            osHome,
+            explodexHome,
+            explicitRoot:
+              options.globals.devRoot ?? options.env.EXPLODEX_DEV_ROOT ?? null,
+            operation: "recover",
+            signal: undefined,
+          });
+          const finalState = finalSnapshot.state;
+          if (
+            finalSnapshot.assessment.recoveryEligibility !==
+              "fully-owned-live" ||
+            finalState === null ||
+            finalState.rootPath !== state.rootPath ||
+            finalState.pid !== state.pid ||
+            finalState.processStartedAt !== state.processStartedAt ||
+            finalState.targetId !== state.targetId ||
+            finalState.executionContextUniqueId !==
+              state.executionContextUniqueId ||
+            finalState.appBuild !== state.appBuild ||
+            JSON.stringify(finalState.frozenHost) !==
+              JSON.stringify(state.frozenHost)
+          ) {
+            return {
+              ok: false as const,
+              reason:
+                "Complete development ownership drifted before recovery SIGTERM.",
+            };
+          }
+          return { ok: true as const };
+        },
         privateRoots: [
           state.electronUserDataPath,
           state.codexHomePath,
@@ -137,11 +169,23 @@ export async function runDevRecover(options: {
       return {
         ok: false,
         confirmedExit: false,
-        code: stopped.stopped ? "dev.recovery-failed" : "operation.timeout",
+        code: stopped.code ??
+          (stopped.uncertain
+            ? "dev.ownership-uncertain"
+            : stopped.stopped
+              ? "dev.recovery-failed"
+              : "operation.timeout"),
         message:
           stopped.reason ??
           "Exact development process did not terminate and release 9444.",
         method: stopped.method === "none" ? null : stopped.method,
+        elapsedMs: stopped.elapsedMs,
+        boundMs: stopped.boundMs,
+        details: {
+          residualDisposition: stopped.residualDisposition ?? "unknown",
+          portReleased: stopped.portReleased,
+          uncertain: stopped.uncertain,
+        },
       };
     },
   });

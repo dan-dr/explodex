@@ -398,6 +398,8 @@ export async function buildLocalSdkSource(options: {
     let stderr = "";
     let timedOut = false;
     let settled = false;
+    let escalationTimer: ReturnType<typeof setTimeout> | null = null;
+    let residueTimer: ReturnType<typeof setTimeout> | null = null;
     const child = spawn(scriptPath, [], {
       cwd: options.source.rootPath,
       env: process.env,
@@ -409,6 +411,14 @@ export async function buildLocalSdkSource(options: {
       } catch {
         // Child close/error owns settlement.
       }
+      escalationTimer ??= setTimeout(() => {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          // The bounded residue timer below owns final settlement.
+        }
+        residueTimer ??= setTimeout(() => finish(1), 1_000);
+      }, 1_000);
     };
     const timer = setTimeout(() => {
       timedOut = true;
@@ -429,6 +439,8 @@ export async function buildLocalSdkSource(options: {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (escalationTimer !== null) clearTimeout(escalationTimer);
+      if (residueTimer !== null) clearTimeout(residueTimer);
       options.signal?.removeEventListener("abort", onAbort);
       resolvePromise({ exitCode, stdout, stderr, timedOut });
     };
