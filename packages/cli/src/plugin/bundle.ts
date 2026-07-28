@@ -217,13 +217,16 @@ export async function bundlePluginIife(options: {
   /** When true, write index.js + index.js.map into stagingDir. */
   writeOutputs?: boolean;
 }): Promise<BundleResult> {
-  const workspacePath = resolve(options.workspacePath);
-  const entryAbsolute = resolve(workspacePath, options.entryRelative);
-  const stagingDir = resolve(options.stagingDir);
+  const requestedWorkspacePath = resolve(options.workspacePath);
+  const requestedEntryAbsolute = resolve(
+    requestedWorkspacePath,
+    options.entryRelative,
+  );
+  const requestedStagingDir = resolve(options.stagingDir);
   const diagnostics: BundleImportDiagnostic[] = [];
   const writeOutputs = options.writeOutputs !== false;
 
-  if (!(await pathExists(entryAbsolute))) {
+  if (!(await pathExists(requestedEntryAbsolute))) {
     return {
       ok: false,
       code: "plugin.source.invalid",
@@ -237,8 +240,27 @@ export async function bundlePluginIife(options: {
   // Fixed virtual path so installable JS bytes do not embed absolute workspace/staging paths.
   const shimVirtualPath = "explodex-sdk-shim.js";
   const shimSource = buildSdkShim(options.pluginId);
-  await mkdir(stagingDir, { recursive: true });
-  const workspaceCanonical = await realpath(workspacePath);
+  await mkdir(requestedStagingDir, { recursive: true });
+
+  let workspacePath: string;
+  let entryAbsolute: string;
+  let stagingDir: string;
+  try {
+    [workspacePath, entryAbsolute, stagingDir] = await Promise.all([
+      realpath(requestedWorkspacePath),
+      realpath(requestedEntryAbsolute),
+      realpath(requestedStagingDir),
+    ]);
+  } catch (error: unknown) {
+    return {
+      ok: false,
+      code: "plugin.source.invalid",
+      message: error instanceof Error
+        ? `Plugin build identity resolution failed: ${error.message}`
+        : "Plugin build identity resolution failed",
+      diagnostics,
+    };
+  }
 
   const importerChain = new Map<string, string[]>();
 
@@ -438,7 +460,7 @@ export async function bundlePluginIife(options: {
         portableTypeScriptSourcePath({
           source,
           index,
-          workspacePath: workspaceCanonical,
+          workspacePath,
           stagingDir,
         })
       ));
@@ -483,8 +505,21 @@ export async function bundlePluginIife(options: {
       };
     }
 
-    // Final guard: installable JS must not embed absolute workspace paths.
-    if (jsText.includes(workspacePath) || jsText.includes(stagingDir)) {
+    // Final guard: installable outputs must not embed either the requested
+    // lexical identity or the canonical identity used for bundling.
+    const forbiddenAbsolutePaths = new Set([
+      requestedWorkspacePath,
+      workspacePath,
+      requestedEntryAbsolute,
+      entryAbsolute,
+      requestedStagingDir,
+      stagingDir,
+    ]);
+    if (
+      [...forbiddenAbsolutePaths].some((absolutePath) =>
+        jsText.includes(absolutePath) || mapText.includes(absolutePath)
+      )
+    ) {
       return {
         ok: false,
         code: "plugin.source.invalid",

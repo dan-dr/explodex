@@ -5,6 +5,7 @@ import {
   mkdir,
   readFile,
   readdir,
+  realpath,
   rm,
   symlink,
   writeFile,
@@ -400,9 +401,145 @@ export default definePlugin({ setup() { /* changed */ } });
       await cleanup();
     }
   }, 240_000);
+
+  test("package rejects a changed bundled dependency with the stable payload-mismatch failure", async () => {
+    const { workspace, cleanup } = await createValidWorkspace({
+      name: "explodex-plugin-generation-dependency",
+    });
+    try {
+      const dependencyRoot = join(workspace, "node_modules", "fixture-dependency");
+      await mkdir(dependencyRoot, { recursive: true });
+      await writeFile(
+        join(dependencyRoot, "package.json"),
+        `${JSON.stringify({
+          name: "fixture-dependency",
+          version: "1.0.0",
+          type: "module",
+          exports: {
+            ".": {
+              types: "./index.d.ts",
+              default: "./index.js",
+            },
+          },
+        }, null, 2)}\n`,
+      );
+      await writeFile(
+        join(dependencyRoot, "index.d.ts"),
+        "export declare const dependencyValue: string;\n",
+      );
+      await writeFile(
+        join(dependencyRoot, "index.js"),
+        'export const dependencyValue = "before";\n',
+      );
+      await writeWorkspaceFile(
+        workspace,
+        "src/index.ts",
+        `import { definePlugin } from "@explodex/sdk";
+import { dependencyValue } from "fixture-dependency";
+export default definePlugin({
+  setup() {
+    globalThis.document?.body?.setAttribute("data-fixture", dependencyValue);
+  },
+});
+`,
+      );
+
+      const built = await buildPluginWorkspace({
+        workspacePath: workspace,
+        timeoutMs: 60_000,
+      });
+      expect(built.ok).toBe(true);
+
+      await writeFile(
+        join(dependencyRoot, "index.js"),
+        'export const dependencyValue = "after";\n',
+      );
+      const outputDir = join(workspace, "..", "out-dependency-mismatch");
+      const packaged = await packagePluginWorkspace({
+        workspacePath: workspace,
+        outputDir,
+        timeoutMs: 60_000,
+      });
+      expect(packaged).toMatchObject({
+        ok: false,
+        code: "develop.publishable-rebuild-required",
+        details: {
+          proofCode: "payload-mismatch",
+        },
+      });
+      expect(await access(outputDir).then(() => true).catch(() => false)).toBe(
+        false,
+      );
+    } finally {
+      await cleanup();
+    }
+  }, 120_000);
 });
 
 describe("VAL-SDK-026 pinned inputs reproduce payload bytes and identity", () => {
+  test("lexical and canonical aliases of one workspace produce byte-identical installable files", async () => {
+    const { workspace, cleanup } = await createValidWorkspace({
+      name: "explodex-plugin-repro-alias",
+    });
+    try {
+      const canonicalWorkspace = await realpath(workspace);
+      expect(canonicalWorkspace).not.toBe(workspace);
+
+      const lexicalBuild = await buildPluginWorkspace({
+        workspacePath: workspace,
+        timeoutMs: 60_000,
+      });
+      expect(lexicalBuild.ok).toBe(true);
+      if (!lexicalBuild.ok) throw new Error(lexicalBuild.message);
+
+      const installable = [
+        "index.js",
+        "index.js.map",
+        "plugin.json",
+        "checksums.json",
+      ];
+      const lexicalHashes = new Map<string, string>();
+      for (const relative of installable) {
+        lexicalHashes.set(
+          relative,
+          sha256(await readFile(join(workspace, "dist", relative))),
+        );
+      }
+
+      const canonicalBuild = await buildPluginWorkspace({
+        workspacePath: canonicalWorkspace,
+        timeoutMs: 60_000,
+      });
+      expect(canonicalBuild.ok).toBe(true);
+      if (!canonicalBuild.ok) throw new Error(canonicalBuild.message);
+
+      expect(canonicalBuild.payloadSha256).toBe(lexicalBuild.payloadSha256);
+      for (const relative of installable) {
+        const lexicalHash = lexicalHashes.get(relative);
+        if (lexicalHash === undefined) {
+          throw new Error(`missing lexical hash for ${relative}`);
+        }
+        expect(sha256(await readFile(join(workspace, "dist", relative)))).toBe(
+          lexicalHash,
+        );
+      }
+      const canonicalJs = await readFile(
+        join(workspace, "dist", "index.js"),
+        "utf8",
+      );
+      const canonicalMap = await readFile(
+        join(workspace, "dist", "index.js.map"),
+        "utf8",
+      );
+      for (const absolutePath of [workspace, canonicalWorkspace]) {
+        expect(canonicalJs).not.toContain(absolutePath);
+        expect(canonicalMap).not.toContain(absolutePath);
+      }
+    } finally {
+      await cleanup();
+    }
+  }, 120_000);
+
   test("two isolated builds with identical inputs produce byte-identical installable files", async () => {
     // Same package/folder identity in different absolute roots (plugin ID is input).
     const packageName = "explodex-plugin-repro-identical";
