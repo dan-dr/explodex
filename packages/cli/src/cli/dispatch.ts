@@ -6,6 +6,7 @@ import type { RenderedCliResult } from "../output/envelope.ts";
 import { runHostReport } from "../commands/host-report.ts";
 import { runCompatibilityStatus } from "../commands/compatibility-status.ts";
 import { runMainStatus } from "../commands/main-status.ts";
+import { runMainApply } from "../commands/main-apply.ts";
 import { runPluginCreate } from "../commands/plugin-create.ts";
 import { runPluginValidate } from "../commands/plugin-validate.ts";
 import { runPluginBuild } from "../commands/plugin-build.ts";
@@ -44,6 +45,7 @@ const ACCEPTS_POSITIONALS = new Set([
   "plugin.remove",
   "plugin.develop",
   "dev.inject",
+  "main.apply",
 ]);
 
 const IMPLEMENTED_RESERVED_OPERATIONS = new Set([
@@ -59,6 +61,7 @@ const IMPLEMENTED_RESERVED_OPERATIONS = new Set([
   "dev.focus",
   "plugin.update.apply",
   "plugin.develop",
+  "main.apply",
 ]);
 
 export async function dispatch(options: {
@@ -141,6 +144,15 @@ export async function dispatch(options: {
       return runCompatibilityStatus({ globals: parsed.globals, env });
     case "main.status":
       return runMainStatus();
+    case "main.apply":
+      return runMainApply({
+        globals: parsed.globals,
+        env,
+        io,
+        rest,
+        endOfOptions,
+        signal,
+      });
     case "plugin.create":
       return runPluginCreate({
         globals: parsed.globals,

@@ -187,6 +187,7 @@ function run(options: {
   adapter: ApplicationCdpAdapter;
   expectedTarget?: TargetIdentity;
   snapshots?: PluginPayloadSnapshot[];
+  authorizeBeforeEvaluation?: (target: TargetIdentity) => void;
   revalidate?: () => Promise<{
     host: HostIdentity;
     process: VerifiedProcess;
@@ -210,6 +211,7 @@ function run(options: {
     endpoint: { host: "127.0.0.1", port: 9444 },
     cdp: options.adapter,
     expectedTarget: options.expectedTarget ?? TARGET_IDENTITY,
+    authorizeBeforeEvaluation: options.authorizeBeforeEvaluation,
     revalidate: options.revalidate ?? (async () => ({
       host: HOST,
       process: PROCESS,
@@ -223,6 +225,101 @@ function run(options: {
 }
 
 describe("M3-F05 exact snapshot target application", () => {
+  test("main-safe expression refuses a missing or changed existing SDK runtime", async () => {
+    const globalRecord = globalThis as Record<string, unknown>;
+    globalRecord.__mainSdkReplacementEvaluated = false;
+    globalRecord.Explodex = {
+      __explodexSdkRuntimeRequestMark: `${"a".repeat(64)}:prior-operation`,
+    };
+    const expression = buildApprovedApplicationExpression({
+      sdkRuntimeSource: `
+globalThis.__mainSdkReplacementEvaluated = true;
+globalThis.Explodex = globalThis.Explodex;`,
+      operationId: "main-safe-runtime",
+      nonce: "main-safe-nonce",
+      activationSecret: "f".repeat(64),
+      snapshots: [snapshot()],
+      requireExistingSdkRuntimeSha256: "b".repeat(64),
+    });
+
+    await expect(Function(`return ${expression}`)()).rejects.toThrow(
+      "exact unchanged SDK runtime",
+    );
+    expect(globalRecord.__mainSdkReplacementEvaluated).toBe(false);
+
+    globalRecord.Explodex = {
+      __explodexSdkRuntimeRequestMark: `${"b".repeat(64)}:prior-operation`,
+      async __explodexReconcileEnabledPayload(input: {
+        id: string;
+        version: string;
+        payloadSha256: string;
+      }) {
+        return {
+          schemaVersion: 1,
+          id: input.id,
+          version: input.version,
+          payloadSha256: input.payloadSha256,
+          status: "applied",
+          boundary: "none",
+          setupCount: 1,
+          previousAppliedIdentity: null,
+          appliedIdentity: {
+            id: input.id,
+            version: input.version,
+            payloadSha256: input.payloadSha256,
+          },
+          stage: "setup",
+          possiblePartialEffects: false,
+        };
+      },
+      __explodexPluginApplicationStatus() {
+        return null;
+      },
+    };
+    const protectedExpression = buildApprovedApplicationExpression({
+      sdkRuntimeSource: `
+globalThis.__mainSdkReplacementEvaluated = true;
+globalThis.Explodex = {};`,
+      operationId: "main-safe-runtime",
+      nonce: "main-safe-nonce",
+      activationSecret: "",
+      mode: "enabled",
+      snapshots: [snapshot()],
+      requireExistingSdkRuntimeSha256: "b".repeat(64),
+    });
+    await Function(`return ${protectedExpression}`)();
+    expect(globalRecord.__mainSdkReplacementEvaluated).toBe(false);
+    expect(globalRecord.Explodex).toMatchObject({
+      __explodexSdkRuntimeRequestMark:
+        `${"b".repeat(64)}:prior-operation`,
+    });
+    delete globalRecord.Explodex;
+    delete globalRecord.__mainSdkReplacementEvaluated;
+  });
+
+  test("point-of-use authorization blocks before source delivery", async () => {
+    const adapter = new ApplicationCdpAdapter({});
+    const { runtime, operation } = run({
+      adapter,
+      authorizeBeforeEvaluation() {
+        throw Object.assign(new Error("Main authorization expired."), {
+          code: "main.authorization-expired",
+        });
+      },
+    });
+    const result = await runWithClockPump(runtime, operation);
+    expect(result).toMatchObject({
+      ok: false,
+      code: "main.authorization-expired",
+      sourceDelivered: false,
+    });
+    expect(adapter.expressions).toHaveLength(1);
+    expect(adapter.expressions[0]).not.toContain(
+      "__APPROVAL_SOURCE_SENTINEL__",
+    );
+    expect(adapter.closed).toBe(true);
+  });
+
   test("awaits prior runtime teardown before refreshed setup", async () => {
     const globalRecord = globalThis as Record<string, unknown>;
     const order: string[] = [];

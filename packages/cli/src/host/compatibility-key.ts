@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   COMPATIBILITY_HOST_HASH_RELATIVE_PATHS,
   COMPATIBILITY_SCHEMA_VERSION,
@@ -110,6 +111,25 @@ export function compatibilityKeysEqual(a: CompatibilityKey, b: CompatibilityKey)
     if (aHashes[key] !== bHashes[key]) return false;
   }
   return true;
+}
+
+/** Stable exact-key digest used by one-operation authoring-main authorization. */
+export function compatibilityKeyHash(key: CompatibilityKey): string {
+  const normalized = {
+    schemaVersion: key.schemaVersion,
+    appVersion: key.appVersion,
+    appBuild: key.appBuild,
+    hostHashes: Object.fromEntries(
+      Object.keys(key.hostHashes)
+        .sort()
+        .map((path) => [path, key.hostHashes[path]]),
+    ),
+    signingTeam: key.signingTeam,
+    sdkRuntimeSha256: key.sdkRuntimeSha256,
+    probeSchemaVersion: key.probeSchemaVersion,
+    probeToolVersion: key.probeToolVersion,
+  };
+  return createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
 }
 
 /** Parse unknown JSON into a CompatibilityKey or return null. */

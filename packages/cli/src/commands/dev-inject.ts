@@ -98,6 +98,9 @@ export async function runDevInject(options: {
       `ownership: proven ${result.ownership.pid}@${result.ownership.processStartedAt}`,
       `compatibility: proven`,
       `target: ${result.target.targetId} context=${result.target.executionContextId}`,
+      result.mainStaging.status === "staged"
+        ? `main staging: ready ${result.mainStaging.receiptPath}`
+        : `main staging: blocked ${result.mainStaging.code}`,
       "authority: not installed, not enabled, not pending",
       "development process: alive",
       "",

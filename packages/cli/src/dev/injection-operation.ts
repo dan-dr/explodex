@@ -31,6 +31,11 @@ import { loadPluginsState } from "../plugin/install-state.ts";
 import { withPluginStateLock } from "../plugin/state-lock.ts";
 import { resolveSdkRuntimeIdentityForCli } from "../host/sdk-runtime-identity.ts";
 import {
+  evaluateCompatibility,
+  loadCompatibilityRecord,
+} from "../host/compatibility-state.ts";
+import { compatibilityKeyHash } from "../host/compatibility-key.ts";
+import {
   createDefaultRuntimeAdapters,
   type RuntimeAdapters,
 } from "../runtime/adapters.ts";
@@ -52,6 +57,12 @@ import {
   loadDevInstanceStateResult,
   saveDevInstanceState,
 } from "./state.ts";
+import { readGenerationRecord } from "../plugin/generation.ts";
+import {
+  createStagedMainArtifactReceipt,
+  saveStagedMainArtifactReceipt,
+  type StagedMainArtifactReceipt,
+} from "./main-staging.ts";
 
 export type DevInjectSuccess = {
   ok: true;
@@ -84,6 +95,17 @@ export type DevInjectSuccess = {
     pendingReview: false;
   };
   devSurvived: true;
+  mainStaging:
+    | {
+        status: "staged";
+        receiptPath: string;
+        receipt: StagedMainArtifactReceipt;
+      }
+    | {
+        status: "ineligible";
+        code: string;
+        message: string;
+      };
   residualInventory: {
     callbacks: number;
     sessions: number;
@@ -852,6 +874,102 @@ export async function runDevInjectOperation(options: {
       details: application.details,
     });
   }
+  let mainStaging: DevInjectSuccess["mainStaging"];
+  const stagedApplication = application.applications.find((candidate) =>
+    candidate.id === artifact.validation.id &&
+    candidate.version === artifact.validation.version &&
+    candidate.payloadSha256 === artifact.validation.payloadSha256
+  );
+  const exactDevValidation =
+    stagedApplication !== undefined &&
+    (stagedApplication.status === "applied" ||
+      stagedApplication.status === "unchanged") &&
+    stagedApplication.error === undefined &&
+    stagedApplication.appliedIdentity?.id === artifact.validation.id &&
+    stagedApplication.appliedIdentity.version === artifact.validation.version &&
+    stagedApplication.appliedIdentity.payloadSha256 ===
+      artifact.validation.payloadSha256;
+  if (!exactDevValidation) {
+    mainStaging = {
+      status: "ineligible",
+      code: "develop.dev-revalidation-required",
+      message:
+        "The exact artifact was not confirmed as fully applied on owned development.",
+    };
+  } else if (options.sdkRuntimeOverride !== undefined) {
+    mainStaging = {
+      status: "ineligible",
+      code: "develop.local-sdk-not-publishable",
+      message:
+        "Local-SDK-dependent development output cannot be staged for the authoring main.",
+    };
+  } else {
+    const generation = await readGenerationRecord(resolve(options.artifactPath));
+    const persistedCompatibility = await loadCompatibilityRecord({
+      adapters: hostAdapters,
+      explodexHome,
+    });
+    const compatibility = evaluateCompatibility({
+      host: prepared.host,
+      sdkRuntime,
+      persisted: persistedCompatibility,
+      runningProcess: {
+        appVersion: application.target.appVersion,
+        appBuild: application.target.appBuild,
+        executablePath: application.target.executablePath,
+      },
+    });
+    const staged = compatibility.allowsCompatibilityDependentWork &&
+        compatibility.currentKey !== null
+      ? createStagedMainArtifactReceipt({
+          artifact: {
+            id: artifact.validation.id,
+            version: artifact.validation.version,
+            payloadSha256: artifact.validation.payloadSha256,
+            lifecycle: artifact.validation.lifecycle,
+            sdkRange: artifact.validation.sdkRange,
+          },
+          generation,
+          sdkRuntimeIdentity: sdkRuntime,
+          devValidatedTarget: application.target,
+          devValidatedAt: new Date().toISOString(),
+          compatibilityKeyHash: compatibilityKeyHash(
+            compatibility.currentKey,
+          ),
+        })
+      : {
+          ok: false as const,
+          code: "compatibility.drifted" as const,
+          message:
+            "The exact compatibility proof changed before the main staging receipt could be recorded.",
+        };
+    if (staged.ok) {
+      try {
+        mainStaging = {
+          status: "staged",
+          receiptPath: await saveStagedMainArtifactReceipt({
+            explodexHome,
+            receipt: staged.receipt,
+          }),
+          receipt: staged.receipt,
+        };
+      } catch (error: unknown) {
+        mainStaging = {
+          status: "ineligible",
+          code: "main.staging-write-failed",
+          message: error instanceof Error
+            ? error.message
+            : "The exact main staging receipt could not be recorded.",
+        };
+      }
+    } else {
+      mainStaging = {
+        status: "ineligible",
+        code: staged.code,
+        message: staged.message,
+      };
+    }
+  }
   return {
     ok: true,
     operationId,
@@ -881,6 +999,7 @@ export async function runDevInjectOperation(options: {
       pendingReview: false,
     },
     devSurvived: true,
+    mainStaging,
     residualInventory: application.residualInventory,
   };
 }

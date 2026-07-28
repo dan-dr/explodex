@@ -70,8 +70,16 @@ export function exitCodeForError(code: string): CliExitCode {
     case "compatibility.probe-required":
     case "compatibility.drifted":
     case "main.authorization-required":
+    case "main.authorization-expired":
+    case "main.authorization-mismatch":
+    case "main.authorization-replayed":
     case "main.hot-path-unavailable":
     case "main.lifecycle-protected":
+    case "main.staged-artifact-changed":
+    case "main.sdk-runtime-changed":
+    case "develop.local-sdk-not-publishable":
+    case "develop.publishable-rebuild-required":
+    case "develop.dev-revalidation-required":
     case "cdp.target-lost":
     case "auth.required":
     case "plugin.review.required":

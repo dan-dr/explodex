@@ -301,6 +301,7 @@ export function buildApprovedApplicationExpression(options: {
   mode?: "approved" | "enabled";
   lifecycleBoundary?: "current" | "renderer" | "app";
   observedPluginIds?: readonly string[];
+  requireExistingSdkRuntimeSha256?: string;
 }): string {
   const mode = options.mode ?? "approved";
   const lifecycleBoundary = options.lifecycleBoundary ?? "current";
@@ -413,9 +414,9 @@ ${operation.source}
   const sdkRequestIdentity = `${
     createHash("sha256").update(options.sdkRuntimeSource).digest("hex")
   }:${options.operationId}`;
-  return `(
-async () => {
-const previousRuntime = globalThis.Explodex;
+  const runtimeInitialization = options.requireExistingSdkRuntimeSha256 ===
+      undefined
+    ? `
 if (
   previousRuntime &&
   previousRuntime["__explodexSdkRuntimeRequestMark"] !== ${
@@ -437,7 +438,22 @@ globalThis.__explodexSdkRuntimeRequestIdentity = ${
     JSON.stringify(sdkRequestIdentity)
   };
 ${options.sdkRuntimeSource}
-  const runtime = globalThis.Explodex;
+const runtime = globalThis.Explodex;`
+    : `
+if (
+  !previousRuntime ||
+  typeof previousRuntime["__explodexSdkRuntimeRequestMark"] !== "string" ||
+  !previousRuntime["__explodexSdkRuntimeRequestMark"].startsWith(${
+    JSON.stringify(`${options.requireExistingSdkRuntimeSha256}:`)
+  })
+) {
+  throw new Error("Protected main requires the exact unchanged SDK runtime");
+}
+const runtime = previousRuntime;`;
+  return `(
+async () => {
+const previousRuntime = globalThis.Explodex;
+${runtimeInitialization}
   const apply = runtime && runtime[${JSON.stringify(applyName)}];${finalizeSource}
   const status = runtime && runtime["__explodexPluginApplicationStatus"];
   if (typeof status !== "function") {
@@ -473,8 +489,10 @@ export async function runApprovedPluginApplicationOperation(options: {
   cdp: CdpAdapter;
   expectedTarget?: TargetIdentity;
   expectedTargetId?: string;
+  authorizeBeforeEvaluation?: (target: TargetIdentity) => void;
   revalidate(): Promise<PointOfUseIdentity>;
   sdkRuntimeSource: string;
+  requireExistingSdkRuntimeSha256?: string;
   snapshots: readonly PluginPayloadSnapshot[];
   observedBoundaries?: readonly {
     identity: PluginPayloadIdentity;
@@ -536,6 +554,9 @@ export async function runApprovedPluginApplicationOperation(options: {
     }));
   let deliveryStarted = false;
   let evaluatedTarget: TargetIdentity | null = null;
+  let pointOfUseAuthorizationFailure:
+    | { code: string; message: string }
+    | null = null;
   const operation = await runExactTargetOperation({
     runtime: options.runtime,
     operationId: options.operationId,
@@ -577,6 +598,8 @@ export async function runApprovedPluginApplicationOperation(options: {
             observedPluginIds: boundarySnapshots.map((boundary) =>
               boundary.identity.id
             ),
+            requireExistingSdkRuntimeSha256:
+              options.requireExistingSdkRuntimeSha256,
           });
         }
         if (options.mode === "enabled") {
@@ -614,6 +637,19 @@ export async function runApprovedPluginApplicationOperation(options: {
       },
       onBeforeEvaluation(input) {
         evaluatedTarget = input.target;
+        try {
+          options.authorizeBeforeEvaluation?.(input.target);
+        } catch (error: unknown) {
+          const record = isRecord(error) ? error : null;
+          const code = record !== null && typeof record.code === "string"
+            ? record.code
+            : "operation_failed";
+          const message = error instanceof Error
+            ? error.message
+            : "Point-of-use authorization failed.";
+          pointOfUseAuthorizationFailure = { code, message };
+          throw error;
+        }
         if (runnableSnapshots.length > 0) deliveryStarted = true;
       },
       ...(options.mode === "enabled"
@@ -639,18 +675,22 @@ export async function runApprovedPluginApplicationOperation(options: {
     },
   });
   if (!operation.ok) {
+    const failure = pointOfUseAuthorizationFailure ?? {
+      code: operation.error.code,
+      message: operation.error.message,
+    };
     return {
       ok: false,
       operationId: operation.operationId,
-      code: operation.error.code,
-      message: operation.error.message,
+      code: failure.code,
+      message: failure.message,
       details: {
         stage: operation.error.stage,
         residualInventory: operation.residualInventory,
       },
       applications: notAttempted(
-        operation.error.code,
-        operation.error.message,
+        failure.code,
+        failure.message,
         deliveryStarted,
       ),
       sourceDelivered: deliveryStarted,
@@ -739,8 +779,10 @@ export function runEnabledPluginApplicationOperation(options: {
   cdp: CdpAdapter;
   expectedTarget?: TargetIdentity;
   expectedTargetId?: string;
+  authorizeBeforeEvaluation?: (target: TargetIdentity) => void;
   revalidate(): Promise<PointOfUseIdentity>;
   sdkRuntimeSource: string;
+  requireExistingSdkRuntimeSha256?: string;
   snapshots: readonly PluginPayloadSnapshot[];
   observedBoundaries?: readonly {
     identity: PluginPayloadIdentity;
