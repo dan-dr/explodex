@@ -1,0 +1,60 @@
+{
+  "observedAt": "2026-07-28T05:28:21.602Z",
+  "target": {
+    "id": "320892B4AB2506B37CF08E743DB39053",
+    "url": "app://-/index.html",
+    "type": "page"
+  },
+  "context": {
+    "id": 1,
+    "uniqueId": "-8694852523717988740.-7538271351644666559"
+  },
+  "totalFiles": 200,
+  "totalBytes": 19517693,
+  "limitReached": true,
+  "observedRequiredMethods": [
+    "start-turn-for-host",
+    "update-thread-settings-for-next-turn"
+  ],
+  "relevantFiles": [
+    {
+      "url": "app://-/assets/app-initial-BHB6SClA.js",
+      "bytes": 14048388,
+      "sha256": "09909b1444003ea23a48d5fa973bedf48b638c6d6ef3059fb48a9f262e73513e",
+      "requiredMethods": {
+        "start-turn-for-host": {
+          "present": true,
+          "occurrences": 8
+        },
+        "update-thread-settings-for-next-turn": {
+          "present": true,
+          "occurrences": 9
+        }
+      },
+      "dispatcherMarkers": {
+        "sendMessageFromViewOccurrences": 6,
+        "getSettingOccurrences": 3
+      }
+    },
+    {
+      "url": "app://-/assets/register-app-actions-RfbuVLwf.js",
+      "bytes": 17137,
+      "sha256": "909d6b4d0b928d5d10184d792bb3726fe658a8c1ddf8a5cdc826954b2cc338a0",
+      "requiredMethods": {
+        "start-turn-for-host": {
+          "present": false,
+          "occurrences": 0
+        },
+        "update-thread-settings-for-next-turn": {
+          "present": false,
+          "occurrences": 0
+        }
+      },
+      "dispatcherMarkers": {
+        "sendMessageFromViewOccurrences": 0,
+        "getSettingOccurrences": 1
+      }
+    }
+  ],
+  "fetchErrors": []
+}

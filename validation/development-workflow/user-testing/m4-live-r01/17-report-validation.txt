@@ -1,0 +1,19 @@
+{
+  "ok": true,
+  "expectedCount": 35,
+  "actualCount": 35,
+  "statuses": {
+    "blocked": 31,
+    "pending": 3,
+    "pass": 1
+  },
+  "missing": [],
+  "extra": [],
+  "duplicates": [],
+  "missingEvidence": [],
+  "invalidStatuses": [],
+  "assertionOwnershipChanged": false,
+  "selectedMutationTarget": null,
+  "outcome": "blocked-before-mutation"
+}
+Secret pattern scan: no matches.

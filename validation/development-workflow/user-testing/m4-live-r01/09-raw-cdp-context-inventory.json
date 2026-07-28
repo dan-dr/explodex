@@ -1,0 +1,183 @@
+{
+  "observedAt": "2026-07-28T05:26:58.261Z",
+  "browser": {
+    "Browser": "Chrome/150.0.7871.128",
+    "protocolVersion": "1.3",
+    "webSocketDebuggerUrl": "ws://127.0.0.1:9444/devtools/browser/4f1f94ec-f085-42d7-a171-e35e071465db"
+  },
+  "targetCount": 2,
+  "allTargets": [
+    {
+      "id": "B7FBA1D17F480337F3092F9D855B8D6B",
+      "type": "page",
+      "url": "app://-/index.html?initialRoute=%2Favatar-overlay",
+      "title": "Codex"
+    },
+    {
+      "id": "320892B4AB2506B37CF08E743DB39053",
+      "type": "page",
+      "url": "app://-/index.html",
+      "title": "Codex"
+    }
+  ],
+  "inspections": [
+    {
+      "target": {
+        "id": "B7FBA1D17F480337F3092F9D855B8D6B",
+        "type": "page",
+        "url": "app://-/index.html?initialRoute=%2Favatar-overlay",
+        "title": "Codex"
+      },
+      "frameTree": {
+        "frame": {
+          "id": "B7FBA1D17F480337F3092F9D855B8D6B",
+          "loaderId": "B2ECC288BA3A7D54798C2DE589D4265A",
+          "url": "app://-/index.html?initialRoute=%2Favatar-overlay",
+          "domainAndRegistry": "",
+          "securityOrigin": "app://-",
+          "securityOriginDetails": {
+            "isLocalhost": false
+          },
+          "mimeType": "text/html",
+          "adFrameStatus": {
+            "adFrameType": "none"
+          },
+          "secureContextType": "Secure",
+          "crossOriginIsolatedContextType": "NotIsolated",
+          "gatedAPIFeatures": []
+        }
+      },
+      "contexts": [
+        {
+          "id": 2,
+          "uniqueId": "9115445596815243080.-2001567638185513564",
+          "name": "Electron Isolated Context",
+          "origin": "app://-",
+          "auxData": {
+            "isDefault": false,
+            "type": "isolated",
+            "frameId": "B7FBA1D17F480337F3092F9D855B8D6B"
+          }
+        },
+        {
+          "id": 1,
+          "uniqueId": "9101070369226266857.6463750259086303294",
+          "name": "",
+          "origin": "app://-",
+          "auxData": {
+            "isDefault": true,
+            "type": "default",
+            "frameId": "B7FBA1D17F480337F3092F9D855B8D6B"
+          }
+        }
+      ],
+      "defaultContext": {
+        "id": 1,
+        "uniqueId": "9101070369226266857.6463750259086303294",
+        "name": "",
+        "origin": "app://-",
+        "auxData": {
+          "isDefault": true,
+          "type": "default",
+          "frameId": "B7FBA1D17F480337F3092F9D855B8D6B"
+        }
+      },
+      "evaluation": {
+        "href": "app://-/index.html?initialRoute=%2Favatar-overlay",
+        "title": "Codex",
+        "readyState": "complete",
+        "timeOrigin": 1785214295028.1,
+        "top": true,
+        "frameElementCount": 0,
+        "windowType": "electron",
+        "sendMessageFromViewType": "function",
+        "sdkPresent": false,
+        "sdkVersion": null,
+        "composerPresent": false,
+        "profilePresent": false,
+        "signInVisible": false,
+        "bodyTextBytes": 0
+      },
+      "exceptionDetails": null
+    },
+    {
+      "target": {
+        "id": "320892B4AB2506B37CF08E743DB39053",
+        "type": "page",
+        "url": "app://-/index.html",
+        "title": "Codex"
+      },
+      "frameTree": {
+        "frame": {
+          "id": "320892B4AB2506B37CF08E743DB39053",
+          "loaderId": "ED7D36AEF76089F627B5090240E1FB67",
+          "url": "app://-/index.html",
+          "domainAndRegistry": "",
+          "securityOrigin": "app://-",
+          "securityOriginDetails": {
+            "isLocalhost": false
+          },
+          "mimeType": "text/html",
+          "adFrameStatus": {
+            "adFrameType": "none"
+          },
+          "secureContextType": "Secure",
+          "crossOriginIsolatedContextType": "NotIsolated",
+          "gatedAPIFeatures": []
+        }
+      },
+      "contexts": [
+        {
+          "id": 2,
+          "uniqueId": "-5431829546451695530.370762604734717555",
+          "name": "Electron Isolated Context",
+          "origin": "app://-",
+          "auxData": {
+            "isDefault": false,
+            "type": "isolated",
+            "frameId": "320892B4AB2506B37CF08E743DB39053"
+          }
+        },
+        {
+          "id": 1,
+          "uniqueId": "-8694852523717988740.-7538271351644666559",
+          "name": "",
+          "origin": "app://-",
+          "auxData": {
+            "isDefault": true,
+            "type": "default",
+            "frameId": "320892B4AB2506B37CF08E743DB39053"
+          }
+        }
+      ],
+      "defaultContext": {
+        "id": 1,
+        "uniqueId": "-8694852523717988740.-7538271351644666559",
+        "name": "",
+        "origin": "app://-",
+        "auxData": {
+          "isDefault": true,
+          "type": "default",
+          "frameId": "320892B4AB2506B37CF08E743DB39053"
+        }
+      },
+      "evaluation": {
+        "href": "app://-/index.html",
+        "title": "Codex",
+        "readyState": "complete",
+        "timeOrigin": 1785214292957.6,
+        "top": true,
+        "frameElementCount": 0,
+        "windowType": "electron",
+        "sendMessageFromViewType": "function",
+        "sdkPresent": false,
+        "sdkVersion": null,
+        "composerPresent": true,
+        "profilePresent": true,
+        "signInVisible": false,
+        "bodyTextBytes": 506
+      },
+      "exceptionDetails": null
+    }
+  ]
+}

@@ -1,0 +1,81 @@
+{
+  "observedAt": "2026-07-28T05:27:43.799Z",
+  "target": {
+    "id": "320892B4AB2506B37CF08E743DB39053",
+    "type": "page",
+    "url": "app://-/index.html",
+    "title": "Codex"
+  },
+  "result": {
+    "targetId": "320892B4AB2506B37CF08E743DB39053",
+    "frameId": "320892B4AB2506B37CF08E743DB39053",
+    "context": {
+      "id": 1,
+      "uniqueId": "-8694852523717988740.-7538271351644666559"
+    },
+    "scripts": [
+      {
+        "index": 0,
+        "url": "app://-/assets/index-HpxHYSUy.js",
+        "bytes": 716,
+        "sha256": "c318b9e1ae13b9ec7cbb27f9cd5bb59e6a058440a8492ec4c6c1c152eddfce04",
+        "loadError": null,
+        "requiredMethods": {
+          "start-turn-for-host": {
+            "present": false,
+            "occurrences": 0
+          },
+          "update-thread-settings-for-next-turn": {
+            "present": false,
+            "occurrences": 0
+          }
+        },
+        "dispatcherMarkers": {
+          "sendMessageFromView": false,
+          "getSetting": false
+        }
+      }
+    ],
+    "bridge": {
+      "electronBridgePresent": true,
+      "sendMessageFromViewType": "function",
+      "invokedTransport": "electronBridge.sendMessageFromView",
+      "response": {
+        "kind": "success",
+        "valueType": "undefined",
+        "valueKeys": []
+      }
+    },
+    "surface": {
+      "before": {
+        "href": "app://-/index.html",
+        "readyState": "complete",
+        "messageCount": 0,
+        "conversationMarkerCount": 0,
+        "composerPresent": true,
+        "composerLength": 0
+      },
+      "after": {
+        "href": "app://-/index.html",
+        "readyState": "complete",
+        "messageCount": 0,
+        "conversationMarkerCount": 0,
+        "composerPresent": true,
+        "composerLength": 0
+      },
+      "unchanged": true
+    },
+    "sdk": {
+      "present": false,
+      "version": null
+    }
+  },
+  "exceptionDetails": null,
+  "consoleEvents": [
+    {
+      "type": "warning",
+      "contextId": 1
+    }
+  ],
+  "exceptions": []
+}

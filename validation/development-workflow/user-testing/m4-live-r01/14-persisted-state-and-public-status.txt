@@ -1,0 +1,184 @@
+=== state.json ===
+{
+  "schemaVersion": 1,
+  "instanceId": "plugin-dev",
+  "role": "development",
+  "status": "ready",
+  "rootPath": "/Users/dan/.explodex/dev/plugin-dev",
+  "appPath": "/Applications/ChatGPT.app",
+  "executablePath": "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
+  "pid": 20441,
+  "processStartedAt": "106352727.152343791",
+  "launchMarker": "--explodex-dev-instance=plugin-dev",
+  "electronUserDataPath": "/Users/dan/.explodex/dev/plugin-dev/electron-user-data",
+  "codexHomePath": "/Users/dan/.explodex/dev/plugin-dev/codex-home",
+  "explodexStatePath": "/Users/dan/.explodex/dev/plugin-dev/explodex-state",
+  "logsPath": "/Users/dan/.explodex/dev/plugin-dev/logs",
+  "cdpHost": "127.0.0.1",
+  "cdpPort": 9444,
+  "targetId": "A1604314859E923F5B868660D1AFD633",
+  "appVersion": "26.721.41059",
+  "appBuild": "5848",
+  "startedAt": "2026-07-26T14:30:18.911Z",
+  "updatedAt": "2026-07-26T14:30:18.911Z"
+}
+=== phase0 summary ===
+{
+  "schemaVersion": 2,
+  "status": "proven",
+  "frozenHost": {
+    "bundlePath": "/Applications/ChatGPT.app",
+    "executablePath": "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
+    "bundleId": "com.openai.codex",
+    "executableName": "ChatGPT",
+    "signingTeam": "2DC432GLL2",
+    "appVersion": "26.721.41059",
+    "appBuild": "5848",
+    "hostHashes": {
+      "Contents/Info.plist": "9765029b131711b4797e2c21312ae3b290563f7ff3d2a9ec3c9b3b08686e6a2d",
+      "Contents/MacOS/ChatGPT": "d7bd5eacb7f59c42240e6c5dc62eebdeca9d09a0b59ed4c3ac3e2b55ef8d9336",
+      "Contents/Resources/app.asar": "da39a51b06fb4c728d418b8f0f05fc8fd8c6b1f74c4fb4d47c20c7914a798f45"
+    }
+  },
+  "isolation": {
+    "electronUserDataPath": "/Users/dan/.explodex/dev/plugin-dev/electron-user-data",
+    "codexHomePath": "/Users/dan/.explodex/dev/plugin-dev/codex-home",
+    "explodexHomePath": null,
+    "cdpHost": "127.0.0.1",
+    "cdpPort": 9444
+  },
+  "readiness": {
+    "pid": 20441,
+    "processStartedAt": "106352727.152343791",
+    "executablePath": "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
+    "portOwnerPid": 20441,
+    "cdpHost": "127.0.0.1",
+    "cdpPort": 9444,
+    "browserIdentity": "Chrome/150.0.7871.128",
+    "endpointPublishedPid": null,
+    "targetId": "A1604314859E923F5B868660D1AFD633",
+    "targetUrl": "app://-/index.html",
+    "executionContextId": 1,
+    "executionContextUniqueId": "1087707815330428537.9072776644191807184",
+    "frameId": "A1604314859E923F5B868660D1AFD633",
+    "rendererEvaluation": {
+      "expression": "(() => ({ explodexPhase0Readiness: true, readyState: document.readyState, href: location.href }))()",
+      "result": {
+        "explodexPhase0Readiness": true,
+        "readyState": "interactive",
+        "href": "app://-/index.html"
+      },
+      "evaluatedAt": "2026-07-26T14:30:09.513Z"
+    },
+    "readiness": "benign"
+  },
+  "launchMarker": {
+    "kind": "exact-argv-token",
+    "value": "--explodex-dev-instance=plugin-dev"
+  },
+  "acceptanceOperationId": "phase0_19f9ed55623_20207",
+  "provenAt": "2026-07-26T14:30:18.908Z"
+}
+=== compatibility.json ===
+{
+  "key": {
+    "schemaVersion": 1,
+    "appVersion": "26.721.41059",
+    "appBuild": "5848",
+    "hostHashes": {
+      "Contents/Info.plist": "9765029b131711b4797e2c21312ae3b290563f7ff3d2a9ec3c9b3b08686e6a2d",
+      "Contents/MacOS/ChatGPT": "d7bd5eacb7f59c42240e6c5dc62eebdeca9d09a0b59ed4c3ac3e2b55ef8d9336",
+      "Contents/Resources/app.asar": "da39a51b06fb4c728d418b8f0f05fc8fd8c6b1f74c4fb4d47c20c7914a798f45"
+    },
+    "signingTeam": "2DC432GLL2",
+    "sdkRuntimeSha256": "81d936b3eebf43a84c11742298683816e8cc55dce5a73de5bfc0aa486e0ad269",
+    "probeSchemaVersion": 1,
+    "probeToolVersion": "explodex-compat-probe/0.1.0"
+  },
+  "status": "proven",
+  "probedAt": "2026-07-26T14:48:35.259Z",
+  "target": {
+    "role": "development",
+    "pid": 20441,
+    "processStartedAt": "106352727.152343791",
+    "port": 9444,
+    "targetId": "A1604314859E923F5B868660D1AFD633"
+  },
+  "capabilitySummary": {
+    "probeSchemaVersion": 1,
+    "isolation": {
+      "retainedKnobs": [
+        "electron-user-data",
+        "codex-home",
+        "cdp-port",
+        "launch-marker"
+      ],
+      "launchMarker": "--explodex-dev-instance=plugin-dev"
+    },
+    "endpoint": {
+      "browserIdentity": "Chrome/150.0.7871.128",
+      "targetId": "A1604314859E923F5B868660D1AFD633",
+      "executionContextId": 5
+    },
+    "bridge": {
+      "transportAvailable": true,
+      "requiredMethods": [
+        "start-turn-for-host",
+        "update-thread-settings-for-next-turn"
+      ],
+      "observedMethods": [
+        "start-turn-for-host",
+        "update-thread-settings-for-next-turn"
+      ],
+      "benignRequest": "theme-or-availability"
+    },
+    "sdkBootstrap": {
+      "version": "1.2.0",
+      "singleInstance": true,
+      "repeatCount": 2
+    },
+    "anchors": [
+      {
+        "name": "sidebar",
+        "verdict": "pass"
+      },
+      {
+        "name": "profileSettingsFooter",
+        "verdict": "pass"
+      },
+      {
+        "name": "threadFooter",
+        "verdict": "optional"
+      },
+      {
+        "name": "aboveComposer",
+        "verdict": "pass"
+      },
+      {
+        "name": "composerInput",
+        "verdict": "pass"
+      },
+      {
+        "name": "browserSidebarBanner",
+        "verdict": "optional"
+      },
+      {
+        "name": "homeAmbient",
+        "verdict": "pass"
+      }
+    ],
+    "safety": {
+      "hostReadOnly": true,
+      "conversationNondestructive": true,
+      "isolated": true,
+      "devFirst": true
+    }
+  }
+}
+=== public host/status ===
+{"schemaVersion":1,"ok":true,"operation":"host.report","result":{"compatibility":{"allowsCompatibilityDependentWork":false,"key":{"appBuild":"5848","appVersion":"26.721.41059","hostHashes":{"Contents/Info.plist":"9765029b131711b4797e2c21312ae3b290563f7ff3d2a9ec3c9b3b08686e6a2d","Contents/MacOS/ChatGPT":"d7bd5eacb7f59c42240e6c5dc62eebdeca9d09a0b59ed4c3ac3e2b55ef8d9336","Contents/Resources/app.asar":"da39a51b06fb4c728d418b8f0f05fc8fd8c6b1f74c4fb4d47c20c7914a798f45"},"probeSchemaVersion":1,"probeToolVersion":"explodex-compat-probe/0.1.0","schemaVersion":1,"sdkRuntimeSha256":"81d936b3eebf43a84c11742298683816e8cc55dce5a73de5bfc0aa486e0ad269","signingTeam":"2DC432GLL2"},"nextAction":"Run the isolated development compatibility probe on 127.0.0.1:9444 (public probe command) before launch, attach, inject, refresh, review, or apply.","reason":"compatibility_key_mismatch:sdkRuntimeSha256","status":"unproven"},"explodexHome":"/Users/dan/.explodex","host":{"appBuild":"5848","appVersion":"26.721.41059","bundleId":"com.openai.codex","bundlePath":"/Applications/ChatGPT.app","executableName":"ChatGPT","executablePath":"/Applications/ChatGPT.app/Contents/MacOS/ChatGPT","hostHashes":{"Contents/Info.plist":"9765029b131711b4797e2c21312ae3b290563f7ff3d2a9ec3c9b3b08686e6a2d","Contents/MacOS/ChatGPT":"d7bd5eacb7f59c42240e6c5dc62eebdeca9d09a0b59ed4c3ac3e2b55ef8d9336","Contents/Resources/app.asar":"da39a51b06fb4c728d418b8f0f05fc8fd8c6b1f74c4fb4d47c20c7914a798f45"},"signingTeam":"2DC432GLL2"},"hostValid":true,"readOnly":true,"sdkRuntime":{"sha256":"cde97e29af89a35b737406bd038212c94752b43ec3d24ab74b87aeb480e03ec4","version":"1.2.0"}},"warnings":[]}
+{"schemaVersion":1,"ok":true,"operation":"compatibility.status","result":{"compatibility":{"allowsCompatibilityDependentWork":false,"key":{"appBuild":"5848","appVersion":"26.721.41059","hostHashes":{"Contents/Info.plist":"9765029b131711b4797e2c21312ae3b290563f7ff3d2a9ec3c9b3b08686e6a2d","Contents/MacOS/ChatGPT":"d7bd5eacb7f59c42240e6c5dc62eebdeca9d09a0b59ed4c3ac3e2b55ef8d9336","Contents/Resources/app.asar":"da39a51b06fb4c728d418b8f0f05fc8fd8c6b1f74c4fb4d47c20c7914a798f45"},"probeSchemaVersion":1,"probeToolVersion":"explodex-compat-probe/0.1.0","schemaVersion":1,"sdkRuntimeSha256":"81d936b3eebf43a84c11742298683816e8cc55dce5a73de5bfc0aa486e0ad269","signingTeam":"2DC432GLL2"},"nextAction":"Run the isolated development compatibility probe on 127.0.0.1:9444 (public probe command) before launch, attach, inject, refresh, review, or apply.","reason":"compatibility_key_mismatch:sdkRuntimeSha256","status":"unproven"},"explodexHome":"/Users/dan/.explodex","host":{"appBuild":"5848","appVersion":"26.721.41059","bundlePath":"/Applications/ChatGPT.app","signingTeam":"2DC432GLL2"},"readOnly":true,"sdkRuntime":{"sha256":"cde97e29af89a35b737406bd038212c94752b43ec3d24ab74b87aeb480e03ec4","version":"1.2.0"}},"warnings":[]}
+{"schemaVersion":1,"ok":false,"operation":"dev.status","error":{"code":"dev.root-invalid","message":"Development root is aliased, escaped, non-private, protected, or unowned: nonempty_unowned_root","details":{"fallbackUsed":false,"rootPath":"/Users/dan/.explodex/dev/plugin-dev"}},"warnings":[]}
+Development root is aliased, escaped, non-private, protected, or unowned: nonempty_unowned_root
+error.code: dev.root-invalid
+{"schemaVersion":1,"ok":true,"operation":"plugin.status","result":{"applications":{},"discovered":false,"inspectedTarget":null,"inspection":"not-requested","plugins":{},"schemaVersion":1,"stateChanged":false,"stateStatus":"missing"},"warnings":[]}

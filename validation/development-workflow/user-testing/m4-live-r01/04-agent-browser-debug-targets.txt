@@ -1,0 +1,17 @@
+2026-07-28T05:21:48Z
+76069     1 Tue Jul 28 07:51:31 2026     30:17 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT --user-data-dir=/Users/dan/.explodex/dev/plugin-dev/electron-user-data --remote-debugging-port=9444 --explodex-dev-instance=plugin-dev
+p76069
+cChatGPT
+f58
+n127.0.0.1:9444
+TST=LISTEN
+TQR=0
+TQS=0
+p76398
+cSkyComputerUseService
+f58
+n127.0.0.1:9444
+TST=LISTEN
+TQR=0
+TQS=0
+{"success":true,"data":{"tabs":[{"active":false,"label":null,"tabId":"t1","title":"Codex","type":"page","url":"app://-/index.html"},{"active":true,"label":null,"tabId":"t2","title":"Codex","type":"page","url":"app://-/index.html?initialRoute=%2Favatar-overlay"}]},"error":null}

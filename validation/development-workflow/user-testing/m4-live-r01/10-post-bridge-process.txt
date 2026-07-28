@@ -1,0 +1,16 @@
+76069     1 Tue Jul 28 07:51:31 2026     36:13 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT --user-data-dir=/Users/dan/.explodex/dev/plugin-dev/electron-user-data --remote-debugging-port=9444 --explodex-dev-instance=plugin-dev
+76398 76069 Tue Jul 28 07:51:35 2026     36:09 /Users/dan/.explodex/dev/plugin-dev/codex-home/computer-use/Codex Computer Use.app/Contents/MacOS/SkyComputerUseService
+p76069
+cChatGPT
+f58
+n127.0.0.1:9444
+TST=LISTEN
+TQR=0
+TQS=0
+p76398
+cSkyComputerUseService
+f58
+n127.0.0.1:9444
+TST=LISTEN
+TQR=0
+TQS=0
