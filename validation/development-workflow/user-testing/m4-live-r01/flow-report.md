@@ -95,9 +95,11 @@ authority** classification:
 
 The complete machine-readable table is in `flow-report.json`.
 
-- **Pass:** `VAL-CROSS-010` supplemental live drift-refusal evidence.
+- **Pass:** none.
 - **Pending:** `VAL-DEV-017`, `VAL-DEV-024`, `VAL-CROSS-004`.
-- **Blocked:** every other assertion owned by `M4-F03`.
+- **Blocked:** every other assertion owned by `M4-F03`, including
+  `VAL-CROSS-010`. This attempt observed stale ownership during initial
+  preflight, not an active-operation post-freeze identity change.
 - **Fail:** none. The environment stopped the operation before an authorized
   implementation path could run.
 

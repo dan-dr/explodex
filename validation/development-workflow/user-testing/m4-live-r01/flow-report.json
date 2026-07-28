@@ -305,8 +305,8 @@
     },
     {
       "id": "VAL-CROSS-010",
-      "status": "pass",
-      "reason": "The supplemental live operation detected that current PID/start/targets/contexts and SDK identity did not match persisted authority, selected no mutation target, performed no reconnect/reload/closure/replacement, and stopped before any public mutation.",
+      "status": "blocked",
+      "reason": "The attempt detected stale persisted ownership during initial preflight, not a post-freeze identity change after the operation inspected an exact target. Active-operation point-of-use drift, replacement-context attempts, partial-result boundaries, and terminal cleanup after such drift were not exercised.",
       "evidence": ["validation/development-workflow/user-testing/m4-live-r01/09-raw-cdp-context-inventory.json", "validation/development-workflow/user-testing/m4-live-r01/13-kernel-process-identities.json", "validation/development-workflow/user-testing/m4-live-r01/14-persisted-state-and-public-status.txt"]
     },
     {

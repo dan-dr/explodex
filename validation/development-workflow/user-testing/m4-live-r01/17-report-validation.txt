@@ -3,9 +3,8 @@
   "expectedCount": 35,
   "actualCount": 35,
   "statuses": {
-    "blocked": 31,
-    "pending": 3,
-    "pass": 1
+    "blocked": 32,
+    "pending": 3
   },
   "missing": [],
   "extra": [],
