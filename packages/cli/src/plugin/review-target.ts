@@ -1,6 +1,10 @@
 import { readFile } from "node:fs/promises";
 import { createNodeCdpAdapter } from "../cdp/adapters.ts";
 import { createHash } from "node:crypto";
+import {
+  compatibilityProbeRequiresInteractiveAuth,
+  createDevInteractiveAuthBlockerDetails,
+} from "../dev/auth.ts";
 import { resolveDefaultDevRoot, describeDevLayout } from "../dev/layout.ts";
 import { classifyOwnedListenerAuthority } from "../dev/listener-authority.ts";
 import { loadDevInstanceState } from "../dev/state.ts";
@@ -352,7 +356,12 @@ export async function attemptAutomaticDevelopmentReproof(options: {
   signal?: AbortSignal;
 }): Promise<
   | { ok: true }
-  | { ok: false; code: string; message: string }
+  | {
+      ok: false;
+      code: string;
+      message: string;
+      details?: Record<string, unknown>;
+    }
 > {
   const prepared = await preparePluginApplicationTarget({
     role: "development",
@@ -397,6 +406,35 @@ export async function attemptAutomaticDevelopmentReproof(options: {
     authoringMain: null,
     signal: options.signal,
   });
+  if (
+    probe.ok &&
+    !probe.committed &&
+    probe.probe.endpoint.complete &&
+    probe.probe.endpoint.browserIdentity !== null &&
+    compatibilityProbeRequiresInteractiveAuth(probe.probe)
+  ) {
+    return {
+      ok: false,
+      code: "auth.required",
+      message:
+        "Authenticated renderer checks require one-time interactive sign-in in the exact persistent development profile.",
+      details: createDevInteractiveAuthBlockerDetails({
+        rootPath: devRoot,
+        target: {
+          role: "development",
+          pid: probe.probe.identity.pid,
+          processStartedAt: probe.probe.identity.processStartedAt,
+          port: 9444,
+          targetId: probe.probe.identity.targetId,
+          executionContextId: probe.probe.identity.executionContextId,
+          executionContextUniqueId:
+            probe.probe.identity.executionContextUniqueId,
+          appVersion: probe.probe.identity.frozenHost.appVersion,
+          appBuild: probe.probe.identity.frozenHost.appBuild,
+        },
+      }),
+    };
+  }
   return probe.ok && probe.committed
     ? { ok: true }
     : {
@@ -611,6 +649,8 @@ export async function runReviewOnDeclaredTarget(options: {
         operation: "review",
         compatibility,
       });
+    } else if (reproved.code === "auth.required") {
+      return unavailable(reproved);
     }
   }
   if (!gate.allowed) {

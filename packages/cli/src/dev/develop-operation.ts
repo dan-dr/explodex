@@ -155,6 +155,14 @@ function errorFromUnknown(error: unknown): DevelopError {
   };
 }
 
+const PREFLIGHT_BLOCKER_CODES = new Set([
+  "auth.required",
+  "compatibility.unproven",
+  "compatibility.drifted",
+  "dev.ownership-uncertain",
+  "dev.recovery-required",
+]);
+
 async function closeResource(
   resource: DevelopOwnedResource | null,
   residuals: string[],
@@ -250,12 +258,27 @@ export async function runForegroundDevelop(options: {
   try {
     const result = await options.adapters.preflight();
     if (!result.ok) {
+      const blocked = PREFLIGHT_BLOCKER_CODES.has(result.code);
+      if (blocked) {
+        protocol.event({
+          generation: 0,
+          type: "blocked",
+          details: {
+            code: result.code,
+            ...(result.details === undefined
+              ? {}
+              : { cause: result.details }),
+          },
+        });
+      }
       return protocol.terminal({
         ok: false,
         reason:
           result.code === "operation.interrupted" || options.signal?.aborted
             ? "interrupted"
-            : "preflight-failed",
+            : blocked
+              ? "blocked"
+              : "preflight-failed",
         error: {
           code: result.code,
           message: result.message,

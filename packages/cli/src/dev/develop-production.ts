@@ -7,6 +7,7 @@ import {
   createDefaultHostAdapters,
   type HostAdapters,
 } from "../host/adapters.ts";
+import { inspectHost } from "../host/identity.ts";
 import {
   createDefaultHostStatusAdapters,
 } from "../host/process-adapters.ts";
@@ -15,6 +16,9 @@ import { resolveSdkRuntimeIdentityForCli } from "../host/sdk-runtime-identity.ts
 import { runCompatibilityProbe } from "../host/probe-operation.ts";
 import type { RuntimeApplicationResult } from "../plugin/application-operation.ts";
 import { buildPluginWorkspace } from "../plugin/build.ts";
+import {
+  attemptAutomaticDevelopmentReproof,
+} from "../plugin/review-target.ts";
 import { runDevInjectOperation } from "./injection-operation.ts";
 import { prepareOwnedDevTarget } from "./injection-operation.ts";
 import { frozenHostEquals } from "./phase0.ts";
@@ -227,7 +231,7 @@ export async function createProductionDevelopAdapters(options: {
     cleanupBoundMs: 5_000,
     writeLine: options.writeLine,
     preflight: async () => {
-      const result = await runDevelopPreflight({
+      const runPreflight = async () => await runDevelopPreflight({
         workspacePath: options.workspacePath,
         sdkSourcePath: options.sdkSourcePath,
         osHome: options.osHome,
@@ -239,6 +243,51 @@ export async function createProductionDevelopAdapters(options: {
         statusAdapters,
         cdp,
       });
+      let result = await runPreflight();
+      if (
+        !result.ok &&
+        result.code === "compatibility.unproven" &&
+        (options.sdkSourcePath === null ||
+          options.sdkSourcePath === undefined)
+      ) {
+        const inspection = await inspectHost({
+          adapters: hostAdapters,
+          signal: options.signal,
+        });
+        if (!inspection.ok || inspection.host === null) {
+          return {
+            ok: false,
+            code: inspection.error.code,
+            message: inspection.error.message,
+            details: inspection.error,
+          };
+        }
+        const sdkRuntime = await resolveSdkRuntimeIdentityForCli();
+        const reproved = await attemptAutomaticDevelopmentReproof({
+          explodexHome: options.explodexHome,
+          devRoot: options.explicitRoot ?? undefined,
+          env: {
+            ...process.env,
+            HOME: options.osHome,
+            EXPLODEX_HOME: options.explodexHome,
+          },
+          host: inspection.host,
+          hostAdapters,
+          sdkRuntime,
+          signal: options.signal,
+        });
+        if (!reproved.ok) {
+          return {
+            ok: false,
+            code: reproved.code,
+            message: reproved.message,
+            ...(reproved.details === undefined
+              ? {}
+              : { details: reproved.details }),
+          };
+        }
+        result = await runPreflight();
+      }
       if (result.ok) preflightValue = result.value;
       return result;
     },
