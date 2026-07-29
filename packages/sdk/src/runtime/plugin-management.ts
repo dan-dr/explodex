@@ -400,6 +400,7 @@ function managementButton(
 export function renderPluginManagementDom(
   document: Document,
   model: PluginManagementModel,
+  renderOptions?: (pluginId: string, container: HTMLElement) => boolean,
 ): PluginManagementRenderHandle {
   document.querySelector("[data-explodex-plugin-management]")?.remove();
   const root = document.createElement("section");
@@ -473,6 +474,13 @@ export function renderPluginManagementDom(
       );
     }
     card.append(actions);
+
+    if (renderOptions !== undefined) {
+      const options = document.createElement("div");
+      options.dataset.explodexManagementOptions = plugin.id;
+      options.style.marginTop = "12px";
+      if (renderOptions(plugin.id, options)) card.append(options);
+    }
     root.append(card);
   }
 

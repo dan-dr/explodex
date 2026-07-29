@@ -22,6 +22,7 @@ import {
 } from "./plugin-management.ts";
 import type { ExplodexRuntime } from "./public.ts";
 import { RUNTIME_VERSION } from "./version.ts";
+import { renderRegisteredPluginOptions } from "../lifecycle/plugin-capabilities.ts";
 
 const RUNTIME_MARK = "__explodexSdkRuntimeMark";
 const RUNTIME_INSTANCE = "__explodexSdkRuntimeInstance";
@@ -221,6 +222,12 @@ export function installRuntime(global: RuntimeHost): InternalExplodexRuntime {
         managementHandle = renderPluginManagementDom(
           global.document,
           model,
+          (pluginId, container) =>
+            renderRegisteredPluginOptions(
+              global as unknown as Record<string, unknown>,
+              pluginId,
+              container,
+            ),
         );
         return model;
       },

@@ -1,0 +1,14 @@
+{
+  "name": "explodex-plugin-usage-reset-glance",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Keep usage and reset countdowns visible in the sidebar.",
+  "peerDependencies": {
+    "@explodex/sdk": "^1.2.0"
+  },
+  "devDependencies": {
+    "@explodex/sdk": "1.2.0",
+    "typescript": "5.9.3"
+  }
+}

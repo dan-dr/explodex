@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "toggle-autoscroll",
+  "version": "1.0.0",
+  "displayName": "Toggle Autoscroll",
+  "description": "Toggle thread autoscroll above the composer.",
+  "sdkRange": "^1.2.0",
+  "lifecycle": "dynamic",
+  "entry": "index.js",
+  "assets": []
+}

@@ -156,6 +156,7 @@ function withTimeout<T>(
  * Not a public general activation setter; used by the runtime and testing harness.
  */
 export function createPluginLifecycleHost(options?: {
+  host?: Record<string, unknown>;
   onRuntimeError?(event: {
     pluginId: string;
     generation: number;
@@ -163,6 +164,7 @@ export function createPluginLifecycleHost(options?: {
     error: unknown;
   }): void;
 }): PluginLifecycleHost {
+  const capabilityHost = options?.host;
   const slots = new Map<string, LiveSlot>();
   const applicationQueues = new Map<string, Promise<void>>();
   const onRuntimeError = options?.onRuntimeError;
@@ -381,6 +383,7 @@ export function createPluginLifecycleHost(options?: {
       token,
       resources,
       assets: options.assets,
+      host: capabilityHost,
     });
 
     let setupTask: Promise<void | PluginTeardown> | null = null;

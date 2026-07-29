@@ -5,6 +5,7 @@
 import { SDK_VERSION } from "../version.ts";
 import type { PluginApi, PluginLogger } from "../types/index.ts";
 import type { PluginAssetStore } from "./plugin-assets.ts";
+import { createPluginCapabilities } from "./plugin-capabilities.ts";
 import type { TrackedResourceRegistry } from "./tracked-resources.ts";
 
 export function createPluginApi(options: {
@@ -13,6 +14,7 @@ export function createPluginApi(options: {
   token: string;
   resources: TrackedResourceRegistry;
   assets?: PluginAssetStore;
+  host?: Record<string, unknown>;
   log?: PluginLogger;
   version?: string;
 }): PluginApi {
@@ -57,7 +59,16 @@ export function createPluginApi(options: {
         },
       };
 
+  const capabilities = createPluginCapabilities({
+    host: options.host,
+    pluginId: options.pluginId,
+    ownerKey: `${options.pluginId}:${options.token}`,
+    resources: options.resources,
+    log,
+  });
+
   return {
+    ...capabilities,
     version: options.version ?? SDK_VERSION,
     pluginId: options.pluginId,
     generation: options.generation,

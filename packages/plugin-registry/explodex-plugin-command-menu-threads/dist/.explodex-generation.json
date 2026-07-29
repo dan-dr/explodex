@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "generationId": "ecb5b6847a3d1d2d4a77b97a064373ac65fb2b32ea602af95745582132834606",
+  "pluginId": "command-menu-threads",
+  "version": "1.1.0",
+  "mapMode": "required",
+  "sdkInput": {
+    "kind": "publishable",
+    "version": "1.2.0",
+    "runtimeSha256": "9eb07e6844156104cef18cca325b25f6fd7c71cf6bcf01566fcb4a494948060b"
+  },
+  "inputDigests": {
+    "__explodex__/authority.json": "c6e66c811ff8a3066b631220ef948ec2165216ae0d9a5064fc1f453849a5afd9",
+    "__explodex__/sdk-input.json": "1a6b48186f4a41407985082a53e66a5147edcbaaf26df5330f7577b5fd54f355",
+    "explodex.config.ts": "d793e27f8728adbc67f8b60841e0e64cb973d69a1160cc754cd4bc58b14eefea",
+    "package.json": "2bd2fa3da145b11cb89825d8a4c00e0d2e4e189b411a0a0f51c3a4253686bb75",
+    "src/index.ts": "87240f1fbfe6d676e50779238926d436da100c686be70060570be3fe1c82e863",
+    "src/search.ts": "216896976002897f938b517c8ff05338a9ee1320d494b5cbd83061376e8cff10",
+    "tsconfig.json": "b3bf466c6450b4676c643e1c0b217603102bd276324dba8c9515cba96934714a"
+  },
+  "outputDigests": {
+    "checksums.json": "07855299b394a2d1753340a007f3ce44365b999eb52cd21843f6f428da3b4b61",
+    "index.js": "0057c618edde2b9bbe583a5f0ee1a7abe2e7108a53824f68eaf64ae2eca2859d",
+    "index.js.map": "61338875528fe713eb3c2abaf1b3af16d4ac8f1301478f348aeb156fd87cd162",
+    "plugin.json": "7f166ccbf0cc17b70ed4e9b492e5a4e9ce9b74aa14667b4e8c45b4e053928e56"
+  },
+  "payloadSha256": "95eb598309892364c7210f33a21f8da84b520dfe8b0e60d54a37f1f4748f9b0e"
+}

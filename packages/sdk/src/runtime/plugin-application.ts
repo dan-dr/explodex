@@ -278,6 +278,7 @@ export function createPluginApplicationController(options: {
     pendingDiagnostics.delete(generation);
   };
   const lifecycle = createPluginLifecycleHost({
+    host: options.host,
     onRuntimeError(event) {
       const origin = generationIdentities.get(event.generation);
       if (origin !== undefined && origin.token === event.token) {

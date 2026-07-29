@@ -1,0 +1,15 @@
+{
+  "name": "@explodex/plugin-registry",
+  "version": "0.0.0",
+  "private": true,
+  "workspaces": [
+    "explodex-plugin-*"
+  ],
+  "scripts": {
+    "test": "bun test test explodex-plugin-*/test",
+    "typecheck": "bun ./../../node_modules/.bin/tsc -b explodex-plugin-*/tsconfig.json"
+  },
+  "devDependencies": {
+    "@explodex/sdk": "1.2.0"
+  }
+}

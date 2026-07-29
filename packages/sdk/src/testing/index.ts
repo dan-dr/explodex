@@ -397,8 +397,12 @@ export type LifecycleHarness = {
 };
 
 /** Public lifecycle harness for bounded setup/teardown and tracked-resource tests. */
-export function createLifecycleHarness(): LifecycleHarness {
-  const host = createPluginLifecycleHost();
+export function createLifecycleHarness(options?: {
+  host?: Record<string, unknown>;
+}): LifecycleHarness {
+  const host = createPluginLifecycleHost({
+    host: options?.host,
+  });
   return {
     host,
     apply(pluginId, definition, options) {

@@ -4,6 +4,8 @@
  * are intentionally not exported here.
  */
 
+import type { PluginCapabilityApi } from "./capabilities.ts";
+
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
 export type PluginLogger = {
@@ -13,7 +15,7 @@ export type PluginLogger = {
   error(message: string, detail?: unknown): void;
 };
 
-export type ExplodexRuntimeApi = {
+export type ExplodexRuntimeApi = PluginCapabilityApi & {
   readonly version: string;
   readonly log: PluginLogger;
 };

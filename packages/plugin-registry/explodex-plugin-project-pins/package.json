@@ -1,0 +1,14 @@
+{
+  "name": "explodex-plugin-project-pins",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Pin a thread to its project instead of globally.",
+  "peerDependencies": {
+    "@explodex/sdk": "^1.2.0"
+  },
+  "devDependencies": {
+    "@explodex/sdk": "1.2.0",
+    "typescript": "5.9.3"
+  }
+}

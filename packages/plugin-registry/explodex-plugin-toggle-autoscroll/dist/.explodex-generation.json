@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "generationId": "785304ad229cfcee46a1a5867cec626f370cb7ea0ca7b19ca0cf50e189663f0a",
+  "pluginId": "toggle-autoscroll",
+  "version": "1.0.0",
+  "mapMode": "required",
+  "sdkInput": {
+    "kind": "publishable",
+    "version": "1.2.0",
+    "runtimeSha256": "9eb07e6844156104cef18cca325b25f6fd7c71cf6bcf01566fcb4a494948060b"
+  },
+  "inputDigests": {
+    "__explodex__/authority.json": "6e6d9d7fddf6f6b6e722a3aeb4d3c50ef62a1cef8234ada3efd5df36d3d51ef5",
+    "__explodex__/sdk-input.json": "1a6b48186f4a41407985082a53e66a5147edcbaaf26df5330f7577b5fd54f355",
+    "explodex.config.ts": "442419ea37e20b113ed18395276ff6b5a2cba4e5e72ad9114588f7b7e578405f",
+    "package.json": "194bdaf50227e2d224624d4cd1c32cc1ce5b07f4cd71e365a0c46259f23547c7",
+    "src/index.ts": "b7019c3d24f34dc17a677a056ce129c5863fbed8af94a7e10e7b4504ecdbc452",
+    "src/settings.ts": "e9f895847e9ea8c86b1f11d56437437fb2a3f8a12e6a324c6b9dd52068e93897",
+    "tsconfig.json": "b3bf466c6450b4676c643e1c0b217603102bd276324dba8c9515cba96934714a"
+  },
+  "outputDigests": {
+    "checksums.json": "07b9002b1f55b447a98e056543719310120ef5ec51bea694effa465e1fc6035e",
+    "index.js": "3d08d73f317f2d059462db9dab4555eed045ef5c9cd9a57a4477019553f99815",
+    "index.js.map": "2d96ed274b0432bf86eb19cfb1f09fdf8132ad1d4f16252bda12d877670de3eb",
+    "plugin.json": "7b55a82081477a04c21b2c002be8ac2b9f81c7a838270aa80019916c0dce4018"
+  },
+  "payloadSha256": "f6728bbaf77b318df029203fbc6cb76fc8dfecb00011b7fe4f920e1ee83449ec"
+}

@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "project-colors",
+  "version": "1.5.0",
+  "displayName": "Project Colors",
+  "description": "Color-code projects and their threads in the sidebar so you can tell them apart at a glance.",
+  "sdkRange": "^1.2.0",
+  "lifecycle": "dynamic",
+  "entry": "index.js",
+  "assets": []
+}

@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "generationId": "a97b6788615f360344e8ced06996ec57e49900c9088bd04a55812558e53ad026",
+  "pluginId": "project-colors",
+  "version": "1.5.0",
+  "mapMode": "required",
+  "sdkInput": {
+    "kind": "publishable",
+    "version": "1.2.0",
+    "runtimeSha256": "9eb07e6844156104cef18cca325b25f6fd7c71cf6bcf01566fcb4a494948060b"
+  },
+  "inputDigests": {
+    "__explodex__/authority.json": "58b64a223b9c7da7068e6eb6d14e437279a92de94b01c76c8b62d769d75cf49f",
+    "__explodex__/sdk-input.json": "1a6b48186f4a41407985082a53e66a5147edcbaaf26df5330f7577b5fd54f355",
+    "explodex.config.ts": "ed8cf401b04ee9a8fe7b1c3db760f5fc9c21f151165063443780b7568cdb730e",
+    "package.json": "8fca4814f0e6cae59119c4c83402ebf3b3b32d8e049f4f9b6000fc58a5df2bc3",
+    "src/index.ts": "07dabfb2dbd8eb634b6a31564b1df8020251f3560816b91646659f078b904be1",
+    "src/settings.ts": "9447b77d9e280c070b068db7a51a4baa9b123a4d1c1e6622377ac343799738b5",
+    "tsconfig.json": "b3bf466c6450b4676c643e1c0b217603102bd276324dba8c9515cba96934714a"
+  },
+  "outputDigests": {
+    "checksums.json": "21fd600a5f2d7f29adc57a5a19715ca0af9f5ae39c1ad81e28cbf05712d3de36",
+    "index.js": "267d9dce1e619f4f11f7008a58d8ecd46f9dce5ddee3a054cc9e6c5c207e485a",
+    "index.js.map": "5b80d0d2dd79d117ef5c5a11c00395420973d1682c571a0048891979596b610c",
+    "plugin.json": "2591a2203384d902e10f18b7ca6d1052bda71a45dad0b319ce6d7504206b925c"
+  },
+  "payloadSha256": "9f25cf480fea1a37dc0ef5d115dee5d9253b4c5545b6353ea88c57225314b438"
+}

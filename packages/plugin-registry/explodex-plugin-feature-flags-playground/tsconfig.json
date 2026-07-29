@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": false,
+    "noImplicitAny": false,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "rootDir": ".",
+    "noEmit": true,
+    "types": []
+  },
+  "include": ["src/**/*.ts", "explodex.config.ts"],
+  "exclude": ["dist", "node_modules", "test"]
+}

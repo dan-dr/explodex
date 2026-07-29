@@ -6,6 +6,12 @@
     "explodex": "bin/explodex.mjs"
   },
   "packageManager": "bun@1.3.14",
+  "workspaces": [
+    "packages/sdk",
+    "packages/cli",
+    "packages/plugin-registry",
+    "packages/plugin-registry/explodex-plugin-*"
+  ],
   "publishConfig": {
     "registry": "https://registry.npmjs.org/",
     "access": "public"
