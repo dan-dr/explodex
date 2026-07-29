@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "files": {
+    "index.js": {
+      "sha256": "eae6b0a02685ae6d2939073ea290b0f7fbc8ec07f2010f7cfffd598330054513",
+      "bytes": 26892
+    },
+    "index.js.map": {
+      "sha256": "25cd36f6774e3ebe9eae297bd7113b0ed527242583fbd5daa54780f8bbea82b2",
+      "bytes": 45628
+    },
+    "plugin.json": {
+      "sha256": "0b41c2b933f622940e46b31f973abc6302e24fe953d8f90cee28c7dfecf61411",
+      "bytes": 292
+    }
+  }
+}

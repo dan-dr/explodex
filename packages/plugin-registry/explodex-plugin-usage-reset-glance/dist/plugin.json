@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "usage-reset-glance",
+  "version": "1.3.0",
+  "displayName": "Usage and Reset Glance",
+  "description": "Keep usage and credit-reset countdowns visible in the sidebar.",
+  "sdkRange": "^1.2.0",
+  "lifecycle": "dynamic",
+  "entry": "index.js",
+  "assets": []
+}

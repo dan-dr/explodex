@@ -21,12 +21,14 @@ const migratedWorkspaces = [
   "explodex-plugin-toggle-autoscroll",
   "explodex-plugin-project-colors",
   "explodex-plugin-command-menu-threads",
+  "explodex-plugin-usage-reset-glance",
 ];
 
 const migratedPluginIds = {
   "explodex-plugin-toggle-autoscroll": "toggle-autoscroll",
   "explodex-plugin-project-colors": "project-colors",
   "explodex-plugin-command-menu-threads": "command-menu-threads",
+  "explodex-plugin-usage-reset-glance": "usage-reset-glance",
 } as const;
 
 const forbiddenPrivateMarkers = [
@@ -37,6 +39,19 @@ const forbiddenPrivateMarkers = [
   "ReactQuery",
   "Statsig",
 ];
+
+async function readTypeScriptSources(root: string): Promise<string> {
+  const sources: string[] = [];
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    const path = join(root, entry.name);
+    if (entry.isDirectory()) {
+      sources.push(await readTypeScriptSources(path));
+    } else if (entry.isFile() && entry.name.endsWith(".ts")) {
+      sources.push(await readFile(path, "utf8"));
+    }
+  }
+  return sources.join("\n");
+}
 
 describe("VAL-PLUG-001 registry workspace topology", () => {
   test("contains exactly seven direct explodex-plugin-* child workspaces", async () => {
@@ -82,9 +97,8 @@ describe("VAL-PLUG-001 registry workspace topology", () => {
 describe("VAL-PLUG-002 public SDK boundary", () => {
   test("all first-party workspaces resolve through public SDK package imports", async () => {
     for (const workspace of expectedWorkspaces) {
-      const source = await readFile(
-        join(registryRoot, workspace, "src", "index.ts"),
-        "utf8",
+      const source = await readTypeScriptSources(
+        join(registryRoot, workspace, "src"),
       );
       const packageJson = JSON.parse(
         await readFile(join(registryRoot, workspace, "package.json"), "utf8"),
