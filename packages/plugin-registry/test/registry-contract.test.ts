@@ -18,19 +18,23 @@ const expectedWorkspaces = [
 ];
 
 const migratedWorkspaces = [
-  "explodex-plugin-toggle-autoscroll",
-  "explodex-plugin-project-colors",
   "explodex-plugin-command-menu-threads",
-  "explodex-plugin-usage-reset-glance",
+  "explodex-plugin-effort-shortcuts",
+  "explodex-plugin-feature-flags-playground",
+  "explodex-plugin-project-colors",
   "explodex-plugin-project-pins",
+  "explodex-plugin-toggle-autoscroll",
+  "explodex-plugin-usage-reset-glance",
 ];
 
 const migratedPluginIds = {
-  "explodex-plugin-toggle-autoscroll": "toggle-autoscroll",
-  "explodex-plugin-project-colors": "project-colors",
   "explodex-plugin-command-menu-threads": "command-menu-threads",
-  "explodex-plugin-usage-reset-glance": "usage-reset-glance",
+  "explodex-plugin-effort-shortcuts": "effort-shortcuts",
+  "explodex-plugin-feature-flags-playground": "feature-flags-playground",
+  "explodex-plugin-project-colors": "project-colors",
   "explodex-plugin-project-pins": "project-pins",
+  "explodex-plugin-toggle-autoscroll": "toggle-autoscroll",
+  "explodex-plugin-usage-reset-glance": "usage-reset-glance",
 } as const;
 
 const forbiddenPrivateMarkers = [

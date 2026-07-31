@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "generationId": "835d2b57b9d0ee52126724be2e3b37d2edeb0e00aeff2940279b60c4369aabca",
+  "pluginId": "feature-flags-playground",
+  "version": "1.6.0",
+  "mapMode": "required",
+  "sdkInput": {
+    "kind": "publishable",
+    "version": "1.2.0",
+    "runtimeSha256": "9eb07e6844156104cef18cca325b25f6fd7c71cf6bcf01566fcb4a494948060b"
+  },
+  "inputDigests": {
+    "__explodex__/authority.json": "4a5217cb5fcfc92896cefe9e8b1b0590cc270f4509584b8dd4458c84312d0200",
+    "__explodex__/sdk-input.json": "1a6b48186f4a41407985082a53e66a5147edcbaaf26df5330f7577b5fd54f355",
+    "explodex.config.ts": "42b63960304a2fc2f257d5c70514da60e013c654a624e19913e4039f7fe1ad1b",
+    "package.json": "d1010b14bd2f21190c6d337dc4551c4692c985570999ed5c0f62846ab90b3b40",
+    "src/bundle-gate-scan.ts": "56676a18ac53bc5a824383312d72ae6cf567f02d1f5ee4c9d0ab0cf68b29929e",
+    "src/index.ts": "9ef5be504d4256e8fda3760221b058131208630e5fc2b623d169bec05414df18",
+    "src/model.ts": "fc2357a70b5cf8fc8ffcfd80bda0a45f7c6e5efc9dd9e5d56655c5eb778a176d",
+    "src/panel.ts": "53987accbc09a8e9188b190e79bd6dfbffcba6acdb50afcaec2170fafc3e2c31",
+    "tsconfig.json": "3592dac5c3004679d9fde910c2321528525c16244d6a0ec76689f8bee2525705"
+  },
+  "outputDigests": {
+    "checksums.json": "b01d7c801eee34ea447651b5aa48eec7313ae86e73750ee1f6064c9256981a17",
+    "index.js": "9a0aa1a2fef5b16b49c0b4e3c261ad141ccc1f5e29b562459b5231441f18d2aa",
+    "index.js.map": "ea1b2dad6228d3c0b457736cbd49b6e4893217a8173807e27d5ce7ad3694c8e4",
+    "plugin.json": "f94864bd3652375088659978f3c60c21dbb88f1b1c109954302db091b0c77eee"
+  },
+  "payloadSha256": "889264a27c0717915dffbcae33c9701c3413cd271467753b7638a2b98bb807c2"
+}

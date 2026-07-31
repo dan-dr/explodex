@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "feature-flags-playground",
+  "version": "1.6.0",
+  "displayName": "Feature Flags Playground",
+  "description": "Toggle experimental feature flags from Settings with persisted propagation.",
+  "sdkRange": "^1.2.0",
+  "lifecycle": "dynamic",
+  "entry": "index.js",
+  "assets": []
+}
