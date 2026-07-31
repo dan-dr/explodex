@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "project-pins",
+  "version": "1.3.2",
+  "displayName": "Project Pins",
+  "description": "Pin a thread to its project instead of globally, and keep it at the top.",
+  "sdkRange": "^1.2.0",
+  "lifecycle": "dynamic",
+  "entry": "index.js",
+  "assets": []
+}

@@ -22,6 +22,7 @@ const migratedWorkspaces = [
   "explodex-plugin-project-colors",
   "explodex-plugin-command-menu-threads",
   "explodex-plugin-usage-reset-glance",
+  "explodex-plugin-project-pins",
 ];
 
 const migratedPluginIds = {
@@ -29,6 +30,7 @@ const migratedPluginIds = {
   "explodex-plugin-project-colors": "project-colors",
   "explodex-plugin-command-menu-threads": "command-menu-threads",
   "explodex-plugin-usage-reset-glance": "usage-reset-glance",
+  "explodex-plugin-project-pins": "project-pins",
 } as const;
 
 const forbiddenPrivateMarkers = [
