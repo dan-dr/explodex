@@ -29,9 +29,10 @@ push a tag without the corresponding current approval.
 
 ## 1. Prepare the release candidate
 
-Start from a clean, current `main` and confirm CI is green. Choose `vX.Y.Z`,
-update `CHANGELOG.md`, and update the package versions that are part of the
-candidate. Preserve contributor acknowledgements.
+Start from a clean release branch based on current `main`. CI runs for `main`
+and `codex/**` branch pushes. Choose `vX.Y.Z`, update `CHANGELOG.md`, and update
+the package versions that are part of the candidate. Preserve contributor
+acknowledgements.
 
 ```sh
 bun install --frozen-lockfile
@@ -108,11 +109,11 @@ Create the release commit with the repository-required commit helper. Do not
 push yet. Record the resulting commit SHA and re-run the candidate checks on
 that exact commit.
 
-Ask for the **push-commit gate** naming `origin`, `main`, and the exact SHA.
-Only after approval:
+Ask for the **push-commit gate** naming `origin`, the exact release branch, and
+the exact SHA. Only after approval:
 
 ```sh
-git push origin main
+git push origin <release-branch>
 ```
 
 Wait for CI on that exact SHA to pass.
