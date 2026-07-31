@@ -6,6 +6,7 @@ import { packagePluginWorkspace } from "../../src/plugin/package.ts";
 import { discoverInstalledPlugins } from "../../src/plugin/discovery.ts";
 import {
   installLocalPluginArchive,
+  installRemotePluginArchive,
   type PluginInstallAdapters,
 } from "../../src/plugin/install.ts";
 import { loadPluginsState, savePluginsStateAtomic } from "../../src/plugin/install-state.ts";
@@ -44,6 +45,62 @@ async function artifactDirectories(home: string, id: string): Promise<string[]> 
 }
 
 describe("M3-F02 immutable local installation", () => {
+  test("remote install verifies transport and persists exact registry provenance", async () => {
+    const { fixture, packaged } = await packagedFixture(
+      "explodex-plugin-install-remote",
+      "INSTALL_REMOTE_SENTINEL",
+    );
+    try {
+      const home = join(fixture.root, "home");
+      const artifactUrl =
+        `https://github.com/dan-dr/explodex/releases/download/v1/${packaged.archiveFileName}`;
+      const source = {
+        kind: "registry" as const,
+        registryUrl:
+          "https://github.com/dan-dr/explodex/releases/download/v1/registry.json",
+        repositoryUrl: "https://github.com/dan-dr/explodex",
+        artifactUrl,
+      };
+      const result = await installRemotePluginArchive({
+        archiveBytes: await readFile(packaged.outputPath),
+        expectedArchiveSha256: packaged.archiveSha256,
+        expectedIdentity: {
+          id: packaged.report.id,
+          version: packaged.report.version,
+          payloadSha256: packaged.payloadSha256,
+        },
+        source,
+        explodexHome: home,
+        now: () => "2026-08-01T00:00:00.000Z",
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error(result.message);
+      expect(result.source).toEqual(source);
+      expect(result.archiveSha256).toBe(packaged.archiveSha256);
+      expect(result.payloadSha256).toBe(packaged.payloadSha256);
+      expect(result.enabled).toBe(false);
+      expect(result.pendingReview).toBe(true);
+      const state = await loadPluginsState({ explodexHome: home });
+      expect(state.status).toBe("valid");
+      if (state.status !== "valid") throw new Error("expected valid state");
+      expect(state.state.plugins[result.id]?.installed[0]?.source).toEqual(source);
+
+      const mismatch = await installRemotePluginArchive({
+        archiveBytes: await readFile(packaged.outputPath),
+        expectedArchiveSha256: "00".repeat(32),
+        source,
+        explodexHome: join(fixture.root, "mismatch-home"),
+      });
+      expect(mismatch).toMatchObject({
+        ok: false,
+        code: "plugin.install.archive-digest-mismatch",
+        artifactCommitted: false,
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  }, 180_000);
+
   test("publishes immutable artifact before one private disabled state commit", async () => {
     const { fixture, packaged } = await packagedFixture(
       "explodex-plugin-install-atomic",

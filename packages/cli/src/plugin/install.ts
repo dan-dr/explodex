@@ -7,7 +7,13 @@ import type { ResidualLockAuthority } from "../runtime/locks.ts";
 import { validateInstallablePayloadDir } from "./artifact-validate.ts";
 import { reconcileInstalledPluginsUnlocked } from "./discovery.ts";
 import { encodeArtifactIdentity } from "./identity-encode.ts";
-import { ingestLocalPluginArchive, type PluginIngestionAdapters } from "./installer.ts";
+import {
+  ingestLocalPluginArchive,
+  ingestRemotePluginArchive,
+  type ExpectedPluginIdentity,
+  type PluginIngestionAdapters,
+  type PluginIngestionResult,
+} from "./installer.ts";
 import {
   loadArtifactProvenance,
   saveArtifactProvenanceOnce,
@@ -174,21 +180,16 @@ async function syncTree(root: string, files: readonly string[]): Promise<void> {
   }
 }
 
-async function installLocalPluginArchiveLocked(options: {
-  archivePath: string;
+async function installPluginArchiveLocked(options: {
   explodexHome: string;
+  ingest(): Promise<PluginIngestionResult>;
+  source: ArtifactSource;
   signal?: AbortSignal;
   adapters?: PluginInstallAdapters;
   now?: () => string;
 }): Promise<PluginInstallResult> {
   const home = resolve(options.explodexHome);
-  const genericStaging = join(home, "plugins", ".staging");
-  const ingested = await ingestLocalPluginArchive({
-    archivePath: options.archivePath,
-    stagingParent: genericStaging,
-    signal: options.signal,
-    adapters: options.adapters,
-  });
+  const ingested = await options.ingest();
   if (!ingested.ok) {
     return failure(ingested.code, ingested.message, { details: ingested.details });
   }
@@ -247,8 +248,7 @@ async function installLocalPluginArchiveLocked(options: {
       id: ingested.id,
       installedDirectoryName: encoded.installedDirectoryName,
     });
-    const source = existingArtifact?.source ?? persistedProvenance?.source ??
-      safeLocalArtifactSource(options.archivePath);
+    const source = existingArtifact?.source ?? persistedProvenance?.source ?? options.source;
     const provenanceArchiveSha256 = existingArtifact?.archiveSha256 ??
       persistedProvenance?.archiveSha256 ?? ingested.archiveSha256;
     const installedAt = existingArtifact?.installedAt ?? persistedProvenance?.installedAt ?? now;
@@ -381,17 +381,73 @@ export async function installLocalPluginArchive(options: {
   operationId?: string;
 }): Promise<PluginInstallResult> {
   const home = resolve(options.explodexHome);
-  const locked = await withPluginStateLock({
+  return installPluginArchiveWithLock({
     explodexHome: home,
+    signal: options.signal,
+    adapters: options.adapters,
+    now: options.now,
+    lockWaitMs: options.lockWaitMs,
+    operationId: options.operationId,
+    source: safeLocalArtifactSource(options.archivePath),
+    ingest: () => ingestLocalPluginArchive({
+      archivePath: options.archivePath,
+      stagingParent: join(home, "plugins", ".staging"),
+      signal: options.signal,
+      adapters: options.adapters,
+    }),
+  });
+}
+
+export async function installRemotePluginArchive(options: {
+  archiveBytes: Buffer;
+  expectedArchiveSha256: string;
+  expectedIdentity?: ExpectedPluginIdentity;
+  source: Exclude<ArtifactSource, { kind: "local" }>;
+  explodexHome: string;
+  signal?: AbortSignal;
+  adapters?: PluginInstallAdapters;
+  now?: () => string;
+  lockWaitMs?: number;
+  operationId?: string;
+}): Promise<PluginInstallResult> {
+  const home = resolve(options.explodexHome);
+  return installPluginArchiveWithLock({
+    explodexHome: home,
+    signal: options.signal,
+    adapters: options.adapters,
+    now: options.now,
+    lockWaitMs: options.lockWaitMs,
+    operationId: options.operationId,
+    source: options.source,
+    ingest: () => ingestRemotePluginArchive({
+      archiveBytes: options.archiveBytes,
+      expectedArchiveSha256: options.expectedArchiveSha256,
+      expectedIdentity: options.expectedIdentity,
+      stagingParent: join(home, "plugins", ".staging"),
+      signal: options.signal,
+      adapters: options.adapters,
+    }),
+  });
+}
+
+async function installPluginArchiveWithLock(options: {
+  explodexHome: string;
+  ingest(): Promise<PluginIngestionResult>;
+  source: ArtifactSource;
+  signal?: AbortSignal;
+  adapters?: PluginInstallAdapters;
+  now?: () => string;
+  lockWaitMs?: number;
+  operationId?: string;
+}): Promise<PluginInstallResult> {
+  const locked = await withPluginStateLock({
+    explodexHome: options.explodexHome,
     operation: "plugin.install",
     signal: options.signal,
     waitBoundMs: options.lockWaitMs,
     runtimeAdapters: options.adapters?.runtimeAdapters,
     operationId: options.operationId,
-    work: () => installLocalPluginArchiveLocked({
-      ...options,
-      explodexHome: home,
-    }),
+    work: () => installPluginArchiveLocked(options),
   });
   if (!locked.ok) {
     const completed = locked.completedValue;

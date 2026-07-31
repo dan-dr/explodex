@@ -8,38 +8,81 @@ import {
   type RenderedCliResult,
 } from "../output/envelope.ts";
 import { resolveExplodexHome } from "../home/paths.ts";
-import { installLocalPluginArchive } from "../plugin/install.ts";
+import {
+  installLocalPluginArchive,
+  installRemotePluginArchive,
+  type PluginInstallResult,
+} from "../plugin/install.ts";
+import type { ArtifactSource } from "../plugin/install-state.ts";
+import {
+  fetchPluginArchive,
+  parseCanonicalGitHubArtifactUrl,
+  RegistryClientError,
+  resolveRegistryPlugin,
+} from "../plugin/registry-client.ts";
 import { performPendingPluginReview } from "./plugin-review.ts";
 import type { CliIo } from "../output/write.ts";
 import { openPostOperationManagement } from "./post-operation-management.ts";
 
 const OPERATION = "plugin.install";
+const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 
-function takeTarget(tokens: readonly string[]): {
+const USAGE = "Usage: explodex plugin install [<archive> | --registry <id> | --github-url <url> --archive-sha256 <hex>] [--target <role>]";
+
+type ParsedInstallOptions = {
   target: string | null;
+  registry: string | null;
+  githubUrl: string | null;
+  archiveSha256: string | null;
+  payloadSha256: string | null;
   rest: string[];
-  missing: boolean;
-} {
+  missingOption: string | null;
+  duplicateOption: string | null;
+};
+
+function takeInstallOptions(tokens: readonly string[]): ParsedInstallOptions {
   const rest: string[] = [];
-  let target: string | null = null;
+  const values: Record<"target" | "registry" | "githubUrl" | "archiveSha256" | "payloadSha256", string | null> = {
+    target: null,
+    registry: null,
+    githubUrl: null,
+    archiveSha256: null,
+    payloadSha256: null,
+  };
+  const definitions = [
+    ["--target", "target"],
+    ["--registry", "registry"],
+    ["--github-url", "githubUrl"],
+    ["--archive-sha256", "archiveSha256"],
+    ["--payload-sha256", "payloadSha256"],
+  ] as const;
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index]!;
-    if (token === "--target") {
+    const definition = definitions.find(([flag]) => token === flag || token.startsWith(`${flag}=`));
+    if (definition !== undefined) {
+      const [flag, key] = definition;
+      if (values[key] !== null) {
+        return { ...values, rest, missingOption: null, duplicateOption: flag };
+      }
+      if (token.startsWith(`${flag}=`)) {
+        const value = token.slice(flag.length + 1);
+        if (value.length === 0) {
+          return { ...values, rest, missingOption: flag, duplicateOption: null };
+        }
+        values[key] = value;
+        continue;
+      }
       const next = tokens[index + 1];
       if (next === undefined || next.startsWith("-")) {
-        return { target, rest, missing: true };
+        return { ...values, rest, missingOption: flag, duplicateOption: null };
       }
-      target = next;
+      values[key] = next;
       index += 1;
-      continue;
-    }
-    if (token.startsWith("--target=")) {
-      target = token.slice("--target=".length);
       continue;
     }
     rest.push(token);
   }
-  return { target, rest, missing: false };
+  return { ...values, rest, missingOption: null, duplicateOption: null };
 }
 
 export async function runPluginInstall(options: {
@@ -50,15 +93,25 @@ export async function runPluginInstall(options: {
   endOfOptions: readonly string[];
   signal?: AbortSignal;
 }): Promise<RenderedCliResult> {
-  const parsed = takeTarget([...options.rest, ...options.endOfOptions]);
-  if (parsed.missing) {
+  const parsed = takeInstallOptions([...options.rest, ...options.endOfOptions]);
+  if (parsed.missingOption !== null) {
     return usageFailure({
       operation: OPERATION,
       code: "usage.missing-argument",
-      message: "Option --target requires a value.",
-      usageLine: "Usage: explodex plugin install <archive> [--target <role>]",
+      message: `Option ${parsed.missingOption} requires a value.`,
+      usageLine: USAGE,
       helpPath: "plugin install",
-      details: { option: "--target" },
+      details: { option: parsed.missingOption },
+    });
+  }
+  if (parsed.duplicateOption !== null) {
+    return usageFailure({
+      operation: OPERATION,
+      code: "usage.invalid-value",
+      message: `Option ${parsed.duplicateOption} may be supplied only once.`,
+      usageLine: USAGE,
+      helpPath: "plugin install",
+      details: { option: parsed.duplicateOption },
     });
   }
   const target = parsed.target ?? "none";
@@ -67,7 +120,7 @@ export async function runPluginInstall(options: {
       operation: OPERATION,
       code: "usage.invalid-value",
       message: `Invalid --target value '${target}'.`,
-      usageLine: "Usage: explodex plugin install <archive> [--target <role>]",
+      usageLine: USAGE,
       helpPath: "plugin install",
       details: { option: "--target", value: target },
     });
@@ -78,25 +131,87 @@ export async function runPluginInstall(options: {
       operation: OPERATION,
       code: "usage.unknown-option",
       message: `Unexpected option '${unexpected[0]}'.`,
-      usageLine: "Usage: explodex plugin install <archive> [--target <role>]",
+      usageLine: USAGE,
       helpPath: "plugin install",
       details: { option: unexpected[0] },
     });
   }
-  if (parsed.rest.length !== 1) {
+  if (parsed.rest.length > 1) {
     return usageFailure({
       operation: OPERATION,
-      code: parsed.rest.length === 0 ? "usage.missing-argument" : "usage.invalid-value",
-      message: parsed.rest.length === 0
-        ? "A prebuilt plugin archive is required."
-        : `Unexpected extra argument '${parsed.rest[1]}'.`,
-      usageLine: "Usage: explodex plugin install <archive> [--target <role>]",
+      code: "usage.invalid-value",
+      message: `Unexpected extra argument '${parsed.rest[1]}'.`,
+      usageLine: USAGE,
       helpPath: "plugin install",
+    });
+  }
+  const selectors = [
+    parsed.rest.length === 1 ? "archive" : null,
+    parsed.registry === null ? null : "--registry",
+    parsed.githubUrl === null ? null : "--github-url",
+  ].filter((value): value is string => value !== null);
+  if (selectors.length > 1) {
+    return usageFailure({
+      operation: OPERATION,
+      code: "usage.conflicting-options",
+      message: "Choose exactly one plugin source: local archive, --registry, or --github-url.",
+      usageLine: USAGE,
+      helpPath: "plugin install",
+      details: { sources: selectors },
+    });
+  }
+  if (selectors.length === 0) {
+    return usageFailure({
+      operation: OPERATION,
+      code: "usage.missing-argument",
+      message: "A local archive, --registry ID, or --github-url is required.",
+      usageLine: USAGE,
+      helpPath: "plugin install",
+    });
+  }
+  if (parsed.githubUrl !== null && parsed.archiveSha256 === null) {
+    return usageFailure({
+      operation: OPERATION,
+      code: "usage.missing-argument",
+      message: "Direct GitHub installation requires --archive-sha256.",
+      usageLine: USAGE,
+      helpPath: "plugin install",
+      details: { option: "--archive-sha256" },
+    });
+  }
+  if (parsed.archiveSha256 !== null && !SHA256_PATTERN.test(parsed.archiveSha256)) {
+    return usageFailure({
+      operation: OPERATION,
+      code: "usage.invalid-value",
+      message: "Option --archive-sha256 must be 64 lowercase hexadecimal characters.",
+      usageLine: USAGE,
+      helpPath: "plugin install",
+      details: { option: "--archive-sha256" },
+    });
+  }
+  if (parsed.payloadSha256 !== null && !SHA256_PATTERN.test(parsed.payloadSha256)) {
+    return usageFailure({
+      operation: OPERATION,
+      code: "usage.invalid-value",
+      message: "Option --payload-sha256 must be 64 lowercase hexadecimal characters.",
+      usageLine: USAGE,
+      helpPath: "plugin install",
+      details: { option: "--payload-sha256" },
+    });
+  }
+  if (parsed.githubUrl === null &&
+    (parsed.archiveSha256 !== null || parsed.payloadSha256 !== null)) {
+    return usageFailure({
+      operation: OPERATION,
+      code: "usage.conflicting-options",
+      message: "Digest options apply only to --github-url installation.",
+      usageLine: USAGE,
+      helpPath: "plugin install",
+      details: { source: selectors[0] },
     });
   }
 
   const cwd = options.env.PWD ?? process.cwd();
-  const archivePath = resolve(cwd, parsed.rest[0]!);
   let explodexHome: string;
   try {
     explodexHome = resolveExplodexHome({
@@ -110,11 +225,91 @@ export async function runPluginInstall(options: {
       message: error instanceof Error ? error.message : "Unable to resolve Explodex home.",
     });
   }
-  const result = await installLocalPluginArchive({
-    archivePath,
-    explodexHome,
-    signal: options.signal,
-  });
+  let result: PluginInstallResult;
+  let transportTrust: "computed-local-archive-not-publisher-authenticated" |
+    "verified-publisher-declared-archive-sha256";
+  try {
+    if (parsed.rest.length === 1) {
+      result = await installLocalPluginArchive({
+        archivePath: resolve(cwd, parsed.rest[0]!),
+        explodexHome,
+        signal: options.signal,
+      });
+      transportTrust = "computed-local-archive-not-publisher-authenticated";
+    } else if (parsed.registry !== null) {
+      const resolved = await resolveRegistryPlugin({
+        id: parsed.registry,
+        registryUrl: options.env.EXPLODEX_PLUGIN_REGISTRY_URL,
+        signal: options.signal,
+      });
+      const archiveBytes = await fetchPluginArchive({
+        artifactUrl: resolved.entry.artifactUrl,
+        signal: options.signal,
+      });
+      const source: Extract<ArtifactSource, { kind: "registry" }> = {
+        kind: "registry",
+        registryUrl: resolved.registryUrl,
+        repositoryUrl: resolved.repositoryUrl,
+        artifactUrl: resolved.entry.artifactUrl,
+      };
+      result = await installRemotePluginArchive({
+        archiveBytes,
+        expectedArchiveSha256: resolved.entry.archiveSha256,
+        expectedIdentity: {
+          id: parsed.registry,
+          version: resolved.entry.version,
+          payloadSha256: resolved.entry.payloadSha256,
+        },
+        source,
+        explodexHome,
+        signal: options.signal,
+      });
+      transportTrust = "verified-publisher-declared-archive-sha256";
+    } else {
+      const canonical = parseCanonicalGitHubArtifactUrl(parsed.githubUrl!);
+      const archiveBytes = await fetchPluginArchive({
+        artifactUrl: canonical.artifactUrl,
+        signal: options.signal,
+      });
+      const source: Extract<ArtifactSource, { kind: "github" }> = {
+        kind: "github",
+        repositoryUrl: canonical.repositoryUrl,
+        artifactUrl: canonical.artifactUrl,
+        expectedArchiveSha256: parsed.archiveSha256!,
+      };
+      result = await installRemotePluginArchive({
+        archiveBytes,
+        expectedArchiveSha256: parsed.archiveSha256!,
+        expectedIdentity: parsed.payloadSha256 === null
+          ? undefined
+          : { payloadSha256: parsed.payloadSha256 },
+        source,
+        explodexHome,
+        signal: options.signal,
+      });
+      transportTrust = "verified-publisher-declared-archive-sha256";
+    }
+  } catch (error: unknown) {
+    const interrupted = options.signal?.aborted === true;
+    const code = interrupted
+      ? "operation.interrupted"
+      : error instanceof RegistryClientError
+        ? error.code
+        : "plugin.registry.fetch-failed";
+    const message = interrupted
+      ? "Plugin installation was interrupted."
+      : error instanceof RegistryClientError
+        ? error.message
+        : "Remote plugin fetch failed.";
+    return renderFailure({
+      operation: OPERATION,
+      code,
+      message,
+      details: error instanceof RegistryClientError ? error.details : undefined,
+      exitCode: exitCodeForError(code),
+      humanStderr: `${message}\nerror.code: ${code}\n`,
+    });
+  }
   if (!result.ok) {
     return renderFailure({
       operation: OPERATION,
@@ -160,7 +355,7 @@ export async function runPluginInstall(options: {
     enabled: result.enabled,
     pendingReview: result.pendingReview,
     target,
-    transportTrust: "computed-local-archive-not-publisher-authenticated" as const,
+    transportTrust,
   };
   if (result.pendingReview && target !== "none") {
     const review = await performPendingPluginReview({
@@ -240,7 +435,7 @@ export async function runPluginInstall(options: {
   const human = [
     `${result.outcome === "already-installed" ? "Already installed" : result.outcome === "rediscovered" ? "Rediscovered" : "Installed"} plugin: ${result.id}@${result.version}`,
     `  payloadSha256: ${result.payloadSha256}`,
-    `  archiveSha256: ${result.archiveSha256} (computed from the local archive; not publisher-authenticated)`,
+    `  archiveSha256: ${result.archiveSha256} (${transportTrust === "verified-publisher-declared-archive-sha256" ? "verified against publisher-declared digest" : "computed from the local archive; not publisher-authenticated"})`,
     `  artifact: ${result.artifactPath}`,
     `  source: ${result.sourceLabel}`,
     result.enabled

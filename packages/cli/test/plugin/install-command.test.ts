@@ -34,6 +34,78 @@ export default definePlugin({ setup() {} });
 }
 
 describe("plugin install immutable command", () => {
+  test("rejects source conflicts and missing direct-GitHub trust input before I/O", async () => {
+    const fixture = await createValidWorkspace({ name: "explodex-plugin-install-usage" });
+    try {
+      const home = join(fixture.root, "home");
+      const cases = [
+        {
+          args: ["missing.tgz", "--registry", "alpha"],
+          code: "usage.conflicting-options",
+        },
+        {
+          args: [
+            "--registry",
+            "alpha",
+            "--github-url",
+            "https://github.com/dan-dr/explodex/releases/download/v1/alpha.tgz",
+            "--archive-sha256",
+            "11".repeat(32),
+          ],
+          code: "usage.conflicting-options",
+        },
+        {
+          args: [
+            "--github-url",
+            "https://github.com/dan-dr/explodex/releases/download/v1/alpha.tgz",
+          ],
+          code: "usage.missing-argument",
+        },
+      ];
+      for (const item of cases) {
+        const captured = await captureCli(
+          ["--json", "--home", home, "plugin", "install", ...item.args],
+          { ...process.env, HOME: home, PWD: fixture.root },
+        );
+        expect(captured.exitCode).toBe(2);
+        const envelope = assertSingleJsonValue(captured.stdout) as {
+          error: { code: string };
+        };
+        expect(envelope.error.code).toBe(item.code);
+      }
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  test("rejects noncanonical direct-GitHub URLs before network access", async () => {
+    const fixture = await createValidWorkspace({ name: "explodex-plugin-install-url" });
+    try {
+      const home = join(fixture.root, "home");
+      const captured = await captureCli(
+        [
+          "--json",
+          "--home",
+          home,
+          "plugin",
+          "install",
+          "--github-url",
+          "https://example.com/alpha.tgz",
+          "--archive-sha256",
+          "11".repeat(32),
+        ],
+        { ...process.env, HOME: home, PWD: fixture.root },
+      );
+      expect(captured.exitCode).toBe(1);
+      const envelope = assertSingleJsonValue(captured.stdout) as {
+        error: { code: string };
+      };
+      expect(envelope.error.code).toBe("plugin.install.github-url-invalid");
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
   test("plugin install and add use the stable envelope and converge on one disabled identity", async () => {
     const { fixture, packaged } = await buildArchive();
     try {
