@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-01
+
+### Added
+
+- Public `@explodex/sdk` package and Node 22/24 `explodex` package CLI.
+- Seven TypeScript first-party plugin workspaces and deterministic registry staging.
+- Verified registry and immutable GitHub release archive installation.
+
+### Changed
+
+- Target the installed, read-only ChatGPT app through bounded one-shot operations.
+- Replace bundled root plugins, SDK, injector, launcher, and copied app surfaces with package workspaces.
+- Require separate digest-bound approval gates for tags, npm publication, and GitHub Releases.
+
 ## [0.2.2] - 2026-06-29
 ### Added
 - Interactive `explodex` CLI with first-run launcher setup (`@clack/prompts`).

@@ -13,7 +13,7 @@
     },
     "packages/cli": {
       "name": "explodex",
-      "version": "0.2.2",
+      "version": "0.3.0",
       "bin": {
         "explodex": "./dist/bin/explodex.js",
       },
