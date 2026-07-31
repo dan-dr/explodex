@@ -13,6 +13,8 @@ describe("release documentation approval binding", () => {
     );
     const workflowDispatch = docs.indexOf("gh workflow run release.yml");
     const npmSection = docs.indexOf("## 6. Publish npm");
+    const packageBuild = ciWorkflow.indexOf("run: bun run build:npm");
+    const packageTypecheck = ciWorkflow.indexOf("bun run checkTs");
 
     expect(workflowDispatch).toBeGreaterThan(0);
     expect(workflowDispatch).toBeLessThan(npmSection);
@@ -23,5 +25,7 @@ describe("release documentation approval binding", () => {
     expect(docs).toContain("git push origin <release-branch>");
     expect(docs).not.toContain("git push origin main");
     expect(ciWorkflow).toContain('- "codex/**"');
+    expect(packageBuild).toBeGreaterThan(0);
+    expect(packageBuild).toBeLessThan(packageTypecheck);
   });
 });
