@@ -122,8 +122,9 @@ exact renderer. The SDK provides:
 Explodex injects locally into Codex's renderer inside ChatGPT. It **never
 modifies** `/Applications/ChatGPT.app`. Enabled plugins are trusted unsandboxed
 renderer code, so only approve exact artifacts you trust. Because the SDK hooks
-host internals, a plugin may need an update after a ChatGPT release. Re-run the
-compatibility probe and isolated development proof after every host update.
+host internals, a plugin may need an update after a ChatGPT release. Re-check
+`explodex compatibility status` and repeat isolated plugin development proof
+after every host update.
 
 macOS only for now. Not affiliated with, endorsed by, or supported by OpenAI.
 
@@ -137,4 +138,3 @@ macOS only for now. Not affiliated with, endorsed by, or supported by OpenAI.
 | [docs/local-development.md](docs/local-development.md) | Isolated development lifecycle and plugin flow |
 | [docs/decisions/](docs/decisions/) | Current package and runtime architecture decisions |
 | [docs/windows-feasibility.md](docs/windows-feasibility.md) | Windows feasibility spike; not a support claim |
-| [docs/plugins/README.md](docs/plugins/README.md) | First-party plugin notes |

@@ -7,7 +7,7 @@ describe("human help and usage (side-effect free)", () => {
     expect(captured.exitCode).toBe(0);
     expect(captured.stdout).toContain("/Applications/ChatGPT.app");
     expect(captured.stdout).toContain("Explodex runs no daemon");
-    expect(captured.stdout).toContain("compatibility probe");
+    expect(captured.stdout).toContain("compatibility status");
     expect(captured.stdout).toContain("127.0.0.1:9333");
     expect(captured.stdout).toContain("main apply");
     expect(captured.stdout).not.toContain("Codex.app");

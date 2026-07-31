@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { randomUUID } from "node:crypto";
 import {
   chmod,
   copyFile,
@@ -16,6 +17,8 @@ const repositoryRoot = join(packageRoot, "..", "..");
 const stagingRoot = join(packageRoot, "dist-build");
 const finalRoot = join(packageRoot, "dist");
 const backupRoot = join(packageRoot, `.dist-backup-${process.pid}`);
+const buildLockRoot = join(packageRoot, ".dist-build.lock");
+const BUILD_LOCK_TIMEOUT_MS = 180_000;
 const tsc = join(repositoryRoot, "node_modules", ".bin", "tsc");
 
 let interruptedBy: "SIGINT" | "SIGTERM" | null = null;
@@ -28,11 +31,96 @@ const onSigterm = (): void => {
 process.on("SIGINT", onSigint);
 process.on("SIGTERM", onSigterm);
 
+const releaseBuildLock = await acquireBuildLock();
 try {
   await buildAndPublish();
 } finally {
+  await releaseBuildLock();
   process.removeListener("SIGINT", onSigint);
   process.removeListener("SIGTERM", onSigterm);
+}
+
+type BuildLockOwner = {
+  pid: number;
+  token: string;
+  createdAt: number;
+};
+
+async function acquireBuildLock(): Promise<() => Promise<void>> {
+  const deadline = Date.now() + BUILD_LOCK_TIMEOUT_MS;
+  const owner: BuildLockOwner = {
+    pid: process.pid,
+    token: randomUUID(),
+    createdAt: Date.now(),
+  };
+
+  for (;;) {
+    throwIfInterrupted();
+    try {
+      await mkdir(buildLockRoot);
+      await writeFile(
+        join(buildLockRoot, "owner.json"),
+        `${JSON.stringify(owner)}\n`,
+        "utf8",
+      );
+      return async () => {
+        const current = await readBuildLockOwner();
+        if (current?.token === owner.token) {
+          await rm(buildLockRoot, { recursive: true, force: true });
+        }
+      };
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (await buildLockIsStale()) {
+        await rm(buildLockRoot, { recursive: true, force: true });
+        continue;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `Timed out waiting ${BUILD_LOCK_TIMEOUT_MS}ms for CLI build lock ${buildLockRoot}`,
+        );
+      }
+      await Bun.sleep(50);
+    }
+  }
+}
+
+async function readBuildLockOwner(): Promise<BuildLockOwner | null> {
+  try {
+    const value = JSON.parse(
+      await readFile(join(buildLockRoot, "owner.json"), "utf8"),
+    ) as Partial<BuildLockOwner>;
+    return typeof value.pid === "number" &&
+      Number.isSafeInteger(value.pid) &&
+      value.pid > 0 &&
+      typeof value.token === "string" &&
+      value.token.length > 0 &&
+      typeof value.createdAt === "number" &&
+      Number.isFinite(value.createdAt)
+      ? value as BuildLockOwner
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+async function buildLockIsStale(): Promise<boolean> {
+  const owner = await readBuildLockOwner();
+  if (owner !== null) {
+    try {
+      process.kill(owner.pid, 0);
+      return false;
+    } catch (error: unknown) {
+      return (error as NodeJS.ErrnoException).code === "ESRCH";
+    }
+  }
+
+  try {
+    const lockStat = await stat(buildLockRoot);
+    return Date.now() - lockStat.mtimeMs >= 5_000;
+  } catch (error: unknown) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT";
+  }
 }
 
 async function buildAndPublish(): Promise<void> {

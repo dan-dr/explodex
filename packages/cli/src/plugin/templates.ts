@@ -52,7 +52,8 @@ export function readmeTemplate(options: {
 }): string {
   return `# ${options.displayName}
 
-Plugin ID: \`${options.id}\`  
+Plugin ID: \`${options.id}\`
+
 Package: \`${options.packageName}\`
 
 ## Authoring

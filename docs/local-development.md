@@ -75,7 +75,7 @@ verification pending. Never restart the authoring app as a fallback.
 
 ## Local SDK source
 
-The public CLI reserves one explicit foreground command for plugin-plus-SDK
+The public CLI provides one explicit foreground command for plugin-plus-SDK
 work:
 
 ```sh
@@ -87,8 +87,8 @@ SDK generation completes before its dependent plugin generation. Local SDK
 authority remains scoped to the exact owned development renderer. Local-SDK
 output cannot be packaged, recommended, or transferred to main. Graduation
 requires a rebuild without the override and a fresh development validation of
-the publishable bytes. This command is reserved and unavailable in the current
-release, so do not treat local-SDK development as graduated until it lands.
+the publishable bytes. Do not treat local-SDK development as graduated until
+that rebuild and validation pass.
 
 ## Plugin installation state
 
@@ -112,6 +112,7 @@ First-party plugin packages live under
 artifacts through the package CLI. Never hand-edit generated JavaScript,
 manifests, checksums, source maps, or generation receipts.
 
-See [development.md](./development.md) for the complete package and registry
-workflow and [separate-dev-instances.md](./separate-dev-instances.md) for the
-ownership contract.
+See [development.md](./development.md) for the complete package, registry, and
+port-9444 renderer diagnostics workflow. See
+[separate-dev-instances.md](./separate-dev-instances.md) for the ownership
+contract.

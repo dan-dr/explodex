@@ -99,7 +99,7 @@ function rootHelp(): string {
   lines.push("Compatibility");
   lines.push("  Host: read-only /Applications/ChatGPT.app only.");
   lines.push("  Ports: main 127.0.0.1:9333, isolated development 127.0.0.1:9444.");
-  lines.push("  Prove compatibility with: explodex compatibility probe");
+  lines.push("  Inspect compatibility with: explodex compatibility status");
   lines.push("");
   lines.push("Main recovery");
   lines.push("  Explodex never automatically restarts or debug-relaunches an existing authoring main.");
@@ -129,8 +129,7 @@ function groupHelp(group: GroupDescriptor): string {
   lines.push("Commands");
   for (const command of group.commands) {
     const path = command.path.join(" ");
-    const tag = command.availability === "reserved" ? " (reserved)" : "";
-    lines.push(`  ${path.padEnd(22)}${command.summary}${tag}`);
+    lines.push(`  ${path.padEnd(22)}${command.summary}`);
     if (command.aliases !== undefined && command.aliases.length > 0) {
       lines.push(`      Aliases: ${command.aliases.join(", ")}`);
     }
@@ -164,9 +163,6 @@ function commandHelp(group: GroupDescriptor, command: CommandDescriptor): string
   lines.push(`  ${command.summary}`);
   if (command.aliases !== undefined && command.aliases.length > 0) {
     lines.push(`  Aliases: ${command.aliases.join(", ")}`);
-  }
-  if (command.availability === "reserved") {
-    lines.push("  Status: reserved for a later milestone (not executable in this release).");
   }
   lines.push("");
   lines.push("Arguments");
@@ -208,7 +204,7 @@ function commandHelp(group: GroupDescriptor, command: CommandDescriptor): string
     lines.push("");
   } else if (group.name === "host" || group.name === "compatibility" || group.name === "main") {
     lines.push("Recovery");
-    lines.push("  Run explodex compatibility probe on the exact owned 9444 development target.");
+    lines.push("  Run explodex compatibility status, then validate on the exact owned 9444 development target.");
     lines.push("  Provide a manual debug-enabled main on 127.0.0.1:9333 when final apply is required.");
     lines.push("");
   }

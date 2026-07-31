@@ -14,8 +14,8 @@ import {
   CANONICAL_EXECUTABLE_NAME,
   CANONICAL_SIGNING_TEAM,
   COMPATIBILITY_HOST_HASH_RELATIVE_PATHS,
-  MISSION_BASELINE_APP_BUILD,
-  MISSION_BASELINE_APP_VERSION,
+  PINNED_BASELINE_APP_BUILD,
+  PINNED_BASELINE_APP_VERSION,
 } from "../../src/host/constants.ts";
 
 type Entry =
@@ -78,8 +78,8 @@ export function defaultCanonicalBundleOptions(
     bundlePath: CANONICAL_BUNDLE_PATH,
     bundleId: CANONICAL_BUNDLE_ID,
     executableName: CANONICAL_EXECUTABLE_NAME,
-    appVersion: MISSION_BASELINE_APP_VERSION,
-    appBuild: MISSION_BASELINE_APP_BUILD,
+    appVersion: PINNED_BASELINE_APP_VERSION,
+    appBuild: PINNED_BASELINE_APP_BUILD,
     signingTeam: CANONICAL_SIGNING_TEAM,
     ...overrides,
   };

@@ -46,8 +46,8 @@ Review the packed file list. Produce the actual npm tarball in a disposable
 directory and record its SHA-256. Confirm the repository has no unexpected
 generated diff.
 
-The public `explodex release` command paths are reserved. Do not document or
-use them as implemented automation.
+The public CLI has no `explodex release` command group. Use the repository
+staging and publication scripts documented below.
 
 ## 2. Build the seven plugin archives
 

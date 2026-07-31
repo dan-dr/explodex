@@ -3,8 +3,8 @@ import {
   COMPATIBILITY_DEPENDENT_OPERATIONS,
   COMPATIBILITY_INDEPENDENT_OPERATIONS,
   DEFAULT_PROBE_TOOL_VERSION,
-  MISSION_BASELINE_APP_BUILD,
-  MISSION_BASELINE_APP_VERSION,
+  PINNED_BASELINE_APP_BUILD,
+  PINNED_BASELINE_APP_VERSION,
   PROBE_SCHEMA_VERSION,
   PUBLIC_COMPATIBILITY_PROBE_HINT,
 } from "../../src/host/constants.ts";
@@ -150,8 +150,8 @@ describe("compatibility key exactness (VAL-HOST-006)", () => {
     const { host } = await validHost();
     const key = deriveCompatibilityKey({ host, sdkRuntime: SDK_A, probe: PROBE });
     expect(key.schemaVersion).toBe(1);
-    expect(key.appVersion).toBe(MISSION_BASELINE_APP_VERSION);
-    expect(key.appBuild).toBe(MISSION_BASELINE_APP_BUILD);
+    expect(key.appVersion).toBe(PINNED_BASELINE_APP_VERSION);
+    expect(key.appBuild).toBe(PINNED_BASELINE_APP_BUILD);
     expect(key.signingTeam).toBe("2DC432GLL2");
     expect(key.sdkRuntimeSha256).toBe(SDK_A.sha256);
     expect(key.probeSchemaVersion).toBe(PROBE_SCHEMA_VERSION);

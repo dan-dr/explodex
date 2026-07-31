@@ -48,16 +48,6 @@ const ACCEPTS_POSITIONALS = new Set([
   "main.apply",
 ]);
 
-const IMPLEMENTED_RESERVED_OPERATIONS = new Set([
-  "plugin.disable",
-  "plugin.remove",
-  "dev.inject",
-  "dev.focus",
-  "plugin.update.apply",
-  "plugin.develop",
-  "main.apply",
-]);
-
 export async function dispatch(options: {
   parsed: ParseSuccess;
   env: NodeJS.ProcessEnv;
@@ -95,24 +85,6 @@ export async function dispatch(options: {
     rest: parsed.resolved.rest,
     endOfOptions: parsed.endOfOptions,
   };
-
-  if (
-    command.availability === "reserved" &&
-    !IMPLEMENTED_RESERVED_OPERATIONS.has(command.operation)
-  ) {
-    const path = publicPathFor(command, group.name);
-    return renderFailure({
-      operation: command.operation,
-      code: "usage.command-unavailable",
-      message: `Command '${path}' is reserved and not available in this release.`,
-      details: { command: path, operation: command.operation },
-      humanStderr: [
-        `Command '${path}' is reserved and not available in this release.`,
-        `error.code: usage.command-unavailable`,
-        `Run 'explodex help ${path}' for details.`,
-      ].join("\n") + "\n",
-    });
-  }
 
   // Available commands without positional arguments reject leftovers.
   // Commands that accept arguments parse rest themselves.

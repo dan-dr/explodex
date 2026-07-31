@@ -14,13 +14,10 @@ Description
 
 Groups
   host            Read-only ChatGPT.app identity and host evidence.
-  compatibility   Exact compatibility key status and isolated proof.
-  main            Authoring-main classification, launch, attach, and final apply.
+  compatibility   Exact compatibility key status.
+  main            Authoring-main classification and final apply.
   plugin          Plugin authoring, artifacts, lifecycle, and registry operations.
   dev             One persistent isolated development instance on 127.0.0.1:9444.
-  legacy          Legacy doctor and exact itemized cleanup.
-  skill           Install or update the matching plugin-builder skill.
-  release         Release candidate, rehearsal, publication, and verification.
 
 Global options
   -h, --help
@@ -47,7 +44,7 @@ Environment
 Compatibility
   Host: read-only /Applications/ChatGPT.app only.
   Ports: main 127.0.0.1:9333, isolated development 127.0.0.1:9444.
-  Prove compatibility with: explodex compatibility probe
+  Inspect compatibility with: explodex compatibility status
 
 Main recovery
   Explodex never automatically restarts or debug-relaunches an existing authoring main.
@@ -79,13 +76,10 @@ Description
 
 Groups
   host            Read-only ChatGPT.app identity and host evidence.
-  compatibility   Exact compatibility key status and isolated proof.
-  main            Authoring-main classification, launch, attach, and final apply.
+  compatibility   Exact compatibility key status.
+  main            Authoring-main classification and final apply.
   plugin          Plugin authoring, artifacts, lifecycle, and registry operations.
   dev             One persistent isolated development instance on 127.0.0.1:9444.
-  legacy          Legacy doctor and exact itemized cleanup.
-  skill           Install or update the matching plugin-builder skill.
-  release         Release candidate, rehearsal, publication, and verification.
 
 Global options
   -h, --help
@@ -112,7 +106,7 @@ Environment
 Compatibility
   Host: read-only /Applications/ChatGPT.app only.
   Ports: main 127.0.0.1:9333, isolated development 127.0.0.1:9444.
-  Prove compatibility with: explodex compatibility probe
+  Inspect compatibility with: explodex compatibility status
 
 Main recovery
   Explodex never automatically restarts or debug-relaunches an existing authoring main.
@@ -140,7 +134,6 @@ Description
 Commands
   report                Read-only canonical host identity and separate compatibility summary.
       Aliases: inspect
-  extract               Copy only requested allowlisted host evidence to the private inspection cache. (reserved)
 
 Shared options
   See global options: explodex --help
@@ -164,7 +157,6 @@ Description
 Commands
   report                Read-only canonical host identity and separate compatibility summary.
       Aliases: inspect
-  extract               Copy only requested allowlisted host evidence to the private inspection cache. (reserved)
 
 Shared options
   See global options: explodex --help
@@ -205,7 +197,7 @@ Examples
   explodex --json host report
 
 Recovery
-  Run explodex compatibility probe on the exact owned 9444 development target.
+  Run explodex compatibility status, then validate on the exact owned 9444 development target.
   Provide a manual debug-enabled main on 127.0.0.1:9333 when final apply is required.
 "
 `;
@@ -237,7 +229,7 @@ Examples
   explodex --json host report
 
 Recovery
-  Run explodex compatibility probe on the exact owned 9444 development target.
+  Run explodex compatibility status, then validate on the exact owned 9444 development target.
   Provide a manual debug-enabled main on 127.0.0.1:9333 when final apply is required.
 "
 `;
@@ -269,7 +261,7 @@ Examples
   explodex --json host report
 
 Recovery
-  Run explodex compatibility probe on the exact owned 9444 development target.
+  Run explodex compatibility status, then validate on the exact owned 9444 development target.
   Provide a manual debug-enabled main on 127.0.0.1:9333 when final apply is required.
 "
 `;
@@ -301,58 +293,70 @@ Examples
   explodex --json host report
 
 Recovery
-  Run explodex compatibility probe on the exact owned 9444 development target.
+  Run explodex compatibility status, then validate on the exact owned 9444 development target.
   Provide a manual debug-enabled main on 127.0.0.1:9333 when final apply is required.
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 9`] = `
 "Usage
-  explodex host extract --path <path>...
+  explodex compatibility <command> [arguments] [options]
 
-Summary
-  Copy only requested allowlisted host evidence to the private inspection cache.
-  Status: reserved for a later milestone (not executable in this release).
+Description
+  Exact compatibility key status.
 
-Arguments
-  None.
+Commands
+  status                Read-only exact compatibility key and status.
+      Aliases: report
 
-Options
-      --path <path>...
-      Allowlisted host evidence path. (required; repeatable)
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
+Shared options
+  See global options: explodex --help
 
 Examples
-  explodex host extract --path <path>...
-  explodex --json host extract --path <path>...
+  explodex compatibility status
 
-Recovery
-  Run explodex compatibility probe on the exact owned 9444 development target.
-  Provide a manual debug-enabled main on 127.0.0.1:9333 when final apply is required.
+More information
+  explodex help compatibility <command>
+  explodex compatibility <command> --help
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 10`] = `
 "Usage
-  explodex host extract --path <path>...
+  explodex compatibility <command> [arguments] [options]
+
+Description
+  Exact compatibility key status.
+
+Commands
+  status                Read-only exact compatibility key and status.
+      Aliases: report
+
+Shared options
+  See global options: explodex --help
+
+Examples
+  explodex compatibility status
+
+More information
+  explodex help compatibility <command>
+  explodex compatibility <command> --help
+"
+`;
+
+exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 11`] = `
+"Usage
+  explodex compatibility status
 
 Summary
-  Copy only requested allowlisted host evidence to the private inspection cache.
-  Status: reserved for a later milestone (not executable in this release).
+  Read-only exact compatibility key and status.
+  Aliases: report
 
 Arguments
   None.
 
 Options
-      --path <path>...
-      Allowlisted host evidence path. (required; repeatable)
+  No command-local options.
   Global options are accepted anywhere before --; see explodex --help.
 
 Output
@@ -363,60 +367,44 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex host extract --path <path>...
-  explodex --json host extract --path <path>...
+  explodex compatibility status
+  explodex --json compatibility status
 
 Recovery
-  Run explodex compatibility probe on the exact owned 9444 development target.
+  Run explodex compatibility status, then validate on the exact owned 9444 development target.
   Provide a manual debug-enabled main on 127.0.0.1:9333 when final apply is required.
-"
-`;
-
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 11`] = `
-"Usage
-  explodex compatibility <command> [arguments] [options]
-
-Description
-  Exact compatibility key status and isolated proof.
-
-Commands
-  status                Read-only exact compatibility key and status.
-      Aliases: report
-  probe                 Complete isolated-development proof on 9444; persist only one complete result. (reserved)
-
-Shared options
-  See global options: explodex --help
-
-Examples
-  explodex compatibility status
-
-More information
-  explodex help compatibility <command>
-  explodex compatibility <command> --help
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 12`] = `
 "Usage
-  explodex compatibility <command> [arguments] [options]
+  explodex compatibility status
 
-Description
-  Exact compatibility key status and isolated proof.
+Summary
+  Read-only exact compatibility key and status.
+  Aliases: report
 
-Commands
-  status                Read-only exact compatibility key and status.
-      Aliases: report
-  probe                 Complete isolated-development proof on 9444; persist only one complete result. (reserved)
+Arguments
+  None.
 
-Shared options
-  See global options: explodex --help
+Options
+  No command-local options.
+  Global options are accepted anywhere before --; see explodex --help.
+
+Output
+  Human mode writes the primary result to stdout and diagnostics to stderr.
+  --json writes one schemaVersion-1 envelope to stdout.
+
+Exit status
+  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
   explodex compatibility status
+  explodex --json compatibility status
 
-More information
-  explodex help compatibility <command>
-  explodex compatibility <command> --help
+Recovery
+  Run explodex compatibility status, then validate on the exact owned 9444 development target.
+  Provide a manual debug-enabled main on 127.0.0.1:9333 when final apply is required.
 "
 `;
 
@@ -447,7 +435,7 @@ Examples
   explodex --json compatibility status
 
 Recovery
-  Run explodex compatibility probe on the exact owned 9444 development target.
+  Run explodex compatibility status, then validate on the exact owned 9444 development target.
   Provide a manual debug-enabled main on 127.0.0.1:9333 when final apply is required.
 "
 `;
@@ -479,82 +467,63 @@ Examples
   explodex --json compatibility status
 
 Recovery
-  Run explodex compatibility probe on the exact owned 9444 development target.
+  Run explodex compatibility status, then validate on the exact owned 9444 development target.
   Provide a manual debug-enabled main on 127.0.0.1:9333 when final apply is required.
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 15`] = `
 "Usage
-  explodex compatibility status
+  explodex main <command> [arguments] [options]
 
-Summary
-  Read-only exact compatibility key and status.
-  Aliases: report
+Description
+  Authoring-main classification and final apply.
 
-Arguments
-  None.
+Commands
+  status                Read-only main classification and separate 9333 obstruction.
+  apply                 Final hot-safe apply after exact dev validation and fresh main authorization.
 
-Options
-  No command-local options.
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
+Shared options
+  See global options: explodex --help
 
 Examples
-  explodex compatibility status
-  explodex --json compatibility status
+  explodex main status
 
-Recovery
-  Run explodex compatibility probe on the exact owned 9444 development target.
-  Provide a manual debug-enabled main on 127.0.0.1:9333 when final apply is required.
+More information
+  explodex help main <command>
+  explodex main <command> --help
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 16`] = `
 "Usage
-  explodex compatibility status
+  explodex main <command> [arguments] [options]
 
-Summary
-  Read-only exact compatibility key and status.
-  Aliases: report
+Description
+  Authoring-main classification and final apply.
 
-Arguments
-  None.
+Commands
+  status                Read-only main classification and separate 9333 obstruction.
+  apply                 Final hot-safe apply after exact dev validation and fresh main authorization.
 
-Options
-  No command-local options.
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
+Shared options
+  See global options: explodex --help
 
 Examples
-  explodex compatibility status
-  explodex --json compatibility status
+  explodex main status
 
-Recovery
-  Run explodex compatibility probe on the exact owned 9444 development target.
-  Provide a manual debug-enabled main on 127.0.0.1:9333 when final apply is required.
+More information
+  explodex help main <command>
+  explodex main <command> --help
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 17`] = `
 "Usage
-  explodex compatibility probe
+  explodex main status
 
 Summary
-  Complete isolated-development proof on 9444; persist only one complete result.
-  Status: reserved for a later milestone (not executable in this release).
+  Read-only main classification and separate 9333 obstruction.
 
 Arguments
   None.
@@ -571,22 +540,21 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex compatibility probe
-  explodex --json compatibility probe
+  explodex main status
+  explodex --json main status
 
 Recovery
-  Run explodex compatibility probe on the exact owned 9444 development target.
+  Run explodex compatibility status, then validate on the exact owned 9444 development target.
   Provide a manual debug-enabled main on 127.0.0.1:9333 when final apply is required.
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 18`] = `
 "Usage
-  explodex compatibility probe
+  explodex main status
 
 Summary
-  Complete isolated-development proof on 9444; persist only one complete result.
-  Status: reserved for a later milestone (not executable in this release).
+  Read-only main classification and separate 9333 obstruction.
 
 Arguments
   None.
@@ -603,137 +571,158 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex compatibility probe
-  explodex --json compatibility probe
+  explodex main status
+  explodex --json main status
 
 Recovery
-  Run explodex compatibility probe on the exact owned 9444 development target.
+  Run explodex compatibility status, then validate on the exact owned 9444 development target.
   Provide a manual debug-enabled main on 127.0.0.1:9333 when final apply is required.
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 19`] = `
 "Usage
-  explodex main <command> [arguments] [options]
+  explodex main apply <artifact>
 
-Description
-  Authoring-main classification, launch, attach, and final apply.
+Summary
+  Final hot-safe apply after exact dev validation and fresh main authorization.
 
-Commands
-  status                Read-only main classification and separate 9333 obstruction.
-  launch                Strict explicit launch only from no-main, free 9333, and current proof. (reserved)
-  attach                Bounded operation against a manually supplied exact 9333 main. (reserved)
-  apply                 Final hot-safe apply after exact dev validation and fresh main authorization. (reserved)
+Arguments
+  artifact        Path to a validated plugin artifact. (required)
 
-Shared options
-  See global options: explodex --help
+Options
+  No command-local options.
+  Global options are accepted anywhere before --; see explodex --help.
+
+Output
+  Human mode writes the primary result to stdout and diagnostics to stderr.
+  --json writes one schemaVersion-1 envelope to stdout.
+
+Exit status
+  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex main status
+  explodex main apply <artifact>
+  explodex --json main apply <artifact>
 
-More information
-  explodex help main <command>
-  explodex main <command> --help
+Recovery
+  Run explodex compatibility status, then validate on the exact owned 9444 development target.
+  Provide a manual debug-enabled main on 127.0.0.1:9333 when final apply is required.
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 20`] = `
 "Usage
-  explodex main <command> [arguments] [options]
+  explodex main apply <artifact>
 
-Description
-  Authoring-main classification, launch, attach, and final apply.
+Summary
+  Final hot-safe apply after exact dev validation and fresh main authorization.
 
-Commands
-  status                Read-only main classification and separate 9333 obstruction.
-  launch                Strict explicit launch only from no-main, free 9333, and current proof. (reserved)
-  attach                Bounded operation against a manually supplied exact 9333 main. (reserved)
-  apply                 Final hot-safe apply after exact dev validation and fresh main authorization. (reserved)
+Arguments
+  artifact        Path to a validated plugin artifact. (required)
 
-Shared options
-  See global options: explodex --help
+Options
+  No command-local options.
+  Global options are accepted anywhere before --; see explodex --help.
+
+Output
+  Human mode writes the primary result to stdout and diagnostics to stderr.
+  --json writes one schemaVersion-1 envelope to stdout.
+
+Exit status
+  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex main status
+  explodex main apply <artifact>
+  explodex --json main apply <artifact>
 
-More information
-  explodex help main <command>
-  explodex main <command> --help
+Recovery
+  Run explodex compatibility status, then validate on the exact owned 9444 development target.
+  Provide a manual debug-enabled main on 127.0.0.1:9333 when final apply is required.
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 21`] = `
 "Usage
-  explodex main status
+  explodex plugin <command> [arguments] [options]
 
-Summary
-  Read-only main classification and separate 9333 obstruction.
+Description
+  Plugin authoring, artifacts, lifecycle, and registry operations.
 
-Arguments
-  None.
+Commands
+  create                Create a safe generated-only plugin workspace.
+  validate              Validate a plugin workspace source contract.
+  build                 Build browser-safe plugin artifacts into dist/.
+  package               Package a validated plugin artifact archive.
+  artifact validate     Validate a standalone packaged plugin artifact.
+  install               Atomically install a prebuilt plugin archive disabled and pending review.
+      Aliases: add
+  status                Show installed, pending, and enabled plugin state.
+  refresh               Discover installed plugins and present pending review when required.
+  review                Present metadata-only review for pending plugins.
+  update check          Check for available plugin updates without applying them.
+  update apply          Apply selected plugin updates after review.
+  disable               Disable an installed plugin without removing its bytes.
+  remove                Remove an installed plugin identity.
+  develop               Foreground plugin build/watch against the exact owned development instance.
 
-Options
-  No command-local options.
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
+Shared options
+  See global options: explodex --help
 
 Examples
-  explodex main status
-  explodex --json main status
+  explodex plugin create
 
-Recovery
-  Run explodex compatibility probe on the exact owned 9444 development target.
-  Provide a manual debug-enabled main on 127.0.0.1:9333 when final apply is required.
+More information
+  explodex help plugin <command>
+  explodex plugin <command> --help
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 22`] = `
 "Usage
-  explodex main status
+  explodex plugin <command> [arguments] [options]
 
-Summary
-  Read-only main classification and separate 9333 obstruction.
+Description
+  Plugin authoring, artifacts, lifecycle, and registry operations.
 
-Arguments
-  None.
+Commands
+  create                Create a safe generated-only plugin workspace.
+  validate              Validate a plugin workspace source contract.
+  build                 Build browser-safe plugin artifacts into dist/.
+  package               Package a validated plugin artifact archive.
+  artifact validate     Validate a standalone packaged plugin artifact.
+  install               Atomically install a prebuilt plugin archive disabled and pending review.
+      Aliases: add
+  status                Show installed, pending, and enabled plugin state.
+  refresh               Discover installed plugins and present pending review when required.
+  review                Present metadata-only review for pending plugins.
+  update check          Check for available plugin updates without applying them.
+  update apply          Apply selected plugin updates after review.
+  disable               Disable an installed plugin without removing its bytes.
+  remove                Remove an installed plugin identity.
+  develop               Foreground plugin build/watch against the exact owned development instance.
 
-Options
-  No command-local options.
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
+Shared options
+  See global options: explodex --help
 
 Examples
-  explodex main status
-  explodex --json main status
+  explodex plugin create
 
-Recovery
-  Run explodex compatibility probe on the exact owned 9444 development target.
-  Provide a manual debug-enabled main on 127.0.0.1:9333 when final apply is required.
+More information
+  explodex help plugin <command>
+  explodex plugin <command> --help
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 23`] = `
 "Usage
-  explodex main launch
+  explodex plugin create <directory>
 
 Summary
-  Strict explicit launch only from no-main, free 9333, and current proof.
-  Status: reserved for a later milestone (not executable in this release).
+  Create a safe generated-only plugin workspace.
 
 Arguments
-  None.
+  directory       Target directory for the new workspace. (required)
 
 Options
   No command-local options.
@@ -747,25 +736,20 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex main launch
-  explodex --json main launch
-
-Recovery
-  Run explodex compatibility probe on the exact owned 9444 development target.
-  Provide a manual debug-enabled main on 127.0.0.1:9333 when final apply is required.
+  explodex plugin create <directory>
+  explodex --json plugin create <directory>
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 24`] = `
 "Usage
-  explodex main launch
+  explodex plugin create <directory>
 
 Summary
-  Strict explicit launch only from no-main, free 9333, and current proof.
-  Status: reserved for a later milestone (not executable in this release).
+  Create a safe generated-only plugin workspace.
 
 Arguments
-  None.
+  directory       Target directory for the new workspace. (required)
 
 Options
   No command-local options.
@@ -779,25 +763,20 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex main launch
-  explodex --json main launch
-
-Recovery
-  Run explodex compatibility probe on the exact owned 9444 development target.
-  Provide a manual debug-enabled main on 127.0.0.1:9333 when final apply is required.
+  explodex plugin create <directory>
+  explodex --json plugin create <directory>
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 25`] = `
 "Usage
-  explodex main attach
+  explodex plugin validate [workspace]
 
 Summary
-  Bounded operation against a manually supplied exact 9333 main.
-  Status: reserved for a later milestone (not executable in this release).
+  Validate a plugin workspace source contract.
 
 Arguments
-  None.
+  workspace       Plugin workspace path (default: cwd). (optional)
 
 Options
   No command-local options.
@@ -811,25 +790,20 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex main attach
-  explodex --json main attach
-
-Recovery
-  Run explodex compatibility probe on the exact owned 9444 development target.
-  Provide a manual debug-enabled main on 127.0.0.1:9333 when final apply is required.
+  explodex plugin validate [workspace]
+  explodex --json plugin validate [workspace]
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 26`] = `
 "Usage
-  explodex main attach
+  explodex plugin validate [workspace]
 
 Summary
-  Bounded operation against a manually supplied exact 9333 main.
-  Status: reserved for a later milestone (not executable in this release).
+  Validate a plugin workspace source contract.
 
 Arguments
-  None.
+  workspace       Plugin workspace path (default: cwd). (optional)
 
 Options
   No command-local options.
@@ -843,25 +817,20 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex main attach
-  explodex --json main attach
-
-Recovery
-  Run explodex compatibility probe on the exact owned 9444 development target.
-  Provide a manual debug-enabled main on 127.0.0.1:9333 when final apply is required.
+  explodex plugin validate [workspace]
+  explodex --json plugin validate [workspace]
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 27`] = `
 "Usage
-  explodex main apply <artifact>
+  explodex plugin build [workspace]
 
 Summary
-  Final hot-safe apply after exact dev validation and fresh main authorization.
-  Status: reserved for a later milestone (not executable in this release).
+  Build browser-safe plugin artifacts into dist/.
 
 Arguments
-  artifact        Path to a validated plugin artifact. (required)
+  workspace       Plugin workspace path (default: cwd). (optional)
 
 Options
   No command-local options.
@@ -875,25 +844,20 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex main apply <artifact>
-  explodex --json main apply <artifact>
-
-Recovery
-  Run explodex compatibility probe on the exact owned 9444 development target.
-  Provide a manual debug-enabled main on 127.0.0.1:9333 when final apply is required.
+  explodex plugin build [workspace]
+  explodex --json plugin build [workspace]
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 28`] = `
 "Usage
-  explodex main apply <artifact>
+  explodex plugin build [workspace]
 
 Summary
-  Final hot-safe apply after exact dev validation and fresh main authorization.
-  Status: reserved for a later milestone (not executable in this release).
+  Build browser-safe plugin artifacts into dist/.
 
 Arguments
-  artifact        Path to a validated plugin artifact. (required)
+  workspace       Plugin workspace path (default: cwd). (optional)
 
 Options
   No command-local options.
@@ -907,98 +871,76 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex main apply <artifact>
-  explodex --json main apply <artifact>
-
-Recovery
-  Run explodex compatibility probe on the exact owned 9444 development target.
-  Provide a manual debug-enabled main on 127.0.0.1:9333 when final apply is required.
+  explodex plugin build [workspace]
+  explodex --json plugin build [workspace]
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 29`] = `
 "Usage
-  explodex plugin <command> [arguments] [options]
+  explodex plugin package [workspace] [--output <directory>]
 
-Description
-  Plugin authoring, artifacts, lifecycle, and registry operations.
+Summary
+  Package a validated plugin artifact archive.
 
-Commands
-  create                Create a safe generated-only plugin workspace.
-  validate              Validate a plugin workspace source contract.
-  build                 Build browser-safe plugin artifacts into dist/.
-  package               Package a validated plugin artifact archive.
-  artifact validate     Validate a standalone packaged plugin artifact.
-  install               Atomically install a prebuilt plugin archive disabled and pending review.
-      Aliases: add
-  status                Show installed, pending, and enabled plugin state.
-  refresh               Discover installed plugins and present pending review when required.
-  review                Present metadata-only review for pending plugins.
-  update check          Check for available plugin updates without applying them.
-  update apply          Apply selected plugin updates after review.
-  disable               Disable an installed plugin without removing its bytes. (reserved)
-  remove                Remove an installed plugin identity. (reserved)
-  onboard               First-run registry onboarding for disabled installation choices. (reserved)
-  develop               Foreground plugin build/watch against the exact owned development instance. (reserved)
+Arguments
+  workspace       Plugin workspace path (default: cwd). (optional)
 
-Shared options
-  See global options: explodex --help
+Options
+      --output <directory>
+      Directory for the packaged archive.
+  Global options are accepted anywhere before --; see explodex --help.
+
+Output
+  Human mode writes the primary result to stdout and diagnostics to stderr.
+  --json writes one schemaVersion-1 envelope to stdout.
+
+Exit status
+  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex plugin create
-
-More information
-  explodex help plugin <command>
-  explodex plugin <command> --help
+  explodex plugin package [workspace] [--output <directory>]
+  explodex --json plugin package [workspace] [--output <directory>]
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 30`] = `
 "Usage
-  explodex plugin <command> [arguments] [options]
+  explodex plugin package [workspace] [--output <directory>]
 
-Description
-  Plugin authoring, artifacts, lifecycle, and registry operations.
+Summary
+  Package a validated plugin artifact archive.
 
-Commands
-  create                Create a safe generated-only plugin workspace.
-  validate              Validate a plugin workspace source contract.
-  build                 Build browser-safe plugin artifacts into dist/.
-  package               Package a validated plugin artifact archive.
-  artifact validate     Validate a standalone packaged plugin artifact.
-  install               Atomically install a prebuilt plugin archive disabled and pending review.
-      Aliases: add
-  status                Show installed, pending, and enabled plugin state.
-  refresh               Discover installed plugins and present pending review when required.
-  review                Present metadata-only review for pending plugins.
-  update check          Check for available plugin updates without applying them.
-  update apply          Apply selected plugin updates after review.
-  disable               Disable an installed plugin without removing its bytes. (reserved)
-  remove                Remove an installed plugin identity. (reserved)
-  onboard               First-run registry onboarding for disabled installation choices. (reserved)
-  develop               Foreground plugin build/watch against the exact owned development instance. (reserved)
+Arguments
+  workspace       Plugin workspace path (default: cwd). (optional)
 
-Shared options
-  See global options: explodex --help
+Options
+      --output <directory>
+      Directory for the packaged archive.
+  Global options are accepted anywhere before --; see explodex --help.
+
+Output
+  Human mode writes the primary result to stdout and diagnostics to stderr.
+  --json writes one schemaVersion-1 envelope to stdout.
+
+Exit status
+  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex plugin create
-
-More information
-  explodex help plugin <command>
-  explodex plugin <command> --help
+  explodex plugin package [workspace] [--output <directory>]
+  explodex --json plugin package [workspace] [--output <directory>]
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 31`] = `
 "Usage
-  explodex plugin create <directory>
+  explodex plugin artifact validate <path>
 
 Summary
-  Create a safe generated-only plugin workspace.
+  Validate a standalone packaged plugin artifact.
 
 Arguments
-  directory       Target directory for the new workspace. (required)
+  path            Path to the packaged artifact. (required)
 
 Options
   No command-local options.
@@ -1012,20 +954,20 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex plugin create <directory>
-  explodex --json plugin create <directory>
+  explodex plugin artifact validate <path>
+  explodex --json plugin artifact validate <path>
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 32`] = `
 "Usage
-  explodex plugin create <directory>
+  explodex plugin artifact validate <path>
 
 Summary
-  Create a safe generated-only plugin workspace.
+  Validate a standalone packaged plugin artifact.
 
 Arguments
-  directory       Target directory for the new workspace. (required)
+  path            Path to the packaged artifact. (required)
 
 Options
   No command-local options.
@@ -1039,23 +981,33 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex plugin create <directory>
-  explodex --json plugin create <directory>
+  explodex plugin artifact validate <path>
+  explodex --json plugin artifact validate <path>
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 33`] = `
 "Usage
-  explodex plugin validate [workspace]
+  explodex plugin install [archive] [--registry <id>] [--github-url <url>] [--archive-sha256 <hex>] [--payload-sha256 <hex>] [--target <role>]
 
 Summary
-  Validate a plugin workspace source contract.
+  Atomically install a prebuilt plugin archive disabled and pending review.
+  Aliases: add
 
 Arguments
-  workspace       Plugin workspace path (default: cwd). (optional)
+  archive         Local prebuilt .tar.gz or .tgz plugin archive. (optional)
 
 Options
-  No command-local options.
+      --registry <id>
+      Install an exact plugin ID from the configured registry.
+      --github-url <url>
+      Install from one canonical immutable GitHub release URL.
+      --archive-sha256 <hex>
+      Expected lowercase SHA-256 of exact archive bytes.
+      --payload-sha256 <hex>
+      Optional expected lowercase canonical payload SHA-256.
+      --target <role>
+      Review target role; unavailable targets leave the install disabled and pending. (values: none|main|development; default: none)
   Global options are accepted anywhere before --; see explodex --help.
 
 Output
@@ -1066,23 +1018,33 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex plugin validate [workspace]
-  explodex --json plugin validate [workspace]
+  explodex plugin install [archive] [--registry <id>] [--github-url <url>] [--archive-sha256 <hex>] [--payload-sha256 <hex>] [--target <role>]
+  explodex --json plugin install [archive] [--registry <id>] [--github-url <url>] [--archive-sha256 <hex>] [--payload-sha256 <hex>] [--target <role>]
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 34`] = `
 "Usage
-  explodex plugin validate [workspace]
+  explodex plugin install [archive] [--registry <id>] [--github-url <url>] [--archive-sha256 <hex>] [--payload-sha256 <hex>] [--target <role>]
 
 Summary
-  Validate a plugin workspace source contract.
+  Atomically install a prebuilt plugin archive disabled and pending review.
+  Aliases: add
 
 Arguments
-  workspace       Plugin workspace path (default: cwd). (optional)
+  archive         Local prebuilt .tar.gz or .tgz plugin archive. (optional)
 
 Options
-  No command-local options.
+      --registry <id>
+      Install an exact plugin ID from the configured registry.
+      --github-url <url>
+      Install from one canonical immutable GitHub release URL.
+      --archive-sha256 <hex>
+      Expected lowercase SHA-256 of exact archive bytes.
+      --payload-sha256 <hex>
+      Optional expected lowercase canonical payload SHA-256.
+      --target <role>
+      Review target role; unavailable targets leave the install disabled and pending. (values: none|main|development; default: none)
   Global options are accepted anywhere before --; see explodex --help.
 
 Output
@@ -1093,23 +1055,33 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex plugin validate [workspace]
-  explodex --json plugin validate [workspace]
+  explodex plugin install [archive] [--registry <id>] [--github-url <url>] [--archive-sha256 <hex>] [--payload-sha256 <hex>] [--target <role>]
+  explodex --json plugin install [archive] [--registry <id>] [--github-url <url>] [--archive-sha256 <hex>] [--payload-sha256 <hex>] [--target <role>]
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 35`] = `
 "Usage
-  explodex plugin build [workspace]
+  explodex plugin install [archive] [--registry <id>] [--github-url <url>] [--archive-sha256 <hex>] [--payload-sha256 <hex>] [--target <role>]
 
 Summary
-  Build browser-safe plugin artifacts into dist/.
+  Atomically install a prebuilt plugin archive disabled and pending review.
+  Aliases: add
 
 Arguments
-  workspace       Plugin workspace path (default: cwd). (optional)
+  archive         Local prebuilt .tar.gz or .tgz plugin archive. (optional)
 
 Options
-  No command-local options.
+      --registry <id>
+      Install an exact plugin ID from the configured registry.
+      --github-url <url>
+      Install from one canonical immutable GitHub release URL.
+      --archive-sha256 <hex>
+      Expected lowercase SHA-256 of exact archive bytes.
+      --payload-sha256 <hex>
+      Optional expected lowercase canonical payload SHA-256.
+      --target <role>
+      Review target role; unavailable targets leave the install disabled and pending. (values: none|main|development; default: none)
   Global options are accepted anywhere before --; see explodex --help.
 
 Output
@@ -1120,23 +1092,33 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex plugin build [workspace]
-  explodex --json plugin build [workspace]
+  explodex plugin install [archive] [--registry <id>] [--github-url <url>] [--archive-sha256 <hex>] [--payload-sha256 <hex>] [--target <role>]
+  explodex --json plugin install [archive] [--registry <id>] [--github-url <url>] [--archive-sha256 <hex>] [--payload-sha256 <hex>] [--target <role>]
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 36`] = `
 "Usage
-  explodex plugin build [workspace]
+  explodex plugin install [archive] [--registry <id>] [--github-url <url>] [--archive-sha256 <hex>] [--payload-sha256 <hex>] [--target <role>]
 
 Summary
-  Build browser-safe plugin artifacts into dist/.
+  Atomically install a prebuilt plugin archive disabled and pending review.
+  Aliases: add
 
 Arguments
-  workspace       Plugin workspace path (default: cwd). (optional)
+  archive         Local prebuilt .tar.gz or .tgz plugin archive. (optional)
 
 Options
-  No command-local options.
+      --registry <id>
+      Install an exact plugin ID from the configured registry.
+      --github-url <url>
+      Install from one canonical immutable GitHub release URL.
+      --archive-sha256 <hex>
+      Expected lowercase SHA-256 of exact archive bytes.
+      --payload-sha256 <hex>
+      Optional expected lowercase canonical payload SHA-256.
+      --target <role>
+      Review target role; unavailable targets leave the install disabled and pending. (values: none|main|development; default: none)
   Global options are accepted anywhere before --; see explodex --help.
 
 Output
@@ -1147,24 +1129,23 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex plugin build [workspace]
-  explodex --json plugin build [workspace]
+  explodex plugin install [archive] [--registry <id>] [--github-url <url>] [--archive-sha256 <hex>] [--payload-sha256 <hex>] [--target <role>]
+  explodex --json plugin install [archive] [--registry <id>] [--github-url <url>] [--archive-sha256 <hex>] [--payload-sha256 <hex>] [--target <role>]
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 37`] = `
 "Usage
-  explodex plugin package [workspace] [--output <directory>]
+  explodex plugin status [id]
 
 Summary
-  Package a validated plugin artifact archive.
+  Show installed, pending, and enabled plugin state.
 
 Arguments
-  workspace       Plugin workspace path (default: cwd). (optional)
+  id              Optional exact plugin ID. (optional)
 
 Options
-      --output <directory>
-      Directory for the packaged archive.
+  No command-local options.
   Global options are accepted anywhere before --; see explodex --help.
 
 Output
@@ -1175,24 +1156,23 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex plugin package [workspace] [--output <directory>]
-  explodex --json plugin package [workspace] [--output <directory>]
+  explodex plugin status [id]
+  explodex --json plugin status [id]
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 38`] = `
 "Usage
-  explodex plugin package [workspace] [--output <directory>]
+  explodex plugin status [id]
 
 Summary
-  Package a validated plugin artifact archive.
+  Show installed, pending, and enabled plugin state.
 
 Arguments
-  workspace       Plugin workspace path (default: cwd). (optional)
+  id              Optional exact plugin ID. (optional)
 
 Options
-      --output <directory>
-      Directory for the packaged archive.
+  No command-local options.
   Global options are accepted anywhere before --; see explodex --help.
 
 Output
@@ -1203,23 +1183,24 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex plugin package [workspace] [--output <directory>]
-  explodex --json plugin package [workspace] [--output <directory>]
+  explodex plugin status [id]
+  explodex --json plugin status [id]
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 39`] = `
 "Usage
-  explodex plugin artifact validate <path>
+  explodex plugin refresh [--target <role>]
 
 Summary
-  Validate a standalone packaged plugin artifact.
+  Discover installed plugins and present pending review when required.
 
 Arguments
-  path            Path to the packaged artifact. (required)
+  None.
 
 Options
-  No command-local options.
+      --target <role>
+      Review target role; unavailable targets never force a renderer. (values: main|development; default: main)
   Global options are accepted anywhere before --; see explodex --help.
 
 Output
@@ -1230,23 +1211,24 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex plugin artifact validate <path>
-  explodex --json plugin artifact validate <path>
+  explodex plugin refresh [--target <role>]
+  explodex --json plugin refresh [--target <role>]
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 40`] = `
 "Usage
-  explodex plugin artifact validate <path>
+  explodex plugin refresh [--target <role>]
 
 Summary
-  Validate a standalone packaged plugin artifact.
+  Discover installed plugins and present pending review when required.
 
 Arguments
-  path            Path to the packaged artifact. (required)
+  None.
 
 Options
-  No command-local options.
+      --target <role>
+      Review target role; unavailable targets never force a renderer. (values: main|development; default: main)
   Global options are accepted anywhere before --; see explodex --help.
 
 Output
@@ -1257,33 +1239,28 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex plugin artifact validate <path>
-  explodex --json plugin artifact validate <path>
+  explodex plugin refresh [--target <role>]
+  explodex --json plugin refresh [--target <role>]
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 41`] = `
 "Usage
-  explodex plugin install [archive] [--registry <id>] [--github-url <url>] [--archive-sha256 <hex>] [--payload-sha256 <hex>] [--target <role>]
+  explodex plugin review [id] [--artifact-version <opaque-version>] [--payload-sha256 <hex>] [--target <role>]
 
 Summary
-  Atomically install a prebuilt plugin archive disabled and pending review.
-  Aliases: add
+  Present metadata-only review for pending plugins.
 
 Arguments
-  archive         Local prebuilt .tar.gz or .tgz plugin archive. (optional)
+  id              Optional exact plugin ID. (optional)
 
 Options
-      --registry <id>
-      Install an exact plugin ID from the configured registry.
-      --github-url <url>
-      Install from one canonical immutable GitHub release URL.
-      --archive-sha256 <hex>
-      Expected lowercase SHA-256 of exact archive bytes.
+      --artifact-version <opaque-version>
+      Exact opaque artifact version when one ID has multiple identities.
       --payload-sha256 <hex>
-      Optional expected lowercase canonical payload SHA-256.
+      Exact lowercase payload SHA-256.
       --target <role>
-      Review target role; unavailable targets leave the install disabled and pending. (values: none|main|development; default: none)
+      Review target role (main or development). (values: main|development; default: main)
   Global options are accepted anywhere before --; see explodex --help.
 
 Output
@@ -1294,33 +1271,28 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex plugin install [archive] [--registry <id>] [--github-url <url>] [--archive-sha256 <hex>] [--payload-sha256 <hex>] [--target <role>]
-  explodex --json plugin install [archive] [--registry <id>] [--github-url <url>] [--archive-sha256 <hex>] [--payload-sha256 <hex>] [--target <role>]
+  explodex plugin review [id] [--artifact-version <opaque-version>] [--payload-sha256 <hex>] [--target <role>]
+  explodex --json plugin review [id] [--artifact-version <opaque-version>] [--payload-sha256 <hex>] [--target <role>]
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 42`] = `
 "Usage
-  explodex plugin install [archive] [--registry <id>] [--github-url <url>] [--archive-sha256 <hex>] [--payload-sha256 <hex>] [--target <role>]
+  explodex plugin review [id] [--artifact-version <opaque-version>] [--payload-sha256 <hex>] [--target <role>]
 
 Summary
-  Atomically install a prebuilt plugin archive disabled and pending review.
-  Aliases: add
+  Present metadata-only review for pending plugins.
 
 Arguments
-  archive         Local prebuilt .tar.gz or .tgz plugin archive. (optional)
+  id              Optional exact plugin ID. (optional)
 
 Options
-      --registry <id>
-      Install an exact plugin ID from the configured registry.
-      --github-url <url>
-      Install from one canonical immutable GitHub release URL.
-      --archive-sha256 <hex>
-      Expected lowercase SHA-256 of exact archive bytes.
+      --artifact-version <opaque-version>
+      Exact opaque artifact version when one ID has multiple identities.
       --payload-sha256 <hex>
-      Optional expected lowercase canonical payload SHA-256.
+      Exact lowercase payload SHA-256.
       --target <role>
-      Review target role; unavailable targets leave the install disabled and pending. (values: none|main|development; default: none)
+      Review target role (main or development). (values: main|development; default: main)
   Global options are accepted anywhere before --; see explodex --help.
 
 Output
@@ -1331,33 +1303,23 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex plugin install [archive] [--registry <id>] [--github-url <url>] [--archive-sha256 <hex>] [--payload-sha256 <hex>] [--target <role>]
-  explodex --json plugin install [archive] [--registry <id>] [--github-url <url>] [--archive-sha256 <hex>] [--payload-sha256 <hex>] [--target <role>]
+  explodex plugin review [id] [--artifact-version <opaque-version>] [--payload-sha256 <hex>] [--target <role>]
+  explodex --json plugin review [id] [--artifact-version <opaque-version>] [--payload-sha256 <hex>] [--target <role>]
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 43`] = `
 "Usage
-  explodex plugin install [archive] [--registry <id>] [--github-url <url>] [--archive-sha256 <hex>] [--payload-sha256 <hex>] [--target <role>]
+  explodex plugin update check
 
 Summary
-  Atomically install a prebuilt plugin archive disabled and pending review.
-  Aliases: add
+  Check for available plugin updates without applying them.
 
 Arguments
-  archive         Local prebuilt .tar.gz or .tgz plugin archive. (optional)
+  None.
 
 Options
-      --registry <id>
-      Install an exact plugin ID from the configured registry.
-      --github-url <url>
-      Install from one canonical immutable GitHub release URL.
-      --archive-sha256 <hex>
-      Expected lowercase SHA-256 of exact archive bytes.
-      --payload-sha256 <hex>
-      Optional expected lowercase canonical payload SHA-256.
-      --target <role>
-      Review target role; unavailable targets leave the install disabled and pending. (values: none|main|development; default: none)
+  No command-local options.
   Global options are accepted anywhere before --; see explodex --help.
 
 Output
@@ -1368,33 +1330,23 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex plugin install [archive] [--registry <id>] [--github-url <url>] [--archive-sha256 <hex>] [--payload-sha256 <hex>] [--target <role>]
-  explodex --json plugin install [archive] [--registry <id>] [--github-url <url>] [--archive-sha256 <hex>] [--payload-sha256 <hex>] [--target <role>]
+  explodex plugin update check
+  explodex --json plugin update check
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 44`] = `
 "Usage
-  explodex plugin install [archive] [--registry <id>] [--github-url <url>] [--archive-sha256 <hex>] [--payload-sha256 <hex>] [--target <role>]
+  explodex plugin update check
 
 Summary
-  Atomically install a prebuilt plugin archive disabled and pending review.
-  Aliases: add
+  Check for available plugin updates without applying them.
 
 Arguments
-  archive         Local prebuilt .tar.gz or .tgz plugin archive. (optional)
+  None.
 
 Options
-      --registry <id>
-      Install an exact plugin ID from the configured registry.
-      --github-url <url>
-      Install from one canonical immutable GitHub release URL.
-      --archive-sha256 <hex>
-      Expected lowercase SHA-256 of exact archive bytes.
-      --payload-sha256 <hex>
-      Optional expected lowercase canonical payload SHA-256.
-      --target <role>
-      Review target role; unavailable targets leave the install disabled and pending. (values: none|main|development; default: none)
+  No command-local options.
   Global options are accepted anywhere before --; see explodex --help.
 
 Output
@@ -1405,23 +1357,24 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex plugin install [archive] [--registry <id>] [--github-url <url>] [--archive-sha256 <hex>] [--payload-sha256 <hex>] [--target <role>]
-  explodex --json plugin install [archive] [--registry <id>] [--github-url <url>] [--archive-sha256 <hex>] [--payload-sha256 <hex>] [--target <role>]
+  explodex plugin update check
+  explodex --json plugin update check
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 45`] = `
 "Usage
-  explodex plugin status [id]
+  explodex plugin update apply [--target <role>]
 
 Summary
-  Show installed, pending, and enabled plugin state.
+  Apply selected plugin updates after review.
 
 Arguments
-  id              Optional exact plugin ID. (optional)
+  None.
 
 Options
-  No command-local options.
+      --target <role>
+      Review/application target role. (values: main|development; default: main)
   Global options are accepted anywhere before --; see explodex --help.
 
 Output
@@ -1432,23 +1385,24 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex plugin status [id]
-  explodex --json plugin status [id]
+  explodex plugin update apply [--target <role>]
+  explodex --json plugin update apply [--target <role>]
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 46`] = `
 "Usage
-  explodex plugin status [id]
+  explodex plugin update apply [--target <role>]
 
 Summary
-  Show installed, pending, and enabled plugin state.
+  Apply selected plugin updates after review.
 
 Arguments
-  id              Optional exact plugin ID. (optional)
+  None.
 
 Options
-  No command-local options.
+      --target <role>
+      Review/application target role. (values: main|development; default: main)
   Global options are accepted anywhere before --; see explodex --help.
 
 Output
@@ -1459,24 +1413,24 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex plugin status [id]
-  explodex --json plugin status [id]
+  explodex plugin update apply [--target <role>]
+  explodex --json plugin update apply [--target <role>]
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 47`] = `
 "Usage
-  explodex plugin refresh [--target <role>]
+  explodex plugin disable <id> [--target <role>]
 
 Summary
-  Discover installed plugins and present pending review when required.
+  Disable an installed plugin without removing its bytes.
 
 Arguments
-  None.
+  id              Exact plugin ID. (required)
 
 Options
       --target <role>
-      Review target role; unavailable targets never force a renderer. (values: main|development; default: main)
+      Optional live teardown target role. (values: none|main|development; default: none)
   Global options are accepted anywhere before --; see explodex --help.
 
 Output
@@ -1487,24 +1441,24 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex plugin refresh [--target <role>]
-  explodex --json plugin refresh [--target <role>]
+  explodex plugin disable <id> [--target <role>]
+  explodex --json plugin disable <id> [--target <role>]
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 48`] = `
 "Usage
-  explodex plugin refresh [--target <role>]
+  explodex plugin disable <id> [--target <role>]
 
 Summary
-  Discover installed plugins and present pending review when required.
+  Disable an installed plugin without removing its bytes.
 
 Arguments
-  None.
+  id              Exact plugin ID. (required)
 
 Options
       --target <role>
-      Review target role; unavailable targets never force a renderer. (values: main|development; default: main)
+      Optional live teardown target role. (values: none|main|development; default: none)
   Global options are accepted anywhere before --; see explodex --help.
 
 Output
@@ -1515,28 +1469,28 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex plugin refresh [--target <role>]
-  explodex --json plugin refresh [--target <role>]
+  explodex plugin disable <id> [--target <role>]
+  explodex --json plugin disable <id> [--target <role>]
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 49`] = `
 "Usage
-  explodex plugin review [id] [--artifact-version <opaque-version>] [--payload-sha256 <hex>] [--target <role>]
+  explodex plugin remove <id> [--artifact-version <opaque-version>] [--payload-sha256 <hex>] [--target <role>]
 
 Summary
-  Present metadata-only review for pending plugins.
+  Remove an installed plugin identity.
 
 Arguments
-  id              Optional exact plugin ID. (optional)
+  id              Exact plugin ID. (required)
 
 Options
       --artifact-version <opaque-version>
-      Exact opaque artifact version when one ID has multiple identities.
+      Exact opaque artifact version when multiple identities exist.
       --payload-sha256 <hex>
       Exact lowercase payload SHA-256.
       --target <role>
-      Review target role (main or development). (values: main|development; default: main)
+      Optional live teardown target role. (values: none|main|development; default: none)
   Global options are accepted anywhere before --; see explodex --help.
 
 Output
@@ -1547,28 +1501,28 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex plugin review [id] [--artifact-version <opaque-version>] [--payload-sha256 <hex>] [--target <role>]
-  explodex --json plugin review [id] [--artifact-version <opaque-version>] [--payload-sha256 <hex>] [--target <role>]
+  explodex plugin remove <id> [--artifact-version <opaque-version>] [--payload-sha256 <hex>] [--target <role>]
+  explodex --json plugin remove <id> [--artifact-version <opaque-version>] [--payload-sha256 <hex>] [--target <role>]
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 50`] = `
 "Usage
-  explodex plugin review [id] [--artifact-version <opaque-version>] [--payload-sha256 <hex>] [--target <role>]
+  explodex plugin remove <id> [--artifact-version <opaque-version>] [--payload-sha256 <hex>] [--target <role>]
 
 Summary
-  Present metadata-only review for pending plugins.
+  Remove an installed plugin identity.
 
 Arguments
-  id              Optional exact plugin ID. (optional)
+  id              Exact plugin ID. (required)
 
 Options
       --artifact-version <opaque-version>
-      Exact opaque artifact version when one ID has multiple identities.
+      Exact opaque artifact version when multiple identities exist.
       --payload-sha256 <hex>
       Exact lowercase payload SHA-256.
       --target <role>
-      Review target role (main or development). (values: main|development; default: main)
+      Optional live teardown target role. (values: none|main|development; default: none)
   Global options are accepted anywhere before --; see explodex --help.
 
 Output
@@ -1579,23 +1533,24 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex plugin review [id] [--artifact-version <opaque-version>] [--payload-sha256 <hex>] [--target <role>]
-  explodex --json plugin review [id] [--artifact-version <opaque-version>] [--payload-sha256 <hex>] [--target <role>]
+  explodex plugin remove <id> [--artifact-version <opaque-version>] [--payload-sha256 <hex>] [--target <role>]
+  explodex --json plugin remove <id> [--artifact-version <opaque-version>] [--payload-sha256 <hex>] [--target <role>]
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 51`] = `
 "Usage
-  explodex plugin update check
+  explodex plugin develop [workspace] [--sdk-source <path>]
 
 Summary
-  Check for available plugin updates without applying them.
+  Foreground plugin build/watch against the exact owned development instance.
 
 Arguments
-  None.
+  workspace       Plugin workspace path (default: cwd). (optional)
 
 Options
-  No command-local options.
+      --sdk-source <path>
+      Explicit canonical local SDK source workspace.
   Global options are accepted anywhere before --; see explodex --help.
 
 Output
@@ -1606,23 +1561,24 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex plugin update check
-  explodex --json plugin update check
+  explodex plugin develop [workspace] [--sdk-source <path>]
+  explodex --json plugin develop [workspace] [--sdk-source <path>]
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 52`] = `
 "Usage
-  explodex plugin update check
+  explodex plugin develop [workspace] [--sdk-source <path>]
 
 Summary
-  Check for available plugin updates without applying them.
+  Foreground plugin build/watch against the exact owned development instance.
 
 Arguments
-  None.
+  workspace       Plugin workspace path (default: cwd). (optional)
 
 Options
-  No command-local options.
+      --sdk-source <path>
+      Explicit canonical local SDK source workspace.
   Global options are accepted anywhere before --; see explodex --help.
 
 Output
@@ -1633,81 +1589,81 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex plugin update check
-  explodex --json plugin update check
+  explodex plugin develop [workspace] [--sdk-source <path>]
+  explodex --json plugin develop [workspace] [--sdk-source <path>]
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 53`] = `
 "Usage
-  explodex plugin update apply [--target <role>]
+  explodex dev <command> [arguments] [options]
 
-Summary
-  Apply selected plugin updates after review.
+Description
+  One persistent isolated development instance on 127.0.0.1:9444.
 
-Arguments
-  None.
+Commands
+  status                Check health, ownership, crash state, and the next safe action.
+  start                 Start the stopped development instance once.
+  ensure                Reuse, safely recover if confirmed dead, or start the development instance once.
+  recover               Explicitly recover a failed or interrupted development record.
+  inject                Inject an artifact into the owned development instance.
+  restart               Restart only the exact owned development process once.
+  stop                  Stop only the exact owned development process.
+  focus                 Focus the owned development instance when exact process-specific activation is supported.
 
-Options
-      --target <role>
-      Review/application target role. (values: main|development; default: main)
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
+Shared options
+  See global options: explodex --help
 
 Examples
-  explodex plugin update apply [--target <role>]
-  explodex --json plugin update apply [--target <role>]
+  explodex dev status
+
+More information
+  explodex help dev <command>
+  explodex dev <command> --help
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 54`] = `
 "Usage
-  explodex plugin update apply [--target <role>]
+  explodex dev <command> [arguments] [options]
 
-Summary
-  Apply selected plugin updates after review.
+Description
+  One persistent isolated development instance on 127.0.0.1:9444.
 
-Arguments
-  None.
+Commands
+  status                Check health, ownership, crash state, and the next safe action.
+  start                 Start the stopped development instance once.
+  ensure                Reuse, safely recover if confirmed dead, or start the development instance once.
+  recover               Explicitly recover a failed or interrupted development record.
+  inject                Inject an artifact into the owned development instance.
+  restart               Restart only the exact owned development process once.
+  stop                  Stop only the exact owned development process.
+  focus                 Focus the owned development instance when exact process-specific activation is supported.
 
-Options
-      --target <role>
-      Review/application target role. (values: main|development; default: main)
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
+Shared options
+  See global options: explodex --help
 
 Examples
-  explodex plugin update apply [--target <role>]
-  explodex --json plugin update apply [--target <role>]
+  explodex dev status
+
+More information
+  explodex help dev <command>
+  explodex dev <command> --help
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 55`] = `
 "Usage
-  explodex plugin disable <id> [--target <role>]
+  explodex dev status
 
 Summary
-  Disable an installed plugin without removing its bytes.
-  Status: reserved for a later milestone (not executable in this release).
+  Check health, ownership, crash state, and the next safe action.
 
 Arguments
-  id              Exact plugin ID. (required)
+  None.
 
 Options
-      --target <role>
-      Optional live teardown target role. (values: none|main|development; default: none)
+  No command-local options.
   Global options are accepted anywhere before --; see explodex --help.
 
 Output
@@ -1718,25 +1674,23 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex plugin disable <id> [--target <role>]
-  explodex --json plugin disable <id> [--target <role>]
+  explodex dev status
+  explodex --json dev status
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 56`] = `
 "Usage
-  explodex plugin disable <id> [--target <role>]
+  explodex dev status
 
 Summary
-  Disable an installed plugin without removing its bytes.
-  Status: reserved for a later milestone (not executable in this release).
+  Check health, ownership, crash state, and the next safe action.
 
 Arguments
-  id              Exact plugin ID. (required)
+  None.
 
 Options
-      --target <role>
-      Optional live teardown target role. (values: none|main|development; default: none)
+  No command-local options.
   Global options are accepted anywhere before --; see explodex --help.
 
 Output
@@ -1747,29 +1701,23 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex plugin disable <id> [--target <role>]
-  explodex --json plugin disable <id> [--target <role>]
+  explodex dev status
+  explodex --json dev status
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 57`] = `
 "Usage
-  explodex plugin remove <id> [--artifact-version <opaque-version>] [--payload-sha256 <hex>] [--target <role>]
+  explodex dev start
 
 Summary
-  Remove an installed plugin identity.
-  Status: reserved for a later milestone (not executable in this release).
+  Start the stopped development instance once.
 
 Arguments
-  id              Exact plugin ID. (required)
+  None.
 
 Options
-      --artifact-version <opaque-version>
-      Exact opaque artifact version when multiple identities exist.
-      --payload-sha256 <hex>
-      Exact lowercase payload SHA-256.
-      --target <role>
-      Optional live teardown target role. (values: none|main|development; default: none)
+  No command-local options.
   Global options are accepted anywhere before --; see explodex --help.
 
 Output
@@ -1780,29 +1728,23 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex plugin remove <id> [--artifact-version <opaque-version>] [--payload-sha256 <hex>] [--target <role>]
-  explodex --json plugin remove <id> [--artifact-version <opaque-version>] [--payload-sha256 <hex>] [--target <role>]
+  explodex dev start
+  explodex --json dev start
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 58`] = `
 "Usage
-  explodex plugin remove <id> [--artifact-version <opaque-version>] [--payload-sha256 <hex>] [--target <role>]
+  explodex dev start
 
 Summary
-  Remove an installed plugin identity.
-  Status: reserved for a later milestone (not executable in this release).
+  Start the stopped development instance once.
 
 Arguments
-  id              Exact plugin ID. (required)
+  None.
 
 Options
-      --artifact-version <opaque-version>
-      Exact opaque artifact version when multiple identities exist.
-      --payload-sha256 <hex>
-      Exact lowercase payload SHA-256.
-      --target <role>
-      Optional live teardown target role. (values: none|main|development; default: none)
+  No command-local options.
   Global options are accepted anywhere before --; see explodex --help.
 
 Output
@@ -1813,25 +1755,23 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex plugin remove <id> [--artifact-version <opaque-version>] [--payload-sha256 <hex>] [--target <role>]
-  explodex --json plugin remove <id> [--artifact-version <opaque-version>] [--payload-sha256 <hex>] [--target <role>]
+  explodex dev start
+  explodex --json dev start
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 59`] = `
 "Usage
-  explodex plugin onboard [--target <role>]
+  explodex dev ensure
 
 Summary
-  First-run registry onboarding for disabled installation choices.
-  Status: reserved for a later milestone (not executable in this release).
+  Reuse, safely recover if confirmed dead, or start the development instance once.
 
 Arguments
   None.
 
 Options
-      --target <role>
-      Review target role. (values: main|development; default: main)
+  No command-local options.
   Global options are accepted anywhere before --; see explodex --help.
 
 Output
@@ -1842,25 +1782,23 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex plugin onboard [--target <role>]
-  explodex --json plugin onboard [--target <role>]
+  explodex dev ensure
+  explodex --json dev ensure
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 60`] = `
 "Usage
-  explodex plugin onboard [--target <role>]
+  explodex dev ensure
 
 Summary
-  First-run registry onboarding for disabled installation choices.
-  Status: reserved for a later milestone (not executable in this release).
+  Reuse, safely recover if confirmed dead, or start the development instance once.
 
 Arguments
   None.
 
 Options
-      --target <role>
-      Review target role. (values: main|development; default: main)
+  No command-local options.
   Global options are accepted anywhere before --; see explodex --help.
 
 Output
@@ -1871,25 +1809,23 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex plugin onboard [--target <role>]
-  explodex --json plugin onboard [--target <role>]
+  explodex dev ensure
+  explodex --json dev ensure
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 61`] = `
 "Usage
-  explodex plugin develop [workspace] [--sdk-source <path>]
+  explodex dev recover
 
 Summary
-  Foreground plugin build/watch against the exact owned development instance.
-  Status: reserved for a later milestone (not executable in this release).
+  Explicitly recover a failed or interrupted development record.
 
 Arguments
-  workspace       Plugin workspace path (default: cwd). (optional)
+  None.
 
 Options
-      --sdk-source <path>
-      Explicit canonical local SDK source workspace.
+  No command-local options.
   Global options are accepted anywhere before --; see explodex --help.
 
 Output
@@ -1900,25 +1836,23 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex plugin develop [workspace] [--sdk-source <path>]
-  explodex --json plugin develop [workspace] [--sdk-source <path>]
+  explodex dev recover
+  explodex --json dev recover
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 62`] = `
 "Usage
-  explodex plugin develop [workspace] [--sdk-source <path>]
+  explodex dev recover
 
 Summary
-  Foreground plugin build/watch against the exact owned development instance.
-  Status: reserved for a later milestone (not executable in this release).
+  Explicitly recover a failed or interrupted development record.
 
 Arguments
-  workspace       Plugin workspace path (default: cwd). (optional)
+  None.
 
 Options
-      --sdk-source <path>
-      Explicit canonical local SDK source workspace.
+  No command-local options.
   Global options are accepted anywhere before --; see explodex --help.
 
 Output
@@ -1929,75 +1863,71 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex plugin develop [workspace] [--sdk-source <path>]
-  explodex --json plugin develop [workspace] [--sdk-source <path>]
+  explodex dev recover
+  explodex --json dev recover
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 63`] = `
 "Usage
-  explodex dev <command> [arguments] [options]
+  explodex dev inject <artifact>
 
-Description
-  One persistent isolated development instance on 127.0.0.1:9444.
+Summary
+  Inject an artifact into the owned development instance.
 
-Commands
-  status                Check health, ownership, crash state, and the next safe action.
-  start                 Start the stopped development instance once.
-  ensure                Reuse, safely recover if confirmed dead, or start the development instance once.
-  recover               Explicitly recover a failed or interrupted development record.
-  inject                Inject an artifact into the owned development instance.
-  restart               Restart only the exact owned development process once.
-  stop                  Stop only the exact owned development process.
-  focus                 Focus the owned development instance when exact process-specific activation is supported.
+Arguments
+  artifact        Path to a validated plugin artifact. (required)
 
-Shared options
-  See global options: explodex --help
+Options
+  No command-local options.
+  Global options are accepted anywhere before --; see explodex --help.
+
+Output
+  Human mode writes the primary result to stdout and diagnostics to stderr.
+  --json writes one schemaVersion-1 envelope to stdout.
+
+Exit status
+  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex dev status
-
-More information
-  explodex help dev <command>
-  explodex dev <command> --help
+  explodex dev inject <artifact>
+  explodex --json dev inject <artifact>
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 64`] = `
 "Usage
-  explodex dev <command> [arguments] [options]
+  explodex dev inject <artifact>
 
-Description
-  One persistent isolated development instance on 127.0.0.1:9444.
+Summary
+  Inject an artifact into the owned development instance.
 
-Commands
-  status                Check health, ownership, crash state, and the next safe action.
-  start                 Start the stopped development instance once.
-  ensure                Reuse, safely recover if confirmed dead, or start the development instance once.
-  recover               Explicitly recover a failed or interrupted development record.
-  inject                Inject an artifact into the owned development instance.
-  restart               Restart only the exact owned development process once.
-  stop                  Stop only the exact owned development process.
-  focus                 Focus the owned development instance when exact process-specific activation is supported.
+Arguments
+  artifact        Path to a validated plugin artifact. (required)
 
-Shared options
-  See global options: explodex --help
+Options
+  No command-local options.
+  Global options are accepted anywhere before --; see explodex --help.
+
+Output
+  Human mode writes the primary result to stdout and diagnostics to stderr.
+  --json writes one schemaVersion-1 envelope to stdout.
+
+Exit status
+  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex dev status
-
-More information
-  explodex help dev <command>
-  explodex dev <command> --help
+  explodex dev inject <artifact>
+  explodex --json dev inject <artifact>
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 65`] = `
 "Usage
-  explodex dev status
+  explodex dev restart
 
 Summary
-  Check health, ownership, crash state, and the next safe action.
+  Restart only the exact owned development process once.
 
 Arguments
   None.
@@ -2014,17 +1944,17 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex dev status
-  explodex --json dev status
+  explodex dev restart
+  explodex --json dev restart
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 66`] = `
 "Usage
-  explodex dev status
+  explodex dev restart
 
 Summary
-  Check health, ownership, crash state, and the next safe action.
+  Restart only the exact owned development process once.
 
 Arguments
   None.
@@ -2041,17 +1971,17 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex dev status
-  explodex --json dev status
+  explodex dev restart
+  explodex --json dev restart
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 67`] = `
 "Usage
-  explodex dev start
+  explodex dev stop
 
 Summary
-  Start the stopped development instance once.
+  Stop only the exact owned development process.
 
 Arguments
   None.
@@ -2068,17 +1998,17 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex dev start
-  explodex --json dev start
+  explodex dev stop
+  explodex --json dev stop
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 68`] = `
 "Usage
-  explodex dev start
+  explodex dev stop
 
 Summary
-  Start the stopped development instance once.
+  Stop only the exact owned development process.
 
 Arguments
   None.
@@ -2095,17 +2025,17 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex dev start
-  explodex --json dev start
+  explodex dev stop
+  explodex --json dev stop
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 69`] = `
 "Usage
-  explodex dev ensure
+  explodex dev focus
 
 Summary
-  Reuse, safely recover if confirmed dead, or start the development instance once.
+  Focus the owned development instance when exact process-specific activation is supported.
 
 Arguments
   None.
@@ -2122,256 +2052,13 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex dev ensure
-  explodex --json dev ensure
+  explodex dev focus
+  explodex --json dev focus
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 70`] = `
 "Usage
-  explodex dev ensure
-
-Summary
-  Reuse, safely recover if confirmed dead, or start the development instance once.
-
-Arguments
-  None.
-
-Options
-  No command-local options.
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
-
-Examples
-  explodex dev ensure
-  explodex --json dev ensure
-"
-`;
-
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 71`] = `
-"Usage
-  explodex dev recover
-
-Summary
-  Explicitly recover a failed or interrupted development record.
-
-Arguments
-  None.
-
-Options
-  No command-local options.
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
-
-Examples
-  explodex dev recover
-  explodex --json dev recover
-"
-`;
-
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 72`] = `
-"Usage
-  explodex dev recover
-
-Summary
-  Explicitly recover a failed or interrupted development record.
-
-Arguments
-  None.
-
-Options
-  No command-local options.
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
-
-Examples
-  explodex dev recover
-  explodex --json dev recover
-"
-`;
-
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 73`] = `
-"Usage
-  explodex dev inject <artifact>
-
-Summary
-  Inject an artifact into the owned development instance.
-
-Arguments
-  artifact        Path to a validated plugin artifact. (required)
-
-Options
-  No command-local options.
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
-
-Examples
-  explodex dev inject <artifact>
-  explodex --json dev inject <artifact>
-"
-`;
-
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 74`] = `
-"Usage
-  explodex dev inject <artifact>
-
-Summary
-  Inject an artifact into the owned development instance.
-
-Arguments
-  artifact        Path to a validated plugin artifact. (required)
-
-Options
-  No command-local options.
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
-
-Examples
-  explodex dev inject <artifact>
-  explodex --json dev inject <artifact>
-"
-`;
-
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 75`] = `
-"Usage
-  explodex dev restart
-
-Summary
-  Restart only the exact owned development process once.
-
-Arguments
-  None.
-
-Options
-  No command-local options.
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
-
-Examples
-  explodex dev restart
-  explodex --json dev restart
-"
-`;
-
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 76`] = `
-"Usage
-  explodex dev restart
-
-Summary
-  Restart only the exact owned development process once.
-
-Arguments
-  None.
-
-Options
-  No command-local options.
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
-
-Examples
-  explodex dev restart
-  explodex --json dev restart
-"
-`;
-
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 77`] = `
-"Usage
-  explodex dev stop
-
-Summary
-  Stop only the exact owned development process.
-
-Arguments
-  None.
-
-Options
-  No command-local options.
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
-
-Examples
-  explodex dev stop
-  explodex --json dev stop
-"
-`;
-
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 78`] = `
-"Usage
-  explodex dev stop
-
-Summary
-  Stop only the exact owned development process.
-
-Arguments
-  None.
-
-Options
-  No command-local options.
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
-
-Examples
-  explodex dev stop
-  explodex --json dev stop
-"
-`;
-
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 79`] = `
-"Usage
   explodex dev focus
 
 Summary
@@ -2394,692 +2081,5 @@ Exit status
 Examples
   explodex dev focus
   explodex --json dev focus
-"
-`;
-
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 80`] = `
-"Usage
-  explodex dev focus
-
-Summary
-  Focus the owned development instance when exact process-specific activation is supported.
-
-Arguments
-  None.
-
-Options
-  No command-local options.
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
-
-Examples
-  explodex dev focus
-  explodex --json dev focus
-"
-`;
-
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 81`] = `
-"Usage
-  explodex legacy <command> [arguments] [options]
-
-Description
-  Legacy doctor and exact itemized cleanup.
-
-Commands
-  doctor                Report legacy install state. (reserved)
-  cleanup               Remove exact itemized legacy items. (reserved)
-
-Shared options
-  See global options: explodex --help
-
-Examples
-  explodex help legacy
-
-More information
-  explodex help legacy <command>
-  explodex legacy <command> --help
-"
-`;
-
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 82`] = `
-"Usage
-  explodex legacy <command> [arguments] [options]
-
-Description
-  Legacy doctor and exact itemized cleanup.
-
-Commands
-  doctor                Report legacy install state. (reserved)
-  cleanup               Remove exact itemized legacy items. (reserved)
-
-Shared options
-  See global options: explodex --help
-
-Examples
-  explodex help legacy
-
-More information
-  explodex help legacy <command>
-  explodex legacy <command> --help
-"
-`;
-
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 83`] = `
-"Usage
-  explodex legacy doctor
-
-Summary
-  Report legacy install state.
-  Status: reserved for a later milestone (not executable in this release).
-
-Arguments
-  None.
-
-Options
-  No command-local options.
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
-
-Examples
-  explodex legacy doctor
-  explodex --json legacy doctor
-"
-`;
-
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 84`] = `
-"Usage
-  explodex legacy doctor
-
-Summary
-  Report legacy install state.
-  Status: reserved for a later milestone (not executable in this release).
-
-Arguments
-  None.
-
-Options
-  No command-local options.
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
-
-Examples
-  explodex legacy doctor
-  explodex --json legacy doctor
-"
-`;
-
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 85`] = `
-"Usage
-  explodex legacy cleanup --item <item-id>... [--yes]
-
-Summary
-  Remove exact itemized legacy items.
-  Status: reserved for a later milestone (not executable in this release).
-
-Arguments
-  None.
-
-Options
-      --item <item-id>...
-      Exact legacy item ID selected for cleanup. (required; repeatable)
-      --yes
-      Confirm the exact submitted item list.
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
-
-Examples
-  explodex legacy cleanup --item <item-id>... [--yes]
-  explodex --json legacy cleanup --item <item-id>... [--yes]
-"
-`;
-
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 86`] = `
-"Usage
-  explodex legacy cleanup --item <item-id>... [--yes]
-
-Summary
-  Remove exact itemized legacy items.
-  Status: reserved for a later milestone (not executable in this release).
-
-Arguments
-  None.
-
-Options
-      --item <item-id>...
-      Exact legacy item ID selected for cleanup. (required; repeatable)
-      --yes
-      Confirm the exact submitted item list.
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
-
-Examples
-  explodex legacy cleanup --item <item-id>... [--yes]
-  explodex --json legacy cleanup --item <item-id>... [--yes]
-"
-`;
-
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 87`] = `
-"Usage
-  explodex skill <command> [arguments] [options]
-
-Description
-  Install or update the matching plugin-builder skill.
-
-Commands
-  install               Install the matching plugin-builder skill. (reserved)
-  update                Update the installed plugin-builder skill. (reserved)
-
-Shared options
-  See global options: explodex --help
-
-Examples
-  explodex help skill
-
-More information
-  explodex help skill <command>
-  explodex skill <command> --help
-"
-`;
-
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 88`] = `
-"Usage
-  explodex skill <command> [arguments] [options]
-
-Description
-  Install or update the matching plugin-builder skill.
-
-Commands
-  install               Install the matching plugin-builder skill. (reserved)
-  update                Update the installed plugin-builder skill. (reserved)
-
-Shared options
-  See global options: explodex --help
-
-Examples
-  explodex help skill
-
-More information
-  explodex help skill <command>
-  explodex skill <command> --help
-"
-`;
-
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 89`] = `
-"Usage
-  explodex skill install [--skill-home <path>]
-
-Summary
-  Install the matching plugin-builder skill.
-  Status: reserved for a later milestone (not executable in this release).
-
-Arguments
-  None.
-
-Options
-      --skill-home <path>
-      Explicit skill installation root.
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
-
-Examples
-  explodex skill install [--skill-home <path>]
-  explodex --json skill install [--skill-home <path>]
-"
-`;
-
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 90`] = `
-"Usage
-  explodex skill install [--skill-home <path>]
-
-Summary
-  Install the matching plugin-builder skill.
-  Status: reserved for a later milestone (not executable in this release).
-
-Arguments
-  None.
-
-Options
-      --skill-home <path>
-      Explicit skill installation root.
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
-
-Examples
-  explodex skill install [--skill-home <path>]
-  explodex --json skill install [--skill-home <path>]
-"
-`;
-
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 91`] = `
-"Usage
-  explodex skill update [--skill-home <path>]
-
-Summary
-  Update the installed plugin-builder skill.
-  Status: reserved for a later milestone (not executable in this release).
-
-Arguments
-  None.
-
-Options
-      --skill-home <path>
-      Explicit skill installation root.
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
-
-Examples
-  explodex skill update [--skill-home <path>]
-  explodex --json skill update [--skill-home <path>]
-"
-`;
-
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 92`] = `
-"Usage
-  explodex skill update [--skill-home <path>]
-
-Summary
-  Update the installed plugin-builder skill.
-  Status: reserved for a later milestone (not executable in this release).
-
-Arguments
-  None.
-
-Options
-      --skill-home <path>
-      Explicit skill installation root.
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
-
-Examples
-  explodex skill update [--skill-home <path>]
-  explodex --json skill update [--skill-home <path>]
-"
-`;
-
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 93`] = `
-"Usage
-  explodex release <command> [arguments] [options]
-
-Description
-  Release candidate, rehearsal, publication, and verification.
-
-Commands
-  candidate             Create a release candidate. (reserved)
-  rehearse              Rehearse publication without public mutation. (reserved)
-  publish               Publish an exact authorized candidate. (reserved)
-  verify                Verify a published candidate. (reserved)
-  status                Show candidate-ready versus release-complete status. (reserved)
-
-Shared options
-  See global options: explodex --help
-
-Examples
-  explodex help release
-
-More information
-  explodex help release <command>
-  explodex release <command> --help
-"
-`;
-
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 94`] = `
-"Usage
-  explodex release <command> [arguments] [options]
-
-Description
-  Release candidate, rehearsal, publication, and verification.
-
-Commands
-  candidate             Create a release candidate. (reserved)
-  rehearse              Rehearse publication without public mutation. (reserved)
-  publish               Publish an exact authorized candidate. (reserved)
-  verify                Verify a published candidate. (reserved)
-  status                Show candidate-ready versus release-complete status. (reserved)
-
-Shared options
-  See global options: explodex --help
-
-Examples
-  explodex help release
-
-More information
-  explodex help release <command>
-  explodex release <command> --help
-"
-`;
-
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 95`] = `
-"Usage
-  explodex release candidate
-
-Summary
-  Create a release candidate.
-  Status: reserved for a later milestone (not executable in this release).
-
-Arguments
-  None.
-
-Options
-  No command-local options.
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
-
-Examples
-  explodex release candidate
-  explodex --json release candidate
-"
-`;
-
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 96`] = `
-"Usage
-  explodex release candidate
-
-Summary
-  Create a release candidate.
-  Status: reserved for a later milestone (not executable in this release).
-
-Arguments
-  None.
-
-Options
-  No command-local options.
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
-
-Examples
-  explodex release candidate
-  explodex --json release candidate
-"
-`;
-
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 97`] = `
-"Usage
-  explodex release rehearse <candidate>
-
-Summary
-  Rehearse publication without public mutation.
-  Status: reserved for a later milestone (not executable in this release).
-
-Arguments
-  candidate       Exact release candidate path. (required)
-
-Options
-  No command-local options.
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
-
-Examples
-  explodex release rehearse <candidate>
-  explodex --json release rehearse <candidate>
-"
-`;
-
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 98`] = `
-"Usage
-  explodex release rehearse <candidate>
-
-Summary
-  Rehearse publication without public mutation.
-  Status: reserved for a later milestone (not executable in this release).
-
-Arguments
-  candidate       Exact release candidate path. (required)
-
-Options
-  No command-local options.
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
-
-Examples
-  explodex release rehearse <candidate>
-  explodex --json release rehearse <candidate>
-"
-`;
-
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 99`] = `
-"Usage
-  explodex release publish <candidate> [--yes]
-
-Summary
-  Publish an exact authorized candidate.
-  Status: reserved for a later milestone (not executable in this release).
-
-Arguments
-  candidate       Exact release candidate path. (required)
-
-Options
-      --yes
-      Confirm publication of this exact candidate.
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
-
-Examples
-  explodex release publish <candidate> [--yes]
-  explodex --json release publish <candidate> [--yes]
-"
-`;
-
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 100`] = `
-"Usage
-  explodex release publish <candidate> [--yes]
-
-Summary
-  Publish an exact authorized candidate.
-  Status: reserved for a later milestone (not executable in this release).
-
-Arguments
-  candidate       Exact release candidate path. (required)
-
-Options
-      --yes
-      Confirm publication of this exact candidate.
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
-
-Examples
-  explodex release publish <candidate> [--yes]
-  explodex --json release publish <candidate> [--yes]
-"
-`;
-
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 101`] = `
-"Usage
-  explodex release verify <candidate>
-
-Summary
-  Verify a published candidate.
-  Status: reserved for a later milestone (not executable in this release).
-
-Arguments
-  candidate       Exact release candidate path. (required)
-
-Options
-  No command-local options.
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
-
-Examples
-  explodex release verify <candidate>
-  explodex --json release verify <candidate>
-"
-`;
-
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 102`] = `
-"Usage
-  explodex release verify <candidate>
-
-Summary
-  Verify a published candidate.
-  Status: reserved for a later milestone (not executable in this release).
-
-Arguments
-  candidate       Exact release candidate path. (required)
-
-Options
-  No command-local options.
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
-
-Examples
-  explodex release verify <candidate>
-  explodex --json release verify <candidate>
-"
-`;
-
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 103`] = `
-"Usage
-  explodex release status <candidate>
-
-Summary
-  Show candidate-ready versus release-complete status.
-  Status: reserved for a later milestone (not executable in this release).
-
-Arguments
-  candidate       Exact release candidate path. (required)
-
-Options
-  No command-local options.
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
-
-Examples
-  explodex release status <candidate>
-  explodex --json release status <candidate>
-"
-`;
-
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 104`] = `
-"Usage
-  explodex release status <candidate>
-
-Summary
-  Show candidate-ready versus release-complete status.
-  Status: reserved for a later milestone (not executable in this release).
-
-Arguments
-  candidate       Exact release candidate path. (required)
-
-Options
-  No command-local options.
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
-
-Examples
-  explodex release status <candidate>
-  explodex --json release status <candidate>
 "
 `;

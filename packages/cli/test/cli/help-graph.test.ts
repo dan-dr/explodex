@@ -13,12 +13,8 @@ type FrozenShape = {
 
 const FROZEN_COMMAND_SHAPES: Record<string, FrozenShape> = {
   "host report": {},
-  "host extract": { options: ["path..."] },
   "compatibility status": {},
-  "compatibility probe": {},
   "main status": {},
-  "main launch": {},
-  "main attach": {},
   "main apply": { arguments: ["artifact"] },
   "plugin create": { arguments: ["directory"] },
   "plugin validate": { arguments: ["workspace?"] },
@@ -51,7 +47,6 @@ const FROZEN_COMMAND_SHAPES: Record<string, FrozenShape> = {
     arguments: ["id"],
     options: ["artifact-version", "payload-sha256", "target"],
   },
-  "plugin onboard": { options: ["target"] },
   "plugin develop": {
     arguments: ["workspace?"],
     options: ["sdk-source"],
@@ -64,15 +59,6 @@ const FROZEN_COMMAND_SHAPES: Record<string, FrozenShape> = {
   "dev restart": {},
   "dev stop": {},
   "dev focus": {},
-  "legacy doctor": {},
-  "legacy cleanup": { options: ["item...", "yes"] },
-  "skill install": { options: ["skill-home"] },
-  "skill update": { options: ["skill-home"] },
-  "release candidate": {},
-  "release rehearse": { arguments: ["candidate"] },
-  "release publish": { arguments: ["candidate"], options: ["yes"] },
-  "release verify": { arguments: ["candidate"] },
-  "release status": { arguments: ["candidate"] },
 };
 
 function argumentShape(command: CommandDescriptor): string[] {
@@ -88,6 +74,40 @@ function optionShape(command: CommandDescriptor): string[] {
 }
 
 describe("frozen CLI descriptor and help graph", () => {
+  test("publishes every implemented lifecycle command as available", () => {
+    const availabilityByOperation = new Map(
+      GROUPS.flatMap((group) =>
+        group.commands.map((command) => [command.operation, command.availability] as const),
+      ),
+    );
+
+    expect(
+      [
+        "main.apply",
+        "plugin.disable",
+        "plugin.remove",
+        "plugin.develop",
+        "plugin.update.apply",
+        "dev.inject",
+        "dev.focus",
+      ].map((operation) => [operation, availabilityByOperation.get(operation)]),
+    ).toEqual([
+      ["main.apply", "available"],
+      ["plugin.disable", "available"],
+      ["plugin.remove", "available"],
+      ["plugin.develop", "available"],
+      ["plugin.update.apply", "available"],
+      ["dev.inject", "available"],
+      ["dev.focus", "available"],
+    ]);
+
+    expect(
+      GROUPS.flatMap((group) => group.commands).every(
+        (command) => command.availability === "available",
+      ),
+    ).toBe(true);
+  });
+
   test("carries every frozen command operand and option", () => {
     const actual: Record<string, FrozenShape> = {};
     for (const group of GROUPS) {
@@ -154,14 +174,6 @@ describe("frozen CLI descriptor and help graph", () => {
       "Override the Explodex home directory. (default: $HOME/.explodex)",
     );
 
-    const extract = await captureCli(["host", "extract", "--help"]);
-    expect(extract.stdout).toContain(
-      "explodex host extract --path <path>...",
-    );
-    expect(extract.stdout).toContain(
-      "Allowlisted host evidence path. (required; repeatable)",
-    );
-
     const refresh = await captureCli(["plugin", "refresh", "--help"]);
     expect(refresh.stdout).toContain(
       "Review target role; unavailable targets never force a renderer. (values: main|development; default: main)",
@@ -172,10 +184,6 @@ describe("frozen CLI descriptor and help graph", () => {
       "Review target role; unavailable targets leave the install disabled and pending. (values: none|main|development; default: none)",
     );
 
-    const cleanup = await captureCli(["legacy", "cleanup", "--help"]);
-    expect(cleanup.stdout).toContain(
-      "explodex legacy cleanup --item <item-id>... [--yes]",
-    );
   });
 
   test("help and version use the frozen precedence and longest valid prefix", async () => {

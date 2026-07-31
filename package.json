@@ -1,7 +1,8 @@
 {
   "name": "explodex-monorepo",
-  "version": "0.3.0",
+  "version": "1.0.0",
   "private": true,
+  "type": "module",
   "description": "Explodex SDK, CLI, and first-party plugin registry workspace.",
   "packageManager": "bun@1.3.14",
   "workspaces": [

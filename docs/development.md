@@ -40,6 +40,26 @@ manifests, and runs the repository test suite.
 The plugin-builder skill carries generated SDK documentation and type snapshots.
 Refresh them with `bun scripts/sync-plugin-skill.ts`; validation rejects drift.
 
+## Isolated renderer diagnostics
+
+Start or reuse the owned development instance, then run diagnostics against its
+exact renderer:
+
+```sh
+explodex --json dev ensure
+bun scripts/cdp-layout-snapshot.ts
+bun scripts/cdp-react-devtools.ts
+bun scripts/cdp-react-scan.ts
+```
+
+All three tools require exactly one `app://-/index.html` page on
+`127.0.0.1:9444`. They never fall back to the authoring endpoint on port 9333.
+The layout tool writes JSON to `~/.explodex/snapshots/`; override the path with
+`EXPLODEX_LAYOUT_SNAPSHOT_OUT`. The React DevTools probe inspects fibers without
+reloading the renderer. React Scan caches its downloaded bundle under
+`~/.explodex/cache/`; set `EXPLODEX_REACT_SCAN_LOG=1` to mirror hot renders to
+the console.
+
 ## Plugin workspace workflow
 
 Create a standalone package workspace:
@@ -83,7 +103,7 @@ Build output is deterministic. Identical source, configuration, package
 metadata, and SDK input must reproduce the same payload digest and generation
 ID. A failed build must leave the previous `dist/` byte-for-byte unchanged.
 
-The CLI reserves an explicit foreground path for a plugin that needs an
+The CLI provides an explicit foreground path for a plugin that needs an
 unreleased SDK:
 
 ```sh
@@ -94,9 +114,8 @@ explodex plugin develop . \
 Local-SDK authority is restricted to the exact owned development renderer. It
 cannot be packaged, recommended, transferred to main, or treated as release
 proof. Graduate by rebuilding against publishable SDK bytes and validating the
-new artifact in development. `plugin develop` is reserved and not available in
-the current release; until it lands, do not claim a local-SDK artifact has
-crossed this graduation boundary.
+new artifact in development. Do not claim a local-SDK artifact has crossed
+this graduation boundary until that publishable rebuild and validation pass.
 
 ## Seven-workspace first-party registry
 

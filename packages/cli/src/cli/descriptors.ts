@@ -3,7 +3,7 @@
  * Help and parsing are derived only from this frozen surface.
  */
 
-export type CommandAvailability = "available" | "reserved";
+export type CommandAvailability = "available";
 
 export type CommandDescriptor = {
   /** Canonical tokens after the group, e.g. ["report"] or ["update", "check"]. */
@@ -84,26 +84,11 @@ export const GROUPS: readonly GroupDescriptor[] = [
         availability: "available",
         aliases: ["inspect"],
       },
-      {
-        path: ["extract"],
-        operation: "host.extract",
-        summary: "Copy only requested allowlisted host evidence to the private inspection cache.",
-        availability: "reserved",
-        options: [
-          {
-            long: "path",
-            description: "Allowlisted host evidence path.",
-            valueName: "path",
-            repeatable: true,
-            required: true,
-          },
-        ],
-      },
     ],
   },
   {
     name: "compatibility",
-    description: "Exact compatibility key status and isolated proof.",
+    description: "Exact compatibility key status.",
     commands: [
       {
         path: ["status"],
@@ -112,17 +97,11 @@ export const GROUPS: readonly GroupDescriptor[] = [
         availability: "available",
         aliases: ["report"],
       },
-      {
-        path: ["probe"],
-        operation: "compatibility.probe",
-        summary: "Complete isolated-development proof on 9444; persist only one complete result.",
-        availability: "reserved",
-      },
     ],
   },
   {
     name: "main",
-    description: "Authoring-main classification, launch, attach, and final apply.",
+    description: "Authoring-main classification and final apply.",
     commands: [
       {
         path: ["status"],
@@ -131,22 +110,10 @@ export const GROUPS: readonly GroupDescriptor[] = [
         availability: "available",
       },
       {
-        path: ["launch"],
-        operation: "main.launch",
-        summary: "Strict explicit launch only from no-main, free 9333, and current proof.",
-        availability: "reserved",
-      },
-      {
-        path: ["attach"],
-        operation: "main.attach",
-        summary: "Bounded operation against a manually supplied exact 9333 main.",
-        availability: "reserved",
-      },
-      {
         path: ["apply"],
         operation: "main.apply",
         summary: "Final hot-safe apply after exact dev validation and fresh main authorization.",
-        availability: "reserved",
+        availability: "available",
         arguments: [
           { name: "artifact", description: "Path to a validated plugin artifact.", required: true },
         ],
@@ -329,7 +296,7 @@ export const GROUPS: readonly GroupDescriptor[] = [
         path: ["disable"],
         operation: "plugin.disable",
         summary: "Disable an installed plugin without removing its bytes.",
-        availability: "reserved",
+        availability: "available",
         arguments: [
           { name: "id", description: "Exact plugin ID.", required: true },
         ],
@@ -347,7 +314,7 @@ export const GROUPS: readonly GroupDescriptor[] = [
         path: ["remove"],
         operation: "plugin.remove",
         summary: "Remove an installed plugin identity.",
-        availability: "reserved",
+        availability: "available",
         arguments: [
           { name: "id", description: "Exact plugin ID.", required: true },
         ],
@@ -372,25 +339,10 @@ export const GROUPS: readonly GroupDescriptor[] = [
         ],
       },
       {
-        path: ["onboard"],
-        operation: "plugin.onboard",
-        summary: "First-run registry onboarding for disabled installation choices.",
-        availability: "reserved",
-        options: [
-          {
-            long: "target",
-            description: "Review target role.",
-            valueName: "role",
-            choices: ["main", "development"],
-            defaultValue: "main",
-          },
-        ],
-      },
-      {
         path: ["develop"],
         operation: "plugin.develop",
         summary: "Foreground plugin build/watch against the exact owned development instance.",
-        availability: "reserved",
+        availability: "available",
         arguments: [
           {
             name: "workspace",
@@ -428,113 +380,6 @@ export const GROUPS: readonly GroupDescriptor[] = [
       { path: ["restart"], operation: "dev.restart", summary: "Restart only the exact owned development process once.", availability: "available" },
       { path: ["stop"], operation: "dev.stop", summary: "Stop only the exact owned development process.", availability: "available" },
       { path: ["focus"], operation: "dev.focus", summary: "Focus the owned development instance when exact process-specific activation is supported.", availability: "available" },
-    ],
-  },
-  {
-    name: "legacy",
-    description: "Legacy doctor and exact itemized cleanup.",
-    commands: [
-      { path: ["doctor"], operation: "legacy.doctor", summary: "Report legacy install state.", availability: "reserved" },
-      {
-        path: ["cleanup"],
-        operation: "legacy.cleanup",
-        summary: "Remove exact itemized legacy items.",
-        availability: "reserved",
-        options: [
-          {
-            long: "item",
-            description: "Exact legacy item ID selected for cleanup.",
-            valueName: "item-id",
-            repeatable: true,
-            required: true,
-          },
-          {
-            long: "yes",
-            description: "Confirm the exact submitted item list.",
-          },
-        ],
-      },
-    ],
-  },
-  {
-    name: "skill",
-    description: "Install or update the matching plugin-builder skill.",
-    commands: [
-      {
-        path: ["install"],
-        operation: "skill.install",
-        summary: "Install the matching plugin-builder skill.",
-        availability: "reserved",
-        options: [
-          {
-            long: "skill-home",
-            description: "Explicit skill installation root.",
-            valueName: "path",
-          },
-        ],
-      },
-      {
-        path: ["update"],
-        operation: "skill.update",
-        summary: "Update the installed plugin-builder skill.",
-        availability: "reserved",
-        options: [
-          {
-            long: "skill-home",
-            description: "Explicit skill installation root.",
-            valueName: "path",
-          },
-        ],
-      },
-    ],
-  },
-  {
-    name: "release",
-    description: "Release candidate, rehearsal, publication, and verification.",
-    commands: [
-      { path: ["candidate"], operation: "release.candidate", summary: "Create a release candidate.", availability: "reserved" },
-      {
-        path: ["rehearse"],
-        operation: "release.rehearse",
-        summary: "Rehearse publication without public mutation.",
-        availability: "reserved",
-        arguments: [
-          { name: "candidate", description: "Exact release candidate path.", required: true },
-        ],
-      },
-      {
-        path: ["publish"],
-        operation: "release.publish",
-        summary: "Publish an exact authorized candidate.",
-        availability: "reserved",
-        arguments: [
-          { name: "candidate", description: "Exact release candidate path.", required: true },
-        ],
-        options: [
-          {
-            long: "yes",
-            description: "Confirm publication of this exact candidate.",
-          },
-        ],
-      },
-      {
-        path: ["verify"],
-        operation: "release.verify",
-        summary: "Verify a published candidate.",
-        availability: "reserved",
-        arguments: [
-          { name: "candidate", description: "Exact release candidate path.", required: true },
-        ],
-      },
-      {
-        path: ["status"],
-        operation: "release.status",
-        summary: "Show candidate-ready versus release-complete status.",
-        availability: "reserved",
-        arguments: [
-          { name: "candidate", description: "Exact release candidate path.", required: true },
-        ],
-      },
     ],
   },
 ];

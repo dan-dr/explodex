@@ -6,8 +6,8 @@ import {
   CANONICAL_BUNDLE_PATH,
   CANONICAL_EXECUTABLE_NAME,
   DEFAULT_PROBE_TOOL_VERSION,
-  MISSION_BASELINE_APP_BUILD,
-  MISSION_BASELINE_APP_VERSION,
+  PINNED_BASELINE_APP_BUILD,
+  PINNED_BASELINE_APP_VERSION,
   PROBE_SCHEMA_VERSION,
 } from "../../src/host/constants.ts";
 import {
@@ -57,8 +57,8 @@ function frozenHost(overrides: Partial<HostIdentity> = {}): HostIdentity {
     bundleId: "com.openai.codex",
     executableName: CANONICAL_EXECUTABLE_NAME,
     signingTeam: "2DC432GLL2",
-    appVersion: MISSION_BASELINE_APP_VERSION,
-    appBuild: MISSION_BASELINE_APP_BUILD,
+    appVersion: PINNED_BASELINE_APP_VERSION,
+    appBuild: PINNED_BASELINE_APP_BUILD,
     hostHashes: {
       "Contents/Info.plist": "b".repeat(64),
       "Contents/MacOS/ChatGPT": "c".repeat(64),
@@ -163,8 +163,8 @@ function cdpMainStatus(pid = 5200, start = START): HostStatusResult {
       pid,
       processStartedAt: start,
       executablePath: EXECUTABLE,
-      appVersion: MISSION_BASELINE_APP_VERSION,
-      appBuild: MISSION_BASELINE_APP_BUILD,
+      appVersion: PINNED_BASELINE_APP_VERSION,
+      appBuild: PINNED_BASELINE_APP_BUILD,
       port: 9333,
       browserIdentity: "Chrome/150.0",
       targetId: "PAGE-WINNER",

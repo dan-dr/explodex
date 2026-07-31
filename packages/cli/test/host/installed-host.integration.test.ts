@@ -5,8 +5,8 @@ import {
   CANONICAL_BUNDLE_PATH,
   CANONICAL_EXECUTABLE_NAME,
   CANONICAL_SIGNING_TEAM,
-  MISSION_BASELINE_APP_BUILD,
-  MISSION_BASELINE_APP_VERSION,
+  PINNED_BASELINE_APP_BUILD,
+  PINNED_BASELINE_APP_VERSION,
 } from "../../src/host/constants.ts";
 import { createDefaultHostAdapters } from "../../src/host/adapters.ts";
 import { inspectCanonicalHost } from "../../src/host/identity.ts";
@@ -26,7 +26,7 @@ describe("installed ChatGPT.app read-only inspection", () => {
   // Full Info.plist + executable + app.asar hashing is mandatory and can exceed
   // the default bun test timeout on large installed hosts.
   test(
-    "resolves mission baseline host identity without writes or CDP",
+    "resolves the pinned baseline host identity without writes or CDP",
     async () => {
       if (!(await chatgptInstalled())) {
         // Controlled environments without the host still run fixture tests.
@@ -46,15 +46,15 @@ describe("installed ChatGPT.app read-only inspection", () => {
         `${CANONICAL_BUNDLE_PATH}/Contents/MacOS/${CANONICAL_EXECUTABLE_NAME}`,
       );
       expect(result.host.signingTeam).toBe(CANONICAL_SIGNING_TEAM);
-      // Mission baseline constants stay fixed; a later host update remains a valid
-      // host (VAL-HOST-003) and must not silently rewrite the mission baseline.
+      // Pinned baseline constants stay fixed; a later host update remains a valid
+      // host (VAL-HOST-003) and must not silently rewrite the pinned baseline.
       expect(result.host.appVersion).toMatch(/^\d+\.\d+\.\d+$/);
       expect(result.host.appBuild).toMatch(/^\d+$/);
-      if (result.host.appBuild === MISSION_BASELINE_APP_BUILD) {
-        expect(result.host.appVersion).toBe(MISSION_BASELINE_APP_VERSION);
+      if (result.host.appBuild === PINNED_BASELINE_APP_BUILD) {
+        expect(result.host.appVersion).toBe(PINNED_BASELINE_APP_VERSION);
       } else {
-        expect(result.host.appVersion).not.toBe(MISSION_BASELINE_APP_VERSION);
-        expect(result.host.appBuild).not.toBe(MISSION_BASELINE_APP_BUILD);
+        expect(result.host.appVersion).not.toBe(PINNED_BASELINE_APP_VERSION);
+        expect(result.host.appBuild).not.toBe(PINNED_BASELINE_APP_BUILD);
       }
       expect(result.host.hostHashes["Contents/Info.plist"]).toMatch(/^[a-f0-9]{64}$/);
       expect(result.host.hostHashes["Contents/MacOS/ChatGPT"]).toMatch(/^[a-f0-9]{64}$/);

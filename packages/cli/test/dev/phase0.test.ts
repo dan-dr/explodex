@@ -26,8 +26,8 @@ import type {
 } from "../../src/dev/types.ts";
 import {
   HISTORICAL_OBSERVED_APP_BUILD_2026_07_25,
-  MISSION_BASELINE_APP_BUILD,
-  MISSION_BASELINE_APP_VERSION,
+  PINNED_BASELINE_APP_BUILD,
+  PINNED_BASELINE_APP_VERSION,
 } from "../../src/host/constants.ts";
 import type { HostAdapters } from "../../src/host/adapters.ts";
 import { createFixedClock, createMemoryHash, MemoryFileSystem } from "../host/fixture-fs.ts";
@@ -367,7 +367,7 @@ function completeObservations(layoutRoot: string): Phase0KnobObservation[] {
 describe("Phase 0 launch-isolation contract (VAL-HOST-007)", () => {
   test("disabled contract blocks lifecycle mutation and compatibility probing", () => {
     const contract = createDisabledPhase0Contract({
-      appBuild: MISSION_BASELINE_APP_BUILD,
+      appBuild: PINNED_BASELINE_APP_BUILD,
     });
     for (const operation of [
       "dev-start",
@@ -411,8 +411,8 @@ describe("Phase 0 launch-isolation contract (VAL-HOST-007)", () => {
     const layout = describeDevLayout("/tmp/homes/phase0-b/.explodex/dev/plugin-dev");
     const frozenHost = sampleFrozenHost();
     // Frozen host differs from the dated readiness baseline and must still prove.
-    expect(frozenHost.appBuild).not.toBe(MISSION_BASELINE_APP_BUILD);
-    expect(frozenHost.appVersion).not.toBe(MISSION_BASELINE_APP_VERSION);
+    expect(frozenHost.appBuild).not.toBe(PINNED_BASELINE_APP_BUILD);
+    expect(frozenHost.appVersion).not.toBe(PINNED_BASELINE_APP_VERSION);
 
     const result = evaluatePhase0LaunchContract({
       frozenHost,
@@ -491,8 +491,8 @@ describe("Phase 0 launch-isolation contract (VAL-HOST-007)", () => {
   test("historical difference from dated observations is not a blocker when freeze matches recheck", () => {
     const layout = describeDevLayout("/tmp/homes/phase0-hist/.explodex/dev/plugin-dev");
     const historical = sampleFrozenHost({
-      appVersion: MISSION_BASELINE_APP_VERSION,
-      appBuild: MISSION_BASELINE_APP_BUILD,
+      appVersion: PINNED_BASELINE_APP_VERSION,
+      appBuild: PINNED_BASELINE_APP_BUILD,
     });
     const current = sampleFrozenHost({
       appVersion: "26.721.41059",
@@ -544,7 +544,7 @@ describe("Phase 0 launch-isolation contract (VAL-HOST-007)", () => {
   });
 
   test("between-operation host change requires automatic re-proof rather than build choice", () => {
-    const previous = sampleFrozenHost({ appBuild: MISSION_BASELINE_APP_BUILD });
+    const previous = sampleFrozenHost({ appBuild: PINNED_BASELINE_APP_BUILD });
     const current = sampleFrozenHost({ appBuild: HISTORICAL_OBSERVED_APP_BUILD_2026_07_25 });
     const proven = evaluatePhase0LaunchContract({
       frozenHost: previous,

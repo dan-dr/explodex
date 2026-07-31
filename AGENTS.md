@@ -28,7 +28,6 @@ the installed host bundle.
 | [docs/local-development.md](docs/local-development.md) | Isolated development workflow on port 9444 |
 | [docs/sdk-api.md](docs/sdk-api.md) | **SDK API reference** for plugin authors and agents |
 | [docs/RELEASING.md](docs/RELEASING.md) | **Release procedure** and registry propagation/recovery guidelines |
-| [docs/plugins/README.md](docs/plugins/README.md) | Plugin-by-plugin review and docs index |
 | [docs/decisions/](docs/decisions/) | Current architecture decisions |
 
 When you change behavior or fix a plugin based on architecture knowledge:
@@ -90,6 +89,9 @@ bun run checkTs              # Type-check SDK and CLI
 bun run validate             # Full repository gate
 bun run dev:ensure           # Reuse or start isolated development on 9444
 bun run dev:status           # Read-only owned development status
+bun scripts/cdp-layout-snapshot.ts  # Exact 9444 renderer layout evidence
+bun scripts/cdp-react-devtools.ts   # Exact 9444 React fiber probe
+bun scripts/cdp-react-scan.ts       # Exact 9444 render performance overlay
 ```
 
 ## Verification

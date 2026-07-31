@@ -15,14 +15,14 @@ export const CANONICAL_SIGNING_TEAM = "2DC432GLL2";
  * Not an acceptance constant or allowlist; every live operation freezes the
  * then-current exact canonical host identity instead.
  */
-export const MISSION_BASELINE_APP_VERSION = "26.715.61943";
+export const PINNED_BASELINE_APP_VERSION = "26.715.61943";
 
 /**
  * Historical readiness observation (2026-07-22) application build.
  * Not an acceptance constant or allowlist; every live operation freezes the
  * then-current exact canonical host identity instead.
  */
-export const MISSION_BASELINE_APP_BUILD = "5628";
+export const PINNED_BASELINE_APP_BUILD = "5628";
 
 /**
  * Historical read-only observation (2026-07-25) application version.
@@ -76,7 +76,7 @@ export type CompatibilityHostHashRelativePath =
 
 /** Public documented next action when compatibility is unproven. */
 export const PUBLIC_COMPATIBILITY_PROBE_HINT =
-  "Run the isolated development compatibility probe on 127.0.0.1:9444 (public probe command) before launch, attach, inject, refresh, review, or apply.";
+  "Re-check explodex compatibility status and prove the plugin on the isolated 127.0.0.1:9444 development target before inject, refresh, review, or apply.";
 
 /** Operations that may run without a proven compatibility record. */
 export const COMPATIBILITY_INDEPENDENT_OPERATIONS = [

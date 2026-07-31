@@ -1,6 +1,6 @@
 {
   "name": "explodex",
-  "version": "0.3.0",
+  "version": "1.0.0",
   "description": "Explodex CLI for ChatGPT.app plugin management (Node 22/24).",
   "type": "module",
   "engines": {

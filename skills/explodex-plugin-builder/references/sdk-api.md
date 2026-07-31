@@ -399,8 +399,9 @@ codex.applyThreadSettingsForNextTurn(conversationId, { model?, effort? }): Promi
 omitted, then calls the same `useCallback` setter the intelligence dropdown
 uses. Returns `true` on success, `false` if the setter wasn't found.
 
-> Fiber walking is inherently fragile across ChatGPT updates. Re-run the exact
-> compatibility probe and isolated plugin proof after every host update.
+> Fiber walking is inherently fragile across ChatGPT updates. Re-check
+> `explodex compatibility status` and repeat isolated plugin proof after every
+> host update.
 
 ---
 

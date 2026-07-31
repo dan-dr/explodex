@@ -40,7 +40,7 @@ export async function runCompatibilityStatus(options: {
         `error.code: ${inspection.error.code}`,
         `error.message: ${inspection.error.message}`,
         "compatibility.status: unproven",
-        "nextAction: fix host identity, then run explodex compatibility probe",
+        "nextAction: fix host identity, re-run explodex compatibility status, then prove the plugin on isolated development port 9444",
       ].join("\n") + "\n",
     });
   }

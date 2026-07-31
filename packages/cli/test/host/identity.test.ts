@@ -4,8 +4,8 @@ import {
   CANONICAL_BUNDLE_PATH,
   CANONICAL_EXECUTABLE_NAME,
   CANONICAL_SIGNING_TEAM,
-  MISSION_BASELINE_APP_BUILD,
-  MISSION_BASELINE_APP_VERSION,
+  PINNED_BASELINE_APP_BUILD,
+  PINNED_BASELINE_APP_VERSION,
 } from "../../src/host/constants.ts";
 import { inspectHost } from "../../src/host/identity.ts";
 import { reportHost } from "../../src/host/report.ts";
@@ -36,8 +36,8 @@ describe("inspectHost canonical resolution (VAL-HOST-001)", () => {
     expect(result.host.bundleId).toBe(CANONICAL_BUNDLE_ID);
     expect(result.host.executableName).toBe(CANONICAL_EXECUTABLE_NAME);
     expect(result.host.signingTeam).toBe(CANONICAL_SIGNING_TEAM);
-    expect(result.host.appVersion).toBe(MISSION_BASELINE_APP_VERSION);
-    expect(result.host.appBuild).toBe(MISSION_BASELINE_APP_BUILD);
+    expect(result.host.appVersion).toBe(PINNED_BASELINE_APP_VERSION);
+    expect(result.host.appBuild).toBe(PINNED_BASELINE_APP_BUILD);
     expect(result.host.hostHashes["Contents/Info.plist"]).toMatch(/^[a-f0-9]{64}$/);
     expect(result.host.hostHashes["Contents/MacOS/ChatGPT"]).toMatch(/^[a-f0-9]{64}$/);
     expect(result.host.hostHashes["Contents/Resources/app.asar"]).toMatch(/^[a-f0-9]{64}$/);
@@ -344,8 +344,8 @@ describe("inspectHost identity reporting (VAL-HOST-003)", () => {
     const result = await inspectHost({ adapters });
     expect(result.ok).toBe(true);
     if (!result.ok || !result.host) throw new Error("expected success");
-    expect(result.host.appVersion).toBe(MISSION_BASELINE_APP_VERSION);
-    expect(result.host.appBuild).toBe(MISSION_BASELINE_APP_BUILD);
+    expect(result.host.appVersion).toBe(PINNED_BASELINE_APP_VERSION);
+    expect(result.host.appBuild).toBe(PINNED_BASELINE_APP_BUILD);
     // Structural validity must not claim proven compatibility.
     expect(result.compatibility.status).not.toBe("proven");
     expect(result.compatibility.allowsCompatibilityDependentWork).toBe(false);
@@ -365,7 +365,7 @@ describe("inspectHost identity reporting (VAL-HOST-003)", () => {
     if (!result.ok || !result.host) throw new Error("expected success");
     expect(result.hostValid).toBe(true);
     expect(result.host.appBuild).toBe("9999");
-    expect(result.host.appBuild).not.toBe(MISSION_BASELINE_APP_BUILD);
+    expect(result.host.appBuild).not.toBe(PINNED_BASELINE_APP_BUILD);
     expect(result.compatibility.status).toBe("unproven");
     expect(result.compatibility.allowsCompatibilityDependentWork).toBe(false);
   });

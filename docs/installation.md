@@ -33,6 +33,7 @@ wrapper application, patch ChatGPT.app, or start a background service.
 | `host report` | Read-only canonical ChatGPT.app identity and compatibility summary |
 | `compatibility status` | Read-only exact compatibility key and status |
 | `main status` | Read-only authoring-main classification and separate port obstruction |
+| `main apply` | Apply one exact validated artifact after isolated proof and fresh authorization |
 | `plugin create` | Scaffold a generated-only TypeScript workspace |
 | `plugin validate` | Validate source and package authority |
 | `plugin build` | Generate browser-safe `dist/` artifacts |
@@ -44,6 +45,9 @@ wrapper application, patch ChatGPT.app, or start a background service.
 | `plugin review` | Present metadata-only activation review |
 | `plugin update check` | Check remote recommendations without applying |
 | `plugin update apply` | Review and apply selected updates |
+| `plugin disable` | Disable an installed identity, with optional exact-target teardown |
+| `plugin remove` | Remove an installed identity, with optional exact-target teardown |
+| `plugin develop` | Run foreground build/watch against the exact isolated development instance |
 | `dev status/start/ensure/recover/inject/restart/stop/focus` | Operate only the exact isolated development instance |
 
 Global options include `--json`, `--home <path>`, `--dev-root <path>`,
@@ -51,8 +55,8 @@ Global options include `--json`, `--home <path>`, `--dev-root <path>`,
 schema-versioned envelope on stdout. Run `explodex --help` or
 `explodex <group> <command> --help` for the descriptor-derived contract.
 
-Reserved command paths appear in help but fail closed as unavailable. Do not
-build automation around a reserved path.
+Only executable command paths appear in help. Unadvertised paths fail as usage
+errors and are not part of the public CLI contract.
 
 ## Install a plugin
 
@@ -73,7 +77,7 @@ you already trust.
 ### First-party registry
 
 ```sh
-explodex plugin install --registry effort-shortcuts
+explodex plugin add --registry effort-shortcuts
 ```
 
 The registry is a checksummed `registry.json` published as a canonical Explodex
@@ -84,7 +88,7 @@ them before committing the artifact.
 ### Direct GitHub Release
 
 ```sh
-explodex plugin install \
+explodex plugin add \
   --github-url https://github.com/OWNER/REPOSITORY/releases/download/TAG/PLUGIN.tar.gz \
   --archive-sha256 <64-lowercase-hex>
 ```
