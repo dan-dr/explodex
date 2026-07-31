@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "generationId": "a6f2b25cd4d9529d76272e6b6939c29f796dfacc53868d80ba3d771574f91cdb",
+  "pluginId": "effort-shortcuts",
+  "version": "2.3.0",
+  "mapMode": "required",
+  "sdkInput": {
+    "kind": "publishable",
+    "version": "1.2.0",
+    "runtimeSha256": "9eb07e6844156104cef18cca325b25f6fd7c71cf6bcf01566fcb4a494948060b"
+  },
+  "inputDigests": {
+    "__explodex__/authority.json": "caf7d05c78bb3578ba2138f1309286b238b1a0a172343edabf9aeea8801b128a",
+    "__explodex__/sdk-input.json": "1a6b48186f4a41407985082a53e66a5147edcbaaf26df5330f7577b5fd54f355",
+    "explodex.config.ts": "4621dac4f9f294580e50ac23592c2f09b5ed01f0d58ffe7b3ca64be9954f6908",
+    "package.json": "231b4317fab422f8cb6b44dbe0c83e061e06728891adcd2f8e3682541243a7b4",
+    "src/dom.ts": "4f774b9f9cffb4b900df0661d1ff63dc82020e5920c90b864c71195c13e3b5f3",
+    "src/index.ts": "749b9dea98038969db253a5e4ae57405fcd17e594227c45704c451b7b8a67719",
+    "src/model.ts": "151f9f223eb5576100adc98e34a1390cd5935a7824c79f4c322478144984dd04",
+    "src/runtime.ts": "efb1f3115a46bfb099746b6a801d5e98b173bf9606a331339c465dc61f8f9160",
+    "tsconfig.json": "b3bf466c6450b4676c643e1c0b217603102bd276324dba8c9515cba96934714a"
+  },
+  "outputDigests": {
+    "checksums.json": "2ae057bc48e5d6ec832237bc9d76ad964d36acb8a4bb71545c8b57c5f1e8a022",
+    "index.js": "a2ba5e3f209910b9639ee15aed74f310cc43bc19fe39f17c125b75b2202a89bc",
+    "index.js.map": "22167332a53fe40325a36b415ee530491051314e1168045f5ec9262615601ab3",
+    "plugin.json": "34462568ea260be3462ad00d418c9104041d631a3430f382c68d1e9e602619bc"
+  },
+  "payloadSha256": "4dcfb307264aa04d3ad4dba292cab6af5c7e84f5ed92bf48511dce9edf6a0e17"
+}

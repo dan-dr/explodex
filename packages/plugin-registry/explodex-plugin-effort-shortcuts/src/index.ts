@@ -1,7 +1,6 @@
 import { definePlugin } from "@explodex/sdk";
+import { setupEffortShortcuts } from "./runtime";
 
 export default definePlugin({
-  setup(api) {
-    api.log.info("Effort Shortcuts migration is staged for the next registry feature.");
-  },
+  setup: setupEffortShortcuts,
 });

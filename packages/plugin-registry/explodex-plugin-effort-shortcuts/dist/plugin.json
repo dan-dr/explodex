@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "effort-shortcuts",
+  "version": "2.3.0",
+  "displayName": "Effort Shortcuts",
+  "description": "Set reasoning effort from composer prefixes and restore it after the turn.",
+  "sdkRange": "^1.2.0",
+  "lifecycle": "dynamic",
+  "entry": "index.js",
+  "assets": []
+}
