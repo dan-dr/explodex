@@ -133,15 +133,30 @@ naming `origin`, `vX.Y.Z`, and its target. Only after approval:
 git push origin vX.Y.Z
 ```
 
+Dispatch the immutable-tag verification workflow with the exact approved
+registry digest, then wait for that run to pass before any package or release
+publication:
+
+```sh
+gh workflow run release.yml --repo dan-dr/explodex --ref vX.Y.Z \
+  -f tag=vX.Y.Z \
+  -f registry_sha256=<registry-json-sha256>
+gh run list --repo dan-dr/explodex --workflow release.yml --limit 1
+gh run watch <run-id> --repo dan-dr/explodex --exit-status
+```
+
 ## 6. Publish npm
 
 Ask for a separate **npm gate** for each package, naming the package, version,
 git SHA, npm dist-tag, and packed tarball SHA-256. Only after approval, publish
-the reviewed candidate from its package directory:
+the exact reviewed tarball whose SHA-256 was approved. Do not publish a package
+directory: that reruns `prepack` and creates bytes outside the approval.
 
 ```sh
-npm publish ./packages/sdk --provenance --access public --tag <latest-or-next>
-npm publish ./packages/cli --provenance --access public --tag <latest-or-next>
+npm publish /absolute/path/to/reviewed/explodex-sdk-X.Y.Z.tgz \
+  --provenance --access public --tag <latest-or-next>
+npm publish /absolute/path/to/reviewed/explodex-X.Y.Z.tgz \
+  --provenance --access public --tag <latest-or-next>
 ```
 
 Verify the registry version, `gitHead`, dist-tag, and provenance attestation.
