@@ -11,6 +11,10 @@ describe("release documentation approval binding", () => {
       join(repositoryRoot, ".github", "workflows", "ci.yml"),
       "utf8",
     );
+    const releaseWorkflow = await readFile(
+      join(repositoryRoot, ".github", "workflows", "release.yml"),
+      "utf8",
+    );
     const workflowDispatch = docs.indexOf("gh workflow run release.yml");
     const npmSection = docs.indexOf("## 6. Publish npm");
     const packageBuild = ciWorkflow.indexOf("run: bun run build:npm");
@@ -25,6 +29,10 @@ describe("release documentation approval binding", () => {
     expect(docs).toContain("git push origin <release-branch>");
     expect(docs).not.toContain("git push origin main");
     expect(ciWorkflow).toContain('- "codex/**"');
+    expect(ciWorkflow).toContain("uses: jdx/mise-action@v4");
+    expect(ciWorkflow).toContain('install_args: "node@22 node@24"');
+    expect(releaseWorkflow).toContain("uses: jdx/mise-action@v4");
+    expect(releaseWorkflow).toContain('install_args: "node@22 node@24"');
     expect(packageBuild).toBeGreaterThan(0);
     expect(packageBuild).toBeLessThan(packageTypecheck);
   });
