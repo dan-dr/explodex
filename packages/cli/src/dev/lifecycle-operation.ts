@@ -7,15 +7,10 @@ import {
 } from "../host/adapters.ts";
 import type { HostIdentity } from "../host/types.ts";
 import type { SdkRuntimeIdentity } from "../host/types.ts";
-import {
-  evaluateCompatibility,
-  loadCompatibilityRecord,
-} from "../host/compatibility-state.ts";
 import { inspectHost } from "../host/identity.ts";
 import {
   createDefaultHostStatusAdapters,
 } from "../host/process-adapters.ts";
-import { resolveSdkRuntimeIdentityForCli } from "../host/sdk-runtime-identity.ts";
 import type { HostStatusAdapters } from "../host/status.ts";
 import { resolveExplodexHome } from "../home/paths.ts";
 import {
@@ -284,40 +279,6 @@ export async function runDevLifecycleOperation(
       details: gate.error,
     });
   }
-  const [persistedCompatibility, resolvedSdkRuntime] = await Promise.all([
-    loadCompatibilityRecord({
-      adapters: hostAdapters,
-      explodexHome,
-    }),
-    resolveSdkRuntimeIdentityForCli(),
-  ]);
-  const sdkRuntime = options.sdkRuntime ?? resolvedSdkRuntime;
-  const compatibility = evaluateCompatibility({
-    host: host.host,
-    sdkRuntime,
-    persisted: persistedCompatibility,
-  });
-  if (
-    (
-      options.kind === "start" ||
-      options.kind === "ensure" ||
-      options.kind === "restart"
-    ) &&
-    !compatibility.allowsCompatibilityDependentWork
-  ) {
-    return refused({
-      code: options.kind === "ensure"
-        ? "dev.ensure-refused"
-        : options.kind === "restart"
-          ? "dev.restart-refused"
-          : "dev.start-refused",
-      message:
-        `Exact current compatibility proof is required before development launch: ${compatibility.reason ?? "unproven"}.`,
-      state: currentState.state,
-      details: compatibility,
-    });
-  }
-
   if (
     currentState.status === "absent" &&
     (options.kind === "start" || options.kind === "ensure")
@@ -376,7 +337,14 @@ export async function runDevLifecycleOperation(
         });
       } else if (
         loaded.status === "valid" &&
-        loaded.state.status === "stopped" &&
+        (
+          loaded.state.status === "stopped" ||
+          (
+            loaded.state.status === "failed" &&
+            loaded.state.frozenHost === null &&
+            loaded.state.lastError?.code === "dev.state-migrated"
+          )
+        ) &&
         (options.kind === "start" || options.kind === "ensure") &&
         (
           loaded.state.appPath !== frozenHost.bundlePath ||
@@ -442,7 +410,6 @@ export async function runDevLifecycleOperation(
         contract: gate.contract,
         frozenHost,
         layout: selection.layout,
-        explodexHome,
         logsPath: selection.layout.logsPath,
         timeoutMs: options.timeoutMs,
         signal: options.signal,

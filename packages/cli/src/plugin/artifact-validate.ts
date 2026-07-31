@@ -102,6 +102,7 @@ export async function validateInstallablePayloadDir(
     archiveSha256?: string | null;
     archiveRootName?: string | null;
     source?: "directory" | "archive";
+    signal?: AbortSignal;
     expectedIdentity?: {
       id?: string;
       version?: string;
@@ -110,33 +111,39 @@ export async function validateInstallablePayloadDir(
   },
 ): Promise<StandaloneArtifactResult> {
   const root = resolve(payloadDir);
+  if (options?.signal?.aborted) return interruptedArtifactValidation();
   if (!(await isDirectory(root))) {
     return fail("plugin.artifact.invalid", "Artifact path is not a directory.", {
       path: root,
     });
   }
+  if (options?.signal?.aborted) return interruptedArtifactValidation();
 
   // Reject generation file as part of installable set (may exist beside dist/).
   let installable: string[];
   try {
     installable = await listInstallableFiles(root);
   } catch (error: unknown) {
+    if (options?.signal?.aborted) return interruptedArtifactValidation();
     return fail(
       "plugin.artifact.invalid",
       error instanceof Error ? error.message : "Unable to list artifact files.",
     );
   }
+  if (options?.signal?.aborted) return interruptedArtifactValidation();
 
   let treeEntries: Awaited<ReturnType<typeof listPayloadTreeEntries>>;
   try {
     treeEntries = await listPayloadTreeEntries(root);
   } catch (error: unknown) {
+    if (options?.signal?.aborted) return interruptedArtifactValidation();
     return fail(
       "plugin.artifact.invalid",
       error instanceof Error ? error.message : "Artifact payload path is invalid.",
     );
   }
   for (const entry of treeEntries) {
+    if (options?.signal?.aborted) return interruptedArtifactValidation();
     const relative = entry.path;
     if (entry.kind === "directory") {
       if (relative !== "assets" && !relative.startsWith("assets/")) {
@@ -169,8 +176,12 @@ export async function validateInstallablePayloadDir(
 
   let manifestRaw: unknown;
   try {
-    manifestRaw = JSON.parse(await readFile(join(root, "plugin.json"), "utf8")) as unknown;
+    manifestRaw = JSON.parse(await readFile(join(root, "plugin.json"), {
+      encoding: "utf8",
+      signal: options?.signal,
+    })) as unknown;
   } catch (error: unknown) {
+    if (options?.signal?.aborted) return interruptedArtifactValidation();
     return fail(
       "plugin.artifact.invalid",
       error instanceof Error
@@ -204,6 +215,7 @@ export async function validateInstallablePayloadDir(
   try {
     checksums = await readChecksums(root);
   } catch (error: unknown) {
+    if (options?.signal?.aborted) return interruptedArtifactValidation();
     return fail(
       "plugin.artifact.invalid",
       error instanceof Error
@@ -211,6 +223,7 @@ export async function validateInstallablePayloadDir(
         : "checksums.json is invalid",
     );
   }
+  if (options?.signal?.aborted) return interruptedArtifactValidation();
 
   // checksums.json must not list itself or generation metadata.
   if (Object.prototype.hasOwnProperty.call(checksums.files, "checksums.json")) {
@@ -222,6 +235,7 @@ export async function validateInstallablePayloadDir(
   }
 
   const verified = await verifyDistAgainstChecksums(root, checksums);
+  if (options?.signal?.aborted) return interruptedArtifactValidation();
   if (!verified.ok) {
     return fail("plugin.artifact.invalid", verified.message, { path: verified.path });
   }
@@ -229,6 +243,7 @@ export async function validateInstallablePayloadDir(
   // Every checksum path must use the shared installable vocabulary.
   const checksumPaths = Object.keys(checksums.files).sort(compareBytewise);
   for (const path of checksumPaths) {
+    if (options?.signal?.aborted) return interruptedArtifactValidation();
     if (!isInstallableRelativePath(path) || path === "checksums.json") {
       return fail("plugin.artifact.invalid", `checksums.json lists a non-installable path: ${path}`, {
         path,
@@ -245,6 +260,7 @@ export async function validateInstallablePayloadDir(
       error instanceof Error ? error.message : "payloadSha256 computation failed",
     );
   }
+  if (options?.signal?.aborted) return interruptedArtifactValidation();
 
   if (
     options?.expectedIdentity?.payloadSha256 !== undefined &&
@@ -320,7 +336,11 @@ export async function validateInstallablePayloadDir(
     );
   }
 
-  const jsText = await readFile(join(root, "index.js"), "utf8");
+  const jsText = await readFile(join(root, "index.js"), {
+    encoding: "utf8",
+    signal: options?.signal,
+  });
+  if (options?.signal?.aborted) return interruptedArtifactValidation();
   const browser = scanBrowserSafeIife(jsText);
   if (!browser.ok) {
     return fail("plugin.artifact.invalid", browser.message, { browserSafety: browser });
@@ -329,8 +349,12 @@ export async function validateInstallablePayloadDir(
   // Map must have the exact V3 package-relative TypeScript shape and identity.
   let mapText: string;
   try {
-    mapText = await readFile(join(root, "index.js.map"), "utf8");
+    mapText = await readFile(join(root, "index.js.map"), {
+      encoding: "utf8",
+      signal: options?.signal,
+    });
   } catch (error: unknown) {
+    if (options?.signal?.aborted) return interruptedArtifactValidation();
     return fail(
       "plugin.artifact.invalid",
       error instanceof Error
@@ -352,6 +376,7 @@ export async function validateInstallablePayloadDir(
     expectedPluginId: manifest.id,
     source: jsText,
   });
+  if (options?.signal?.aborted) return interruptedArtifactValidation();
   if (!registration.ok) {
     return fail(
       "plugin.artifact.invalid",
@@ -385,8 +410,10 @@ export async function validateInstallablePayloadDir(
  */
 export async function validateStandaloneArtifact(
   artifactPath: string,
+  options: { signal?: AbortSignal } = {},
 ): Promise<StandaloneArtifactResult> {
   const absolute = resolve(artifactPath);
+  if (options.signal?.aborted) return interruptedArtifactValidation();
   if (!(await pathExists(absolute))) {
     return fail("plugin.artifact.invalid", "Artifact path does not exist.", {
       path: absolute,
@@ -401,12 +428,13 @@ export async function validateStandaloneArtifact(
         { path: absolute },
       );
     }
-    const archiveBytes = await readFile(absolute);
+    const archiveBytes = await readFile(absolute, { signal: options.signal });
+    if (options.signal?.aborted) return interruptedArtifactValidation();
     const extracted = extractNamedRootArchive(archiveBytes);
     if (!extracted.ok) {
       return fail(extracted.code, extracted.message, extracted.details);
     }
-    return validateExtractedArchive(extracted.extracted);
+    return validateExtractedArchive(extracted.extracted, options.signal);
   }
 
   if (!(await isDirectory(absolute))) {
@@ -419,7 +447,10 @@ export async function validateStandaloneArtifact(
   // children are the installable set.
   const hasPluginJson = await pathExists(join(absolute, "plugin.json"));
   if (hasPluginJson) {
-    return validateInstallablePayloadDir(absolute, { source: "directory" });
+    return validateInstallablePayloadDir(absolute, {
+      source: "directory",
+      signal: options.signal,
+    });
   }
 
   // Maybe this is the parent containing one named root.
@@ -445,11 +476,13 @@ export async function validateStandaloneArtifact(
   return validateInstallablePayloadDir(named, {
     source: "directory",
     archiveRootName: dirs[0]!.name,
+    signal: options.signal,
   });
 }
 
 async function validateExtractedArchive(
   extracted: ExtractedPluginArchive,
+  signal?: AbortSignal,
 ): Promise<StandaloneArtifactResult> {
   const tempRoot = await mkdtemp(join(tmpdir(), "explodex-artifact-"));
   // Never place an attacker-controlled archive root into a filesystem path.
@@ -459,18 +492,27 @@ async function validateExtractedArchive(
     // Materialize files for shared directory validation.
     const { mkdir } = await import("node:fs/promises");
     for (const [relative, bytes] of extracted.files) {
+      if (signal?.aborted) return interruptedArtifactValidation();
       const destination = join(payloadDir, ...relative.split("/"));
       await mkdir(join(destination, ".."), { recursive: true });
-      await writeFile(destination, bytes);
+      await writeFile(destination, bytes, { signal });
     }
     return await validateInstallablePayloadDir(payloadDir, {
       archiveSha256: extracted.archiveSha256,
       archiveRootName: extracted.archiveRootName,
       source: "archive",
+      signal,
     });
   } finally {
     await rm(tempRoot, { recursive: true, force: true }).catch(() => undefined);
   }
+}
+
+function interruptedArtifactValidation(): StandaloneArtifactFailure {
+  return fail(
+    "operation.interrupted",
+    "Artifact validation was interrupted.",
+  );
 }
 
 /** Independent recomputation of payloadSha256 from raw file map (test helper surface). */

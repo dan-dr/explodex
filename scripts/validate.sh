@@ -25,19 +25,14 @@ for script in scripts/*.sh; do
   fi
 done
 
-for ts in scripts/cdp-inject.ts scripts/dev.ts scripts/package-app.ts scripts/build-npm.ts; do
-  bun -e "import './${ts}'"
-done
-
-for file in plugins/*/*.js; do
-  bun build "$file" --outfile="/tmp/explodex-validate-$(basename "$file")"
-done
-
-for json in package.json .mcp.json plugins/*/plugin.json; do
+for json in package.json .mcp.json packages/{sdk,cli,plugin-registry}/package.json packages/plugin-registry/explodex-plugin-*/package.json; do
   bun -e "JSON.parse(await Bun.file('$json').text())"
 done
 
+bun run docs:list >/dev/null
 bun run build:npm
+bun run checkTs
+bun run --cwd packages/plugin-registry typecheck
 bun test
 
 echo "validate ok"

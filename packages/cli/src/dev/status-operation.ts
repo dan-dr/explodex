@@ -25,7 +25,10 @@ import {
 import type { HostIdentity } from "../host/types.ts";
 import type { SdkRuntimeIdentity } from "../host/types.ts";
 import type { ProcessIdentity, RuntimeAdapters } from "../runtime/adapters.ts";
-import { DEV_CDP_PORT } from "./constants.ts";
+import {
+  DEFAULT_DEV_INSTANCE_ID,
+  DEV_CDP_PORT,
+} from "./constants.ts";
 import {
   loadDevInstanceStateResult,
   saveDevInstanceState,
@@ -179,44 +182,84 @@ async function pathEvidence(options: {
 
 async function verifiedProcesses(options: {
   adapters: HostStatusAdapters;
+  raw: ProcessObservation[];
+  state: DevStatusSnapshot["state"];
+  rawListeners: ListenerObservation[];
   signal?: AbortSignal;
 }): Promise<{
   raw: ProcessObservation[];
   verified: Array<ProcessObservation & ProcessIdentity>;
 }> {
-  const raw = await options.adapters.process.list({ signal: options.signal });
-  const verified: Array<ProcessObservation & ProcessIdentity> = [];
-  for (const process of raw) {
-    const identity = await options.adapters.process.identify(process.pid, {
-      signal: options.signal,
-    });
-    if (identity?.pid === process.pid) {
-      verified.push({ ...process, ...identity });
+  const byPid = new Map(options.raw.map((process) => [process.pid, process]));
+  const candidatePids = new Set<number>();
+  if (options.state?.pid !== null && options.state?.pid !== undefined) {
+    candidatePids.add(options.state.pid);
+  }
+  for (const listener of options.rawListeners) candidatePids.add(listener.pid);
+  const marker =
+    options.state?.launchMarker ??
+      `--explodex-dev-instance=${DEFAULT_DEV_INSTANCE_ID}`;
+  for (const process of options.raw) {
+    if (process.arguments.some((argument) => argument === marker)) {
+      candidatePids.add(process.pid);
     }
   }
-  return { raw, verified };
+
+  // Include the short ancestor chain needed by listener-companion ownership.
+  const queue = [...candidatePids];
+  for (let index = 0; index < queue.length; index += 1) {
+    const process = byPid.get(queue[index]!);
+    const isOwnedRootCandidate =
+      process !== undefined &&
+      (
+        process.pid === options.state?.pid ||
+        process.arguments.some((argument) => argument === marker)
+      );
+    if (
+      process !== undefined &&
+      !isOwnedRootCandidate &&
+      process.parentPid > 0 &&
+      byPid.has(process.parentPid) &&
+      !candidatePids.has(process.parentPid)
+    ) {
+      candidatePids.add(process.parentPid);
+      queue.push(process.parentPid);
+    }
+  }
+
+  const identified = await Promise.all(
+    [...candidatePids].map(async (pid) => {
+      const process = byPid.get(pid);
+      if (process === undefined) return null;
+      const identity = await options.adapters.process.identify(pid, {
+        signal: options.signal,
+      });
+      return identity?.pid === pid ? { ...process, ...identity } : null;
+    }),
+  );
+  return {
+    raw: options.raw,
+    verified: identified.filter(
+      (process): process is ProcessObservation & ProcessIdentity =>
+        process !== null,
+    ),
+  };
 }
 
-async function listeners(options: {
-  adapters: HostStatusAdapters;
-  signal?: AbortSignal;
-}): Promise<ListenerObservation[]> {
-  const raw = await options.adapters.port.listenersFor(DEV_CDP_PORT, {
-    signal: options.signal,
-  });
-  const result: ListenerObservation[] = [];
-  for (const listener of raw) {
-    const identity = await options.adapters.process.identify(listener.pid, {
-      signal: options.signal,
-    });
-    result.push({
+function listenersWithIdentity(
+  raw: ListenerObservation[],
+  verified: Array<ProcessObservation & ProcessIdentity>,
+): ListenerObservation[] {
+  const identities = new Map(
+    verified.map((process) => [process.pid, process.processStartedAt]),
+  );
+  return raw.map((listener) => {
+    const processStartedAt = identities.get(listener.pid) ?? null;
+    return {
       ...listener,
-      processStartedAt: identity?.pid === listener.pid
-        ? identity.processStartedAt
-        : null,
-    });
-  }
-  return result;
+      processStartedAt,
+    };
+  });
 }
 
 function findRecordedProcess(
@@ -321,6 +364,16 @@ async function compatibilityEvidence(options: {
   };
 }
 
+function needsCompatibilityEvidence(
+  operation: DevOwnershipOperation,
+): boolean {
+  return operation === "status" ||
+    operation === "inject" ||
+    operation === "renderer-boundary" ||
+    operation === "app-boundary" ||
+    operation === "develop";
+}
+
 /**
  * Read-only development status. It inventories only the requested root and exact
  * declared 9444 endpoint, and never promotes or rewrites state.
@@ -352,14 +405,16 @@ export async function inspectDevInstanceStatus(
   const state = stateLoad.state;
   const [
     hostInspection,
-    processInventory,
-    observedListeners,
+    rawProcesses,
+    rawListeners,
     phase0,
     paths,
   ] = await Promise.all([
     inspectHost({ adapters: hostAdapters, signal: options.signal }),
-    verifiedProcesses({ adapters: statusAdapters, signal: options.signal }),
-    listeners({ adapters: statusAdapters, signal: options.signal }),
+    statusAdapters.process.list({ signal: options.signal }),
+    statusAdapters.port.listenersFor(DEV_CDP_PORT, {
+      signal: options.signal,
+    }),
     loadPhase0LaunchContract({
       adapters: hostAdapters,
       path: selection.layout.phase0ContractPath,
@@ -371,13 +426,29 @@ export async function inspectDevInstanceStatus(
       protectedPaths,
     }),
   ]);
+  const processInventory = await verifiedProcesses({
+    adapters: statusAdapters,
+    raw: rawProcesses,
+    state,
+    rawListeners,
+    signal: options.signal,
+  });
+  const observedListeners = listenersWithIdentity(
+    rawListeners,
+    processInventory.verified,
+  );
   const host = hostInspection.ok ? hostInspection.host : null;
   const process = findRecordedProcess(state, processInventory.verified);
   const currentPidIdentity = state?.pid === null || state?.pid === undefined
     ? null
-    : await statusAdapters.process.identify(state.pid, {
-        signal: options.signal,
-      });
+    : process !== null
+      ? {
+          pid: process.pid,
+          processStartedAt: process.processStartedAt,
+        }
+      : await statusAdapters.process.identify(state.pid, {
+          signal: options.signal,
+        });
   const listenerAuthority =
     state?.pid === null ||
       state?.pid === undefined ||
@@ -404,13 +475,21 @@ export async function inspectDevInstanceStatus(
     cdp,
     signal: options.signal,
   });
-  const compatibility = await compatibilityEvidence({
-    adapters: hostAdapters,
-    explodexHome: selection.explodexHome,
-    host,
-    process,
-    sdkRuntime: options.sdkRuntime,
-  });
+  const compatibility = needsCompatibilityEvidence(
+      options.operation ?? "status",
+    )
+    ? await compatibilityEvidence({
+        adapters: hostAdapters,
+        explodexHome: selection.explodexHome,
+        host,
+        process,
+        sdkRuntime: options.sdkRuntime,
+      })
+    : {
+        status: "unproven" as const,
+        matched: false,
+        reason: "not_checked_for_lifecycle",
+      };
   const evidence: DevOwnershipEvidence = {
     requestedRoot: selection.rootPath,
     stateLoadStatus: stateLoad.status,

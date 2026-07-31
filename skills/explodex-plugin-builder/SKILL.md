@@ -26,10 +26,11 @@ generic app quit, or process-name signaling. These are not alternate V1 modes.
 
 ## Research
 
-Use only the bundled [SDK API](references/sdk-api.md), type definitions, and
-documented V1 hooks. Repository docs may explain behavior, but do not expand
-runtime authority. Never depend on minified identifiers or private renderer
-objects. Use [references/research.md](references/research.md) and
+Use only the bundled [SDK API](references/sdk-api.md), published
+`@explodex/sdk` type definitions, and documented V1 hooks. Repository docs may
+explain behavior, but do not expand runtime authority. Never depend on minified
+identifiers or private renderer objects. Use
+[references/research.md](references/research.md) and
 [references/hooks.md](references/hooks.md) for public-surface research.
 
 ## Create durable source

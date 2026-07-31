@@ -85,6 +85,7 @@ export async function collectInputDigests(options: {
   workspacePath: string;
   report: NormalizedSourceReport;
   sdkInput?: GenerationRecord["sdkInput"];
+  sourceInputs?: readonly string[];
 }): Promise<Record<string, string>> {
   const workspacePath = resolve(options.workspacePath);
   const digests: Record<string, string> = {};
@@ -97,6 +98,19 @@ export async function collectInputDigests(options: {
   ] as const;
 
   for (const relative of fixed) {
+    digests[relative] = await digestFile(join(workspacePath, relative));
+  }
+  for (const relative of options.sourceInputs ?? []) {
+    if (
+      relative === options.report.entry ||
+      !relative.startsWith("src/") ||
+      relative.length === 0 ||
+      relative.startsWith("/") ||
+      relative.startsWith("../") ||
+      relative.includes("\\")
+    ) {
+      continue;
+    }
     digests[relative] = await digestFile(join(workspacePath, relative));
   }
 
@@ -421,6 +435,9 @@ export async function verifyDistGeneration(options: {
     workspacePath,
     report: source.report,
     sdkInput: generation.sdkInput,
+    sourceInputs: Object.keys(generation.inputDigests).filter(
+      (relative) => relative.startsWith("src/"),
+    ),
   });
   const expectedGenerationId = computeGenerationId(inputDigests);
   if (expectedGenerationId !== generation.generationId) {

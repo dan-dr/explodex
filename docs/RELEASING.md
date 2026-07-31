@@ -1,115 +1,207 @@
-# Explodex Release Procedure
+# Explodex release procedure
 
-This document outlines the step-by-step procedure for releasing new versions of Explodex to npm and GitHub.
+Releases cover two independently validated surfaces:
 
----
+- the `explodex` CLI and `@explodex/sdk` npm packages;
+- the first-party plugin GitHub Release, containing exactly seven immutable
+  archives plus `registry.json`.
 
-## Operator Release Procedure
+Preparing, building, testing, packaging, hashing, and rehearsing are read-only
+with respect to public distribution. They do not authorize any external
+mutation.
 
-Follow these steps to release a new version of Explodex.
+## Approval policy
 
-### 1. Pre-release Checks
-1. Start from a clean and up-to-date `main` branch:
-   ```bash
-   git checkout main
-   git pull origin main
-   git status # verify clean working directory
-   ```
-2. Confirm that the Continuous Integration (CI) status is green on GitHub for the latest commit on `main`.
+Each mutation needs explicit approval for its exact target immediately before
+the action. Approval for one row does not authorize another.
 
-### 2. Version and Changelog Preparation
-3. Choose the next version according to SemVer rules (e.g., `v0.2.2`).
-4. Update `CHANGELOG.md`:
-   - Move release notes from the `## [Unreleased]` section into a new dated version section:
-     ```markdown
-     ## [X.Y.Z] - YYYY-MM-DD
-     ```
-   - Preserve all contributor acknowledgements as required.
-5. Update `package.json`:
-   - Change the `"version"` field to match the selected version (e.g., `"version": "0.2.2"`).
+| Gate | Exact approval must identify | Mutation |
+| --- | --- | --- |
+| Create tag | tag name and commit SHA | `git tag -a ...` |
+| Push commit | remote, branch, and commit SHA | `git push <remote> <branch>` |
+| Push tag | remote, tag, and tag-object target | `git push <remote> <tag>` |
+| Publish npm | package name, version, npm dist-tag, git SHA, and packed tarball SHA-256 | `npm publish ...` |
+| Create GitHub Release | repository, tag, staged `registry.json` SHA-256, and exact eight-file asset set | `gh release create ...` |
 
-### 3. Local Verification
-6. Run local validation and package packaging checks:
-   ```bash
-   # Ensure dependencies are locked and correct
-   bun install --frozen-lockfile
+Do not infer approval from release preparation, a prior release, a request to
+"finish," or approval of another row. Never create, move, delete, recreate, or
+push a tag without the corresponding current approval.
 
-   # Run local validation suite (checks lints, types, tests, builds the injector)
-   bun run validate
+## 1. Prepare the release candidate
 
-   # Verify the release metadata and changelog
-   bun run release:check -- vX.Y.Z
+Start from a clean, current `main` and confirm CI is green. Choose `vX.Y.Z`,
+update `CHANGELOG.md`, and update the package versions that are part of the
+candidate. Preserve contributor acknowledgements.
 
-   # Perform a dry-run npm pack to confirm contents
-   npm pack --dry-run --json --cache /tmp/explodex-npm-cache
-   ```
+```sh
+bun install --frozen-lockfile
+bun run build:npm
+bun run checkTs
+bun run validate
+npm pack --dry-run --json ./packages/sdk --cache /tmp/explodex-sdk-npm-cache
+npm pack --dry-run --json ./packages/cli --cache /tmp/explodex-cli-npm-cache
+```
 
-### 4. Release Commit & Tag
-7. Commit only the release metadata changes (`package.json`, `bun.lock`, `CHANGELOG.md`, `lib/cdp-inject.mjs`):
-   ```bash
-   git add package.json bun.lock CHANGELOG.md lib/cdp-inject.mjs
-   git commit -m "chore(release): vX.Y.Z"
-   ```
-   > [!NOTE]
-   > Use the repository-required `committer` helper if configured.
-8. Push the release commit to the remote repository:
-   ```bash
-   git push origin main
-   ```
-9. Wait for the CI workflow run to complete successfully on GitHub.
-10. Create an annotated git tag on the release commit:
-    ```bash
-    git tag -a vX.Y.Z -m "vX.Y.Z"
-    ```
-11. Push the tag to GitHub:
-    ```bash
-    git push origin vX.Y.Z
-    ```
+Review the packed file list. Produce the actual npm tarball in a disposable
+directory and record its SHA-256. Confirm the repository has no unexpected
+generated diff.
 
-### 5. Post-Release Verification
-12. Observe the automated **Release** workflow on GitHub Actions.
-13. Confirm publication on npm:
-    - Version is visible.
-    - Correct distribution tag (stable goes to `latest`, prerelease goes to `next`).
-    - NPM provenance attestation is present.
-14. Confirm the GitHub Release:
-    - Curated notes are prepended.
-    - Title is `vX.Y.Z`.
-    - Prerelease status is correctly flagged.
-15. **Never move, recreate, or reuse a published version tag.**
+The public `explodex release` command paths are reserved. Do not document or
+use them as implemented automation.
 
----
+## 2. Build the seven plugin archives
 
-## Recovery Guidance
+Run tests and TypeScript checks for the physical registry workspace:
 
-If something goes wrong during the release flow, follow this guidance.
+```sh
+bun run --cwd packages/plugin-registry test
+bun run --cwd packages/plugin-registry typecheck
+```
 
-### Scenario A: Failure BEFORE npm publish
-If the Release workflow fails before running the npm publish step (e.g., git check fails or validation fails):
-1. Fix the issues on the `main` branch.
-2. If necessary, delete the unpublished local/remote tag:
-   ```bash
-   git tag -d vX.Y.Z
-   git push --delete origin vX.Y.Z
-   ```
-3. Commit the fix and follow the release procedure again to push a new tag.
+For every direct `packages/plugin-registry/explodex-plugin-*` workspace:
 
-### Scenario B: npm published but GitHub Release failed
-If npm publication succeeds but the GitHub Release creation fails:
-1. Do NOT delete or modify the git tag.
-2. Go to the failed GitHub Action run and trigger a rerun.
-3. The workflow's idempotency check will detect that version `X.Y.Z` with matching `gitHead` is already on npm, skip the publish step, and create the GitHub Release.
+```sh
+explodex plugin validate /absolute/path/to/workspace
+explodex plugin build /absolute/path/to/workspace
+explodex plugin package /absolute/path/to/workspace \
+  --output /absolute/path/to/archives
+```
 
-### Scenario C: Wrong npm package contents
-Since published npm versions are immutable:
-1. Do NOT try to overwrite the tag or publish the same version.
-2. Deprecate the bad version on npm:
-   ```bash
-   npm deprecate explodex@X.Y.Z "Version contains issues, please use X.Y.Z+1"
-   ```
-3. Publish a new patch release (e.g., `X.Y.Z+1`) with the corrections.
+Run `explodex plugin artifact validate` on each archive. The set must contain
+exactly these IDs:
 
-### Scenario D: Compromised release
-If a release is compromised (e.g., leaked secrets or incorrect access):
-1. Deprecate or revoke the version through the npm registry immediately.
-2. Never reuse or overwrite the tag. Create a new secure version.
+1. `command-menu-threads`
+2. `effort-shortcuts`
+3. `feature-flags-playground`
+4. `project-colors`
+5. `project-pins`
+6. `toggle-autoscroll`
+7. `usage-reset-glance`
+
+Commit reviewed first-party `dist/` generations with their source. New `dist/`
+paths are root-ignored, so force-stage only the exact generated files after
+review. Never hand-edit a generated bundle, source map, manifest, checksum, or
+generation receipt.
+
+## 3. Deterministically stage the registry release
+
+Use a new or empty output directory:
+
+```sh
+bun run --cwd packages/plugin-registry registry:stage -- \
+  --artifact-dir /absolute/path/to/archives \
+  --output-dir /absolute/path/to/release-staging \
+  --release-tag vX.Y.Z
+```
+
+The staging command validates archive identities and digests, generates
+byte-stable fixed-key `registry.json`, verifies immutable release URLs, and
+atomically publishes exactly eight files to the staging directory. Record the
+reported `registrySha256` and independently review the exact filenames.
+
+Re-run staging from the same inputs in a second empty directory and compare the
+generated registry bytes and artifact hashes. A mismatch blocks release.
+
+## 4. Commit and CI
+
+Create the release commit with the repository-required commit helper. Do not
+push yet. Record the resulting commit SHA and re-run the candidate checks on
+that exact commit.
+
+Ask for the **push-commit gate** naming `origin`, `main`, and the exact SHA.
+Only after approval:
+
+```sh
+git push origin main
+```
+
+Wait for CI on that exact SHA to pass.
+
+## 5. Tag
+
+Ask for the **create-tag gate** naming `vX.Y.Z` and the exact release commit
+SHA. Only after approval:
+
+```sh
+git tag -a vX.Y.Z <release-commit-sha> -m "vX.Y.Z"
+```
+
+Verify the local tag target. Then ask separately for the **push-tag gate**
+naming `origin`, `vX.Y.Z`, and its target. Only after approval:
+
+```sh
+git push origin vX.Y.Z
+```
+
+## 6. Publish npm
+
+Ask for a separate **npm gate** for each package, naming the package, version,
+git SHA, npm dist-tag, and packed tarball SHA-256. Only after approval, publish
+the reviewed candidate from its package directory:
+
+```sh
+npm publish ./packages/sdk --provenance --access public --tag <latest-or-next>
+npm publish ./packages/cli --provenance --access public --tag <latest-or-next>
+```
+
+Verify the registry version, `gitHead`, dist-tag, and provenance attestation.
+If the version already exists, accept it only when `gitHead` matches the exact
+release SHA. npm versions are immutable.
+
+## 7. Create the GitHub Release and registry
+
+Ask for the **GitHub Release gate** naming the repository, tag, staged
+`registry.json` SHA-256, and exact eight filenames. Only after approval, pass
+that exact digest to the guarded publication script:
+
+```sh
+bun run --cwd packages/plugin-registry registry:publish -- \
+  --staging-dir /absolute/path/to/release-staging \
+  --release-tag vX.Y.Z \
+  --approval <registry-json-sha256>
+```
+
+The script revalidates the complete staging directory and rejects an approval
+that differs from the staged registry digest before it invokes
+`gh release create`.
+
+Verify the release title, prerelease/latest status, `registry.json`, all seven
+archives, and download-time hashes.
+
+## Release candidate workflow
+
+`.github/workflows/release.yml` is manual and read-only. It checks out an
+existing immutable tag, runs the full gate, dry-packs both npm packages, rebuilds
+all seven plugin archives, and requires the staged `registry.json` SHA-256 to
+equal its explicit input. It has `contents: read` and cannot publish npm, create
+a tag, push a commit, or create a GitHub Release.
+
+Public mutations remain the separate local approval gates above.
+
+## Recovery
+
+### Failure before any public publication
+
+Fix forward on `main`, rebuild every affected candidate byte, and repeat all
+checks. A local unpublished tag may be deleted only with explicit approval.
+Deleting a remote tag is a separate destructive push and requires explicit
+approval naming that tag.
+
+### npm succeeded, GitHub Release failed
+
+Do not move or delete the tag and do not republish the npm version. Repair the
+GitHub Release path using the same tag and exact staged assets after a new
+GitHub Release approval.
+
+### GitHub Release succeeded, npm failed
+
+Do not replace release assets silently. Fix the npm path and request a fresh npm
+approval for the unchanged candidate, or publish a new version if candidate
+bytes must change.
+
+### Wrong or compromised release
+
+Never overwrite a published version or reuse its tag. Deprecation, revocation,
+release deletion, or remote-tag deletion are destructive external actions and
+each requires explicit user approval. Publish corrected bytes under a new
+version and tag.

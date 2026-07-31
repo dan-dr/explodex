@@ -1,0 +1,215 @@
+import { describe, expect, test } from "bun:test";
+import {
+  GROUPS,
+  publicPathFor,
+  type CommandDescriptor,
+} from "../../src/cli/descriptors.ts";
+import { captureCli } from "../helpers/run-cli.ts";
+
+type FrozenShape = {
+  arguments?: string[];
+  options?: string[];
+};
+
+const FROZEN_COMMAND_SHAPES: Record<string, FrozenShape> = {
+  "host report": {},
+  "host extract": { options: ["path..."] },
+  "compatibility status": {},
+  "compatibility probe": {},
+  "main status": {},
+  "main launch": {},
+  "main attach": {},
+  "main apply": { arguments: ["artifact"] },
+  "plugin create": { arguments: ["directory"] },
+  "plugin validate": { arguments: ["workspace?"] },
+  "plugin build": { arguments: ["workspace?"] },
+  "plugin package": {
+    arguments: ["workspace?"],
+    options: ["output"],
+  },
+  "plugin artifact validate": { arguments: ["path"] },
+  "plugin install": {
+    arguments: ["archive?"],
+    options: [
+      "registry",
+      "github-url",
+      "archive-sha256",
+      "payload-sha256",
+      "target",
+    ],
+  },
+  "plugin status": { arguments: ["id?"] },
+  "plugin refresh": { options: ["target"] },
+  "plugin review": {
+    arguments: ["id?"],
+    options: ["artifact-version", "payload-sha256", "target"],
+  },
+  "plugin update check": {},
+  "plugin update apply": { options: ["target"] },
+  "plugin disable": { arguments: ["id"], options: ["target"] },
+  "plugin remove": {
+    arguments: ["id"],
+    options: ["artifact-version", "payload-sha256", "target"],
+  },
+  "plugin onboard": { options: ["target"] },
+  "plugin develop": {
+    arguments: ["workspace?"],
+    options: ["sdk-source"],
+  },
+  "dev status": {},
+  "dev start": {},
+  "dev ensure": {},
+  "dev recover": {},
+  "dev inject": { arguments: ["artifact"] },
+  "dev restart": {},
+  "dev stop": {},
+  "dev focus": {},
+  "legacy doctor": {},
+  "legacy cleanup": { options: ["item...", "yes"] },
+  "skill install": { options: ["skill-home"] },
+  "skill update": { options: ["skill-home"] },
+  "release candidate": {},
+  "release rehearse": { arguments: ["candidate"] },
+  "release publish": { arguments: ["candidate"], options: ["yes"] },
+  "release verify": { arguments: ["candidate"] },
+  "release status": { arguments: ["candidate"] },
+};
+
+function argumentShape(command: CommandDescriptor): string[] {
+  return (command.arguments ?? []).map((argument) =>
+    `${argument.name}${argument.required ? "" : "?"}${argument.variadic ? "..." : ""}`
+  );
+}
+
+function optionShape(command: CommandDescriptor): string[] {
+  return (command.options ?? []).map((option) =>
+    `${option.long}${option.repeatable ? "..." : ""}`
+  );
+}
+
+describe("frozen CLI descriptor and help graph", () => {
+  test("carries every frozen command operand and option", () => {
+    const actual: Record<string, FrozenShape> = {};
+    for (const group of GROUPS) {
+      for (const command of group.commands) {
+        const path = publicPathFor(command, group.name);
+        actual[path] = {
+          ...(command.arguments === undefined
+            ? {}
+            : { arguments: argumentShape(command) }),
+          ...(command.options === undefined ? {} : { options: optionShape(command) }),
+        };
+      }
+    }
+    expect(actual).toEqual(FROZEN_COMMAND_SHAPES);
+  });
+
+  test("snapshots root, every group, and every command help form", async () => {
+    const rootForms = [
+      await captureCli(["--help"]),
+      await captureCli(["help"]),
+    ];
+    for (const captured of rootForms) {
+      expect(captured.exitCode).toBe(0);
+      expect(captured.stdout).toMatchSnapshot();
+    }
+
+    for (const group of GROUPS) {
+      const groupForms = [
+        await captureCli(["help", group.name]),
+        await captureCli([group.name, "--help"]),
+      ];
+      for (const captured of groupForms) {
+        expect(captured.exitCode).toBe(0);
+        expect(captured.stdout).toMatchSnapshot();
+      }
+
+      for (const command of group.commands) {
+        const path = [group.name, ...command.path];
+        const commandForms = [
+          await captureCli(["help", ...path]),
+          await captureCli([...path, "--help"]),
+        ];
+        for (const captured of commandForms) {
+          expect(captured.exitCode).toBe(0);
+          expect(captured.stdout).toMatchSnapshot();
+        }
+        for (const alias of command.aliases ?? []) {
+          const aliasForms = [
+            await captureCli(["help", group.name, alias]),
+            await captureCli([group.name, alias, "--help"]),
+          ];
+          for (const captured of aliasForms) {
+            expect(captured.exitCode).toBe(0);
+            expect(captured.stdout).toMatchSnapshot();
+          }
+        }
+      }
+    }
+  });
+
+  test("renders required, repeatable, enum, and default option semantics", async () => {
+    const root = await captureCli(["--help"]);
+    expect(root.stdout).toContain(
+      "Override the Explodex home directory. (default: $HOME/.explodex)",
+    );
+
+    const extract = await captureCli(["host", "extract", "--help"]);
+    expect(extract.stdout).toContain(
+      "explodex host extract --path <path>...",
+    );
+    expect(extract.stdout).toContain(
+      "Allowlisted host evidence path. (required; repeatable)",
+    );
+
+    const refresh = await captureCli(["plugin", "refresh", "--help"]);
+    expect(refresh.stdout).toContain(
+      "Review target role; unavailable targets never force a renderer. (values: main|development; default: main)",
+    );
+
+    const install = await captureCli(["plugin", "install", "--help"]);
+    expect(install.stdout).toContain(
+      "Review target role; unavailable targets leave the install disabled and pending. (values: none|main|development; default: none)",
+    );
+
+    const cleanup = await captureCli(["legacy", "cleanup", "--help"]);
+    expect(cleanup.stdout).toContain(
+      "explodex legacy cleanup --item <item-id>... [--yes]",
+    );
+  });
+
+  test("help and version use the frozen precedence and longest valid prefix", async () => {
+    const root = await captureCli(["--help", "unknown", "suffix"]);
+    expect(root.exitCode).toBe(0);
+    expect(root.stdout).toContain("Global options");
+
+    const group = await captureCli(["plugin", "unknown", "suffix", "--help"]);
+    expect(group.exitCode).toBe(0);
+    expect(group.stdout).toContain("Commands");
+    expect(group.stdout).toContain("plugin");
+
+    const command = await captureCli([
+      "plugin",
+      "artifact",
+      "validate",
+      "later-invalid",
+      "--help",
+    ]);
+    expect(command.exitCode).toBe(0);
+    expect(command.stdout).toContain("explodex plugin artifact validate <path>");
+
+    const version = await captureCli(["host", "not-a-command", "--version"]);
+    expect(version.exitCode).toBe(0);
+    expect(version.stdout).toMatch(/^explodex \S+\n$/);
+
+    const helpWins = await captureCli([
+      "host",
+      "report",
+      "later-invalid",
+      "--version",
+      "--help",
+    ]);
+    expect(helpWins.exitCode).toBe(0);
+    expect(helpWins.stdout).toContain("explodex host report");
+  });
+});

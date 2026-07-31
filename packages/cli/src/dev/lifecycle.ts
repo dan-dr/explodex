@@ -6,6 +6,7 @@ import type {
   DevRecoveryDiagnostic,
 } from "./types.ts";
 import {
+  stoppedAfterRecovery,
   withDevInstanceLock,
   type DevStatusSnapshot,
   type DevTerminationResult,
@@ -396,13 +397,40 @@ async function runStartOrEnsure(options: LaunchLifecycleOptions & {
     rootPath: options.rootPath,
     operation: options.operation,
     work: async () => {
-      const snapshot = await options.readStatus();
+      let snapshot = await options.readStatus();
+      if (
+        options.ensure &&
+        snapshot.state !== null &&
+        (
+          snapshot.assessment.recoveryEligibility === "independently-dead" ||
+          snapshot.assessment.recoveryEligibility === "start-mismatched"
+        )
+      ) {
+        const recovered = stoppedAfterRecovery({
+          state: snapshot.state,
+          recoveredAt: runtime.clock.nowIso(),
+          disposition: snapshot.assessment.recoveryEligibility,
+          terminationMethod: null,
+        });
+        try {
+          await options.saveState(recovered);
+        } catch (error: unknown) {
+          return lifecycleError(
+            "dev.state-write-failed",
+            error instanceof Error
+              ? error.message
+              : "Failed to commit confirmed-dead development recovery.",
+            snapshot.state,
+            { recoveryRequired: true },
+          );
+        }
+        snapshot = await options.readStatus();
+      }
       if (
         options.ensure &&
         snapshot.state?.status === "ready" &&
         snapshot.assessment.owned &&
-        snapshot.assessment.mutationAllowed &&
-        snapshot.assessment.compatibilityProven
+        snapshot.assessment.mutationAllowed
       ) {
         return {
           ok: true as const,
@@ -411,10 +439,7 @@ async function runStartOrEnsure(options: LaunchLifecycleOptions & {
           terminationMethod: null,
         };
       }
-      if (
-        !snapshot.assessment.mutationAllowed ||
-        !snapshot.assessment.compatibilityProven
-      ) {
+      if (!snapshot.assessment.mutationAllowed) {
         return lifecycleError(
           options.ensure ? "dev.ensure-refused" : "dev.start-refused",
           `Development ${options.ensure ? "ensure" : "start"} refused because the recorded state or observed ownership is ineligible.`,
@@ -691,8 +716,7 @@ export async function restartDevInstance(
         snapshot.state === null ||
         snapshot.state.status !== "ready" ||
         !snapshot.assessment.owned ||
-        !snapshot.assessment.mutationAllowed ||
-        !snapshot.assessment.compatibilityProven
+        !snapshot.assessment.mutationAllowed
       ) {
         return lifecycleError(
           "dev.restart-refused",

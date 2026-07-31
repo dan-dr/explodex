@@ -30,6 +30,7 @@ const LEGACY_FORBIDDEN_NAMES = new Set([
 export async function createPluginWorkspace(options: {
   directory: string;
   cwd?: string;
+  signal?: AbortSignal;
 }): Promise<CreateWorkspaceResult> {
   const cwd = options.cwd ?? process.cwd();
   const requested = options.directory.trim();
@@ -157,22 +158,46 @@ export async function createPluginWorkspace(options: {
     },
     { relative: "tsconfig.json", contents: tsconfigTemplate() },
   ];
+  const createdPaths: string[] = [];
 
   // Create root first, then optional empty dirs, then files. On any failure after
   // partial writes we still report failure; create is best-effort atomic for empty dest.
   try {
+    if (options.signal?.aborted) {
+      return interruptedCreate(targetPath, createdPaths);
+    }
     await mkdir(targetPath, { recursive: true });
+    createdPaths.push(".");
     for (const dir of OPTIONAL_EMPTY_DIRECTORIES) {
+      if (options.signal?.aborted) {
+        return interruptedCreate(targetPath, createdPaths);
+      }
       await mkdir(join(targetPath, dir), { recursive: true });
+      createdPaths.push(`${dir}/`);
+    }
+    if (options.signal?.aborted) {
+      return interruptedCreate(targetPath, createdPaths);
     }
     await mkdir(join(targetPath, "src"), { recursive: true });
+    createdPaths.push("src/");
     for (const file of filesToWrite) {
+      if (options.signal?.aborted) {
+        return interruptedCreate(targetPath, createdPaths);
+      }
       const absolute = join(targetPath, file.relative);
       await mkdir(dirname(absolute), { recursive: true });
       // Fail if a race created the file between empty check and write.
-      await writeFile(absolute, file.contents, { encoding: "utf8", flag: "wx" });
+      await writeFile(absolute, file.contents, {
+        encoding: "utf8",
+        flag: "wx",
+        signal: options.signal,
+      });
+      createdPaths.push(file.relative);
     }
   } catch (error: unknown) {
+    if (options.signal?.aborted) {
+      return interruptedCreate(targetPath, createdPaths);
+    }
     return {
       ok: false,
       code: "plugin.source.invalid",
@@ -195,6 +220,22 @@ export async function createPluginWorkspace(options: {
     packageName,
     id: identity.id,
     files: created,
+  };
+}
+
+function interruptedCreate(
+  workspacePath: string,
+  createdPaths: readonly string[],
+): CreateWorkspaceResult {
+  return {
+    ok: false,
+    code: "operation.interrupted",
+    message: "Plugin workspace creation was interrupted.",
+    details: {
+      workspacePath,
+      partialWorkspace: createdPaths.length > 0,
+      createdPaths: [...createdPaths],
+    },
   };
 }
 

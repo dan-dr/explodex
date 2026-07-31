@@ -251,7 +251,7 @@ describe("strict development lifecycle transitions", () => {
     expect(writes).toBe(0);
   });
 
-  test("start refuses ready and ensure refuses unresolved failed state without implicit recovery", async () => {
+  test("start refuses ready and ensure refuses a failed state that is not confirmed dead", async () => {
     const runtime = createFakeRuntimeHarness();
     for (const testCase of [
       {
@@ -298,6 +298,67 @@ describe("strict development lifecycle transitions", () => {
       expect(launches).toBe(0);
       expect(writes).toBe(0);
     }
+  });
+
+  test("ensure recovers one confirmed-dead record and launches once without termination", async () => {
+    const root = "/tmp/dev-lifecycle-ensure-dead";
+    let state: DevInstanceState = {
+      ...readyState(root),
+      status: "failed",
+      lastError: {
+        code: "renderer-crashed",
+        message: "Renderer exited.",
+        phase: "runtime",
+      },
+    };
+    const events: string[] = [];
+    let reads = 0;
+    let terminations = 0;
+    const runtime = createFakeRuntimeHarness();
+    const result = await ensureDevInstance({
+      rootPath: root,
+      runtimeAdapters: runtime.adapters,
+      readStatus: async () => {
+        reads += 1;
+        if (state.status === "failed") {
+          const failed = snapshot("ensure", state);
+          failed.assessment = {
+            ...failed.assessment,
+            owned: false,
+            mutationAllowed: false,
+            recoveryEligibility: "independently-dead",
+          };
+          return failed;
+        }
+        return snapshot("ensure", state);
+      },
+      saveState: async (next) => {
+        state = next;
+        events.push(`state:${next.status}`);
+      },
+      launch: successfulLaunch(events),
+      terminate: async () => {
+        terminations += 1;
+        throw new Error("confirmed-dead recovery must not signal");
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(reads).toBeGreaterThanOrEqual(2);
+    expect(terminations).toBe(0);
+    expect(events).toEqual([
+      "state:stopped",
+      "state:starting",
+      "spawn",
+      "state:starting",
+      "verified",
+      "state:ready",
+    ]);
+    expect(state.recoveryDiagnostics.at(-1)).toMatchObject({
+      priorStatus: "failed",
+      disposition: "independently-dead",
+      terminationMethod: null,
+    });
   });
 
   test("restart orders stopping, stopped, starting, and ready under one claim", async () => {
@@ -374,41 +435,43 @@ describe("strict development lifecycle transitions", () => {
     expect(launches).toBe(0);
   });
 
-  test("restart refuses before stopping when exact compatibility is unavailable", async () => {
+  test("restart remains available when SDK compatibility is unavailable", async () => {
     const root = "/tmp/dev-lifecycle-restart-unproven";
     const state = readyState(root);
     const runtime = createFakeRuntimeHarness();
-    let writes = 0;
+    const events: string[] = [];
     let terminations = 0;
-    let launches = 0;
     const unavailable = snapshot("restart", state);
     unavailable.assessment = {
       ...unavailable.assessment,
       compatibilityProven: false,
     };
+    let current = state;
     const result = await restartDevInstance({
       rootPath: root,
       runtimeAdapters: runtime.adapters,
-      readStatus: async () => unavailable,
-      saveState: async () => {
-        writes += 1;
+      readStatus: async () => ({
+        ...unavailable,
+        state: current,
+      }),
+      saveState: async (next) => {
+        current = next;
+        events.push(`state:${next.status}`);
       },
       terminate: async () => {
         terminations += 1;
-        throw new Error("unproven restart must not terminate");
+        return {
+          ok: true,
+          confirmedExit: true,
+          method: "browser-close-only",
+        };
       },
-      launch: async () => {
-        launches += 1;
-        throw new Error("unproven restart must not launch");
-      },
+      launch: successfulLaunch(events),
     });
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.code).toBe("dev.restart-refused");
-    expect({ writes, terminations, launches }).toEqual({
-      writes: 0,
-      terminations: 0,
-      launches: 0,
-    });
+    expect(result.ok).toBe(true);
+    expect(terminations).toBe(1);
+    expect(current.status).toBe("ready");
+    expect(events).toContain("spawn");
   });
 
   test("stop retains old identity evidence after confirmed graceful exit", async () => {

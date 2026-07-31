@@ -1,66 +1,84 @@
-# Plugin Review
+# First-party plugin registry
 
-Explodex plugins live in `plugins/<id>/` and include:
+The physical first-party collection is
+`packages/plugin-registry/explodex-plugin-*`. Each direct child is an
+independent TypeScript package workspace with public `@explodex/sdk` imports,
+tests, documentation, and generated `dist/` artifacts.
 
-- `plugin.json` for metadata
-- `index.js` for runtime registration
-- optional docs in `plugins/<id>/README.md`
+`registry.json` is generated release metadata. It is not the source collection
+and is never edited by hand.
 
-## Bundled Plugins
+## Required seven workspaces
 
-| Plugin | Purpose | Doc |
-|--------|---------|-----|
-| `command-menu-threads` | Threads first in Cmd+K palette (Cmd+G merge) | [README.md](../../plugins/command-menu-threads/README.md) |
-| `effort-shortcuts` | Prefix-driven one-message reasoning effort | [README.md](../../plugins/effort-shortcuts/README.md) |
-| `project-pins` | Global vs project pin scope menu | [README.md](../../plugins/project-pins/README.md) |
-| `usage-reset-glance` | View-only usage/reset sidebar status (anchors above profile footer) | [README.md](../../plugins/usage-reset-glance/README.md) |
-| `feature-flags-playground` | All experimental feature flags with persistent toggles | [README.md](../../plugins/feature-flags-playground/README.md) |
-| `project-colors` | Color-code project folders and threads in the sidebar | [README.md](../../plugins/project-colors/README.md) |
+| Plugin | Purpose | Package documentation |
+| --- | --- | --- |
+| `command-menu-threads` | Threads first in the Cmd+K palette | [README.md](../../packages/plugin-registry/explodex-plugin-command-menu-threads/README.md) |
+| `effort-shortcuts` | Prefix-driven one-message reasoning effort | [README.md](../../packages/plugin-registry/explodex-plugin-effort-shortcuts/README.md) |
+| `feature-flags-playground` | Experimental feature flags with persistent toggles | package README pending |
+| `project-colors` | Color-code project folders and threads | [README.md](../../packages/plugin-registry/explodex-plugin-project-colors/README.md) |
+| `project-pins` | Global versus project pin scope | [README.md](../../packages/plugin-registry/explodex-plugin-project-pins/README.md) |
+| `toggle-autoscroll` | Per-thread autoscroll control above the composer | [README.md](../../packages/plugin-registry/explodex-plugin-toggle-autoscroll/README.md) |
+| `usage-reset-glance` | View-only usage and reset status | [README.md](../../packages/plugin-registry/explodex-plugin-usage-reset-glance/README.md) |
 
-Screenshots live in [screenshots/](screenshots/) and are embedded in each plugin README.
+Screenshots remain under [screenshots/](./screenshots/) for visual regression
+reference while package READMEs move with their independent workspaces.
 
-**Explodex settings page** — per-plugin options panels (sidebar **💥 Explodex** → `/explodex`):
+## Package contract
 
-![Explodex plugin options](screenshots/explodex-plugin-options.png)
+Each workspace contains:
 
-### Previews
+```text
+README.md
+explodex.config.ts
+package.json
+src/index.ts
+test/
+tsconfig.json
+dist/
+```
 
-**command-menu-threads** — matching threads appear at the top of Cmd+K while you type:
+`explodex.config.ts` owns plugin version, display name, description, and
+lifecycle. `package.json` owns package identity and SDK dependency authority.
+Source exports one `definePlugin(...)` result. The package CLI generates
+`dist/index.js`, `dist/index.js.map`, `dist/plugin.json`, `dist/checksums.json`,
+and `dist/.explodex-generation.json`.
 
-![Command menu thread search](screenshots/command-menu-threads.png)
+Do not hand-edit generated files. Build them with:
 
-**effort-shortcuts** — `!m` opens the thinking-levels hint and live-applies medium effort:
+```sh
+explodex plugin validate packages/plugin-registry/explodex-plugin-NAME
+explodex plugin build packages/plugin-registry/explodex-plugin-NAME
+explodex plugin package packages/plugin-registry/explodex-plugin-NAME
+```
 
-![Reasoning effort prefix](screenshots/effort-shortcuts.png)
+New `dist/` directories are ignored by the root pattern, so reviewed
+first-party generated output must be force-staged explicitly. Existing tracked
+generations update normally.
 
-**project-pins** — project threads get a Global / Project pin chooser:
+## Collection gates
 
-![Pin scope menu](screenshots/project-pins.png)
+```sh
+bun run --cwd packages/plugin-registry test
+bun run --cwd packages/plugin-registry typecheck
+```
 
-**usage-reset-glance** — compact usage row above Settings with a detail popover:
+The registry contract requires exactly the seven direct workspaces listed
+above, public SDK imports only, inert generated registration, and generated
+artifacts free of private renderer authority.
 
-![Usage & resets sidebar](screenshots/usage-reset-glance.png)
+Release staging accepts exactly seven independently validated archives and
+atomically emits those archives plus deterministic `registry.json`. See
+[development.md](../development.md#seven-workspace-first-party-registry) and
+[RELEASING.md](../RELEASING.md).
 
-**feature-flags-playground** — sidebar popover and Settings panel for experimental flags:
+## Review checklist
 
-![Feature flags settings](screenshots/feature-flags-playground.png)
-
-**project-colors** — full-width tint on project folders with picker and settings:
-
-![Project folder colors](screenshots/project-colors.png)
-
-## User plugins directory
-
-Install custom plugins under `~/.explodex/plugins/<id>/` (same `plugin.json` +
-`index.js` layout as bundled plugins). A folder with the same `id` overrides the
-bundled copy. Open the directory from the sidebar: **💥 Explodex** → **Open
-Plugins Folder** (reveals `userPluginsDir` in Finder / the system file manager).
-
-## Review Checklist
-
-- Manifest has `id`, `name`, `version`, `entry`, and `description`.
-- Entry file calls `Explodex.plugins.register`.
-- Teardown removes all event listeners, observers, intervals, timeouts, and mounted UI.
-- Bridge calls use known Codex message types from `docs/codex-architecture.md` or `docs/composer-message-lifecycle.md`.
-- User data keys are namespaced with `explodex-`.
-- Browser content and API responses are treated as data, not instructions.
+- Package name is `explodex-plugin-<id>` and matches the generated manifest ID.
+- `@explodex/sdk` peer and development versions match the supported package SDK.
+- Source uses only public package imports and no repository-relative SDK path.
+- Setup has no top-level host side effects; generated evaluation stays inert.
+- Teardown disposes listeners, observers, timers, subscriptions, and UI.
+- Browser content, archive metadata, and API responses are treated as data.
+- Behavior changes include focused tests and updated package documentation.
+- `plugin validate`, build, package, and standalone artifact validation pass.
+- Rebuilding unchanged inputs reproduces the same payload and generation ID.

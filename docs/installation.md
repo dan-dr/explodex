@@ -1,80 +1,156 @@
-# Installation and launcher behavior
+# Installation and plugin trust
 
-## Install
+Explodex targets the installed, read-only `/Applications/ChatGPT.app`. The app
+keeps its original bundle, signature, identity, and profile.
+
+## Install the CLI
+
+Explodex requires macOS and Node.js 22 or 24. Install the published package
+globally with one package manager:
 
 ```sh
-# pnpm
-pnpm add -g explodex
-
-# bun
-bun install -g explodex
-
-# npm
 npm install -g explodex
-
-# yarn
-yarn global add explodex
-
-explodex
+# or: pnpm add -g explodex
+# or: bun install -g explodex
+# or: yarn global add explodex
 ```
 
-Bun is the runtime used by the project. Node.js 22+ should also be compatible.
+Confirm the package CLI and host identity:
 
-The package-manager command installs Explodex globally. Running `explodex` then opens the launcher app (creating it the first time, with confirmation), offers the plugin creator skill on the first interactive run, and checks the cached npm registry version notification.
+```sh
+explodex --version
+explodex host report
+explodex compatibility status
+```
 
-On a terminal (TTY), `explodex` uses an interactive flow ([`@clack/prompts`](https://github.com/bombshell-dev/clack)):
+The public CLI manages plugins with bounded operations. It does not install a
+wrapper application, patch ChatGPT.app, or start a background service.
 
-- **Codex already running with Explodex** (the debug port is owned by Codex) → it does nothing and says so. No reopen, no re-inject, no launcher changes.
-- **Launcher app exists** → it is opened as-is. The bare command never rewrites the launcher; run `explodex install` to reinstall it (e.g. after an upgrade).
-- **Launcher app missing** → explodex asks whether to create it. The app's absence — not `~/.explodex` — drives this prompt, because the app may be missing simply because the user declined before. The first time explodex runs (detected by a missing `~/.explodex`) it also prints a short explanation, and it warns if Codex is not installed at `/Applications/Codex.app`.
-  - **Confirm** → create `~/Applications/Explodex.app` and open it.
-  - **Decline** → do **not** create the app, but still do what the app would do this once: start Codex with remote debugging and inject the SDK + plugins directly via the CLI. The hint suggests `explodex install` to add the launcher app later.
-- Pass `-y`/`--yes` to skip the prompt and create the app. When output is not a TTY (pipes, CI, logs) the prompt is skipped, a missing launcher is created, an existing one is opened as-is, and plain status lines are printed.
-- On the first interactive run, Explodex checks for `explodex-plugin-builder` and offers **Install plugin creator skill (Recommended)**. Accepting runs `npx skills add dan-dr/explodex`. `--yes` accepts this recommendation; non-interactive runs without `--yes` do not start a network install.
+### Available command surface
 
-The interactive launch is only for the bare `explodex` command; the launcher app itself invokes `explodex --launch`, which stays non-interactive and runs the full launch state machine below. `--from-app` remains a deprecated alias for the same behavior. `install`/`uninstall` are aliases for `install-launcher`/`uninstall-launcher`.
+| Command | Purpose |
+| --- | --- |
+| `host report` | Read-only canonical ChatGPT.app identity and compatibility summary |
+| `compatibility status` | Read-only exact compatibility key and status |
+| `main status` | Read-only authoring-main classification and separate port obstruction |
+| `plugin create` | Scaffold a generated-only TypeScript workspace |
+| `plugin validate` | Validate source and package authority |
+| `plugin build` | Generate browser-safe `dist/` artifacts |
+| `plugin package` | Package one immutable archive |
+| `plugin artifact validate` | Independently validate a packaged artifact |
+| `plugin install` | Install immutable bytes disabled and pending review |
+| `plugin status` | Show installed, pending, and enabled identities |
+| `plugin refresh` | Discover installed identities and present pending review |
+| `plugin review` | Present metadata-only activation review |
+| `plugin update check` | Check remote recommendations without applying |
+| `plugin update apply` | Review and apply selected updates |
+| `dev status/start/ensure/recover/inject/restart/stop/focus` | Operate only the exact isolated development instance |
 
-The launcher is generated locally from plist, icon, zsh, and JXA/AppKit assets. Explodex does not distribute a native launcher executable, sign the generated launcher, clear quarantine attributes, re-sign Codex, or change Codex's bundle ID.
+Global options include `--json`, `--home <path>`, `--dev-root <path>`,
+`--timeout <duration>`, and `--no-color`. `--json` emits one stable
+schema-versioned envelope on stdout. Run `explodex --help` or
+`explodex <group> <command> --help` for the descriptor-derived contract.
 
-## Commands
+Reserved command paths appear in help but fail closed as unavailable. Do not
+build automation around a reserved path.
 
-| Command | Behavior |
-|---|---|
-| `explodex` | Open the user launcher; on first run, offer to create it |
-| `explodex --yes` | Same, but skip the first-run confirmation prompt |
-| `explodex install-launcher` | Install (or reinstall) the user launcher |
-| `explodex install-launcher --system` | Install `/Applications/Explodex.app`; macOS requests authorization |
-| `explodex install-launcher --force` | Reinstall only when the target has an Explodex ownership marker |
-| `explodex uninstall-launcher` | Move the owned user launcher to Trash |
-| `explodex uninstall-launcher --system` | Remove the owned system launcher after authorization |
-| `explodex inject` | Inject into Codex already running on the configured debug port |
-| `explodex install-skill` | Run `npx skills add dan-dr/explodex` to install the plugin creator skill |
-| `explodex doctor` | Re-run onboarding checks for `Explodex.app` and the plugin creator skill; offer to repair missing pieces interactively |
+## Install a plugin
 
-An existing bundle without the Explodex ownership marker or legacy Explodex bundle identity is never overwritten or removed, including with `--force`.
+Every source converges on the same result: an immutable, validated artifact is
+installed disabled and pending a separate metadata-only review. Installation
+does not grant execution authority.
 
-## Launch state machine
+### Local archive
 
-Default debug port: `9333`; override with `EXPLODEX_DEBUG_PORT`.
+```sh
+explodex plugin install ./my-plugin-1.0.0-<payload-sha256>.tar.gz
+```
 
-| Observed state | Action |
-|---|---|
-| Codex stopped, port free | Launch Codex via `open -a /Applications/Codex.app --args --remote-debugging-port=<port>`, wait for the port, inject, activate, exit launcher runtime |
-| Codex owns expected port | Inject, activate, exit launcher runtime |
-| Codex running without expected port | Tell the user to quit Codex first, then exit; Explodex never quits Codex for you |
-| Another process owns expected port | Stop with the owner and recovery action in the error |
-| Codex missing, port timeout, injection failure | Stop with an actionable message and log paths |
+The CLI computes and records the archive digest, but a local file has no
+independent publisher trust anchor. Only install local archives whose origin
+you already trust.
 
-Codex is started through LaunchServices (`open -a`), not by spawning its inner Mach-O binary, so Codex runs as its own top-level app with its own TCC identity. A binary spawned from a shell inherits the terminal's TCC identity, which makes macOS attribute Codex's own permission prompts (Screen Recording, Automation, etc.) to the controlling terminal instead of to Codex. Launching via `open` lets Codex's existing permission grants apply. Activation likewise uses `open -a` rather than an AppleScript `activate`, avoiding an Automation prompt. Dev mode remains isolated; see [local-development.md](./local-development.md).
+### First-party registry
 
-## Logs and updates
+```sh
+explodex plugin install --registry effort-shortcuts
+```
 
-Logs are under `~/.explodex/logs/`:
+The registry is a checksummed `registry.json` published as a canonical Explodex
+GitHub Release asset. The selected entry supplies the immutable artifact URL,
+plugin identity, payload digest, and archive digest. The CLI validates all of
+them before committing the artifact.
 
-- `launcher.log`: state decisions and launcher/injector output
+### Direct GitHub Release
 
-Because Codex is launched via `open` (LaunchServices), its stdout/stderr are not captured into `~/.explodex/logs/`; use Codex's own logging for that stream.
+```sh
+explodex plugin install \
+  --github-url https://github.com/OWNER/REPOSITORY/releases/download/TAG/PLUGIN.tar.gz \
+  --archive-sha256 <64-lowercase-hex>
+```
 
-Explodex checks npm at most once per 24 hours in a detached background process. Cached results may print a new-version notification; Explodex never updates itself automatically. Reinstall with the package manager used for the global installation.
+`--github-url` accepts only a canonical immutable GitHub Release asset URL and
+requires an independently supplied archive SHA-256. Add
+`--payload-sha256 <64-lowercase-hex>` when the publisher also provides the
+canonical payload digest. Redirects stay inside the trusted GitHub host set.
 
-No daemon monitors Codex. Restart survival after Codex self-update is deferred research.
+The URL and matching digest prove which bytes were fetched. They do not prove
+the publisher is trustworthy and do not sandbox the plugin.
+
+Choose exactly one source per invocation: local archive, `--registry <id>`, or
+`--github-url <url>`.
+
+## Review and activation
+
+```sh
+explodex plugin status
+explodex plugin review effort-shortcuts --target development
+explodex plugin refresh --target main
+```
+
+`plugin install` defaults to `--target none`. Use `--target development` or
+`--target main` to request review immediately when that exact target is
+available. An unavailable target leaves the plugin disabled and pending.
+
+The review shows metadata and the exact artifact identity. Enabling is a
+separate explicit selection. Enabled plugins are trusted, unsandboxed renderer
+code that can read or modify UI and authenticated renderer state. Checksums
+protect byte identity, not publisher authenticity or runtime isolation.
+
+Installed state lives under `~/.explodex/`. Reinstalling the exact identity is
+idempotent and does not silently expand prior activation authority.
+
+## Isolated development instance
+
+Use the exact owned development instance for disruptive plugin testing:
+
+```sh
+explodex dev ensure
+explodex dev status
+explodex dev inject ./my-plugin.tar.gz
+explodex dev focus
+explodex dev restart
+explodex dev stop
+```
+
+Its fixed default endpoint is `127.0.0.1:9444`, with isolated application data,
+`CODEX_HOME`, Explodex state, and process ownership records under
+`~/.explodex/dev/plugin-dev`. `dev ensure` reuses a healthy instance or starts
+one bounded instance. It is not a supervisor and does not retry forever.
+
+Stop and restart act only after exact PID, process-start identity, launch
+marker, private paths, listener, target, and execution-context verification.
+They never use app-wide quit, process-name signals, or the first reachable
+renderer as a fallback.
+
+## One-shot operation boundary
+
+Explodex runs no daemon. Normal host, compatibility, plugin install, refresh,
+review, update, and development lifecycle commands exit after their bounded
+action. Only an explicitly invoked foreground plugin-development watch may stay
+alive.
+
+An existing authoring main is protected from automatic restart, reload,
+navigation, close, and stop. Commands report a blocked or pending action when
+ownership cannot be proven. See [local-development.md](./local-development.md)
+for the complete session-safety workflow.

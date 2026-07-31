@@ -16,6 +16,7 @@ export async function runPluginArtifactValidate(options: {
   env: NodeJS.ProcessEnv;
   rest: readonly string[];
   endOfOptions: readonly string[];
+  signal?: AbortSignal;
 }): Promise<RenderedCliResult> {
   const positionals = [...options.rest, ...options.endOfOptions];
   const unexpected = positionals.filter((token) => token.startsWith("-"));
@@ -52,7 +53,9 @@ export async function runPluginArtifactValidate(options: {
   const cwd = options.env.PWD ?? process.cwd();
   const artifactPath = resolve(cwd, positionals[0]!);
 
-  const result = await validateStandaloneArtifact(artifactPath);
+  const result = await validateStandaloneArtifact(artifactPath, {
+    signal: options.signal,
+  });
   if (!result.ok) {
     return renderFailure({
       operation: OPERATION,

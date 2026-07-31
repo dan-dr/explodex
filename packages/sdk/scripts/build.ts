@@ -25,6 +25,8 @@ import { SDK_VERSION } from "../src/version.ts";
 const packageRoot = join(import.meta.dir, "..");
 const stagingRoot = join(packageRoot, "dist-build");
 const finalRoot = join(packageRoot, "dist");
+const buildLockRoot = join(packageRoot, ".dist-build.lock");
+const BUILD_LOCK_TIMEOUT_MS = 120_000;
 
 async function resolveTsc(): Promise<string> {
   const fromEnv = process.env.EXPLODEX_TSC;
@@ -86,6 +88,27 @@ async function pathExists(path: string): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+async function acquireBuildLock(): Promise<() => Promise<void>> {
+  const deadline = Date.now() + BUILD_LOCK_TIMEOUT_MS;
+  for (;;) {
+    try {
+      await mkdir(buildLockRoot);
+      await writeFile(join(buildLockRoot, "owner"), `${process.pid}\n`, "utf8");
+      return async () => {
+        await rm(buildLockRoot, { recursive: true, force: true });
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `Timed out waiting ${BUILD_LOCK_TIMEOUT_MS}ms for SDK build lock ${buildLockRoot}`,
+        );
+      }
+      await Bun.sleep(50);
+    }
   }
 }
 
@@ -437,4 +460,9 @@ async function main(): Promise<void> {
   }
 }
 
-await main();
+const releaseBuildLock = await acquireBuildLock();
+try {
+  await main();
+} finally {
+  await releaseBuildLock();
+}

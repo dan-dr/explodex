@@ -12,11 +12,14 @@ import { EXIT_SUCCESS } from "../cli/exit-codes.ts";
 
 const OPERATION = "main.status";
 
-export async function runMainStatus(): Promise<RenderedCliResult> {
+export async function runMainStatus(options: {
+  signal?: AbortSignal;
+} = {}): Promise<RenderedCliResult> {
   const adapters = await createDefaultHostStatusAdapters();
   const status = await collectHostStatus({
     adapters,
     role: "main",
+    signal: options.signal,
   });
 
   const endpoint = roleEndpoint("main");

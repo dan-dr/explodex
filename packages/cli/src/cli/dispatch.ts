@@ -51,12 +51,6 @@ const ACCEPTS_POSITIONALS = new Set([
 const IMPLEMENTED_RESERVED_OPERATIONS = new Set([
   "plugin.disable",
   "plugin.remove",
-  "dev.status",
-  "dev.start",
-  "dev.ensure",
-  "dev.recover",
-  "dev.restart",
-  "dev.stop",
   "dev.inject",
   "dev.focus",
   "plugin.update.apply",
@@ -139,11 +133,11 @@ export async function dispatch(options: {
 
   switch (command.operation) {
     case "host.report":
-      return runHostReport({ globals: parsed.globals, env });
+      return runHostReport({ globals: parsed.globals, env, signal });
     case "compatibility.status":
-      return runCompatibilityStatus({ globals: parsed.globals, env });
+      return runCompatibilityStatus({ globals: parsed.globals, env, signal });
     case "main.status":
-      return runMainStatus();
+      return runMainStatus({ signal });
     case "main.apply":
       return runMainApply({
         globals: parsed.globals,
@@ -159,6 +153,7 @@ export async function dispatch(options: {
         env,
         rest,
         endOfOptions,
+        signal,
       });
     case "plugin.validate":
       return runPluginValidate({
@@ -166,6 +161,7 @@ export async function dispatch(options: {
         env,
         rest,
         endOfOptions,
+        signal,
       });
     case "plugin.build":
       return runPluginBuild({
@@ -173,6 +169,7 @@ export async function dispatch(options: {
         env,
         rest,
         endOfOptions,
+        signal,
       });
     case "plugin.package":
       return runPluginPackage({
@@ -180,6 +177,7 @@ export async function dispatch(options: {
         env,
         rest,
         endOfOptions,
+        signal,
       });
     case "plugin.artifact.validate":
       return runPluginArtifactValidate({
@@ -187,6 +185,7 @@ export async function dispatch(options: {
         env,
         rest,
         endOfOptions,
+        signal,
       });
     case "plugin.install":
       return runPluginInstall({
@@ -203,6 +202,7 @@ export async function dispatch(options: {
         env,
         rest,
         endOfOptions,
+        signal,
       });
     case "plugin.refresh":
       return runPluginRefresh({

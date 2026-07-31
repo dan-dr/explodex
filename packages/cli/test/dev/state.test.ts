@@ -4,6 +4,7 @@ import {
   describeDevLayout,
   ensureDefaultDevLayout,
   loadDevInstanceState,
+  loadDevInstanceStateResult,
   parseDevInstanceState,
   publicDevStateKeySet,
   saveDevInstanceState,
@@ -195,6 +196,57 @@ describe("development state (VAL-DEV-003)", () => {
     expect(loaded).toBeNull();
   });
 
+  test("loads the older schema-1 ready shape as failed recovery authority", async () => {
+    const fs = new MemoryFileSystem();
+    const root = "/tmp/homes/state-legacy/.explodex/dev/plugin-dev";
+    const layout = describeDevLayout(root);
+    const legacy = {
+      schemaVersion: 1,
+      instanceId: "plugin-dev",
+      role: "development",
+      status: "ready",
+      rootPath: root,
+      appPath: "/Applications/ChatGPT.app",
+      executablePath: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
+      pid: 20441,
+      processStartedAt: "legacy-start",
+      launchMarker: "--explodex-dev-instance=plugin-dev",
+      electronUserDataPath: layout.electronUserDataPath,
+      codexHomePath: layout.codexHomePath,
+      explodexStatePath: layout.explodexStatePath,
+      logsPath: layout.logsPath,
+      cdpHost: "127.0.0.1",
+      cdpPort: 9444,
+      targetId: "legacy-target",
+      appVersion: "26.721.41059",
+      appBuild: "5848",
+      startedAt: "2026-07-26T14:30:18.911Z",
+      updatedAt: "2026-07-26T14:30:18.911Z",
+    };
+    fs.seedFile(layout.statePath, JSON.stringify(legacy), 0o600);
+
+    const loaded = await loadDevInstanceStateResult({
+      adapters: adaptersFor(fs),
+      statePath: layout.statePath,
+    });
+    expect(loaded.status).toBe("valid");
+    if (loaded.status !== "valid") return;
+    expect(loaded.state).toMatchObject({
+      status: "failed",
+      pid: 20441,
+      processStartedAt: "legacy-start",
+      targetId: null,
+      browserIdentity: null,
+      executionContextUniqueId: null,
+      frozenHost: null,
+      recoveryDiagnostics: [],
+      lastError: {
+        code: "dev.state-migrated",
+        phase: "state-migration",
+      },
+    });
+  });
+
   test("stopped state parsing requires pid, start identity, target, and startedAt all null", () => {
     const layout = describeDevLayout("/tmp/homes/state-e/.explodex/dev/plugin-dev");
     const base = createInitialDevInstanceState({
@@ -209,5 +261,29 @@ describe("development state (VAL-DEV-003)", () => {
     expect(parseDevInstanceState({ ...base, processStartedAt: "start" })).toBeNull();
     expect(parseDevInstanceState({ ...base, targetId: "t" })).toBeNull();
     expect(parseDevInstanceState({ ...base, startedAt: "2026-07-25T12:00:00.000Z" })).toBeNull();
+  });
+
+  test("starting state may persist raw spawn PID before kernel start identity is known", () => {
+    const layout = describeDevLayout("/tmp/homes/state-spawn/.explodex/dev/plugin-dev");
+    const base = createInitialDevInstanceState({
+      layout,
+      appPath: "/Applications/ChatGPT.app",
+      executablePath: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
+      updatedAt: "2026-07-25T12:00:00.000Z",
+    });
+    const starting = {
+      ...base,
+      status: "starting" as const,
+      pid: 95404,
+      processStartedAt: null,
+      startedAt: "2026-07-25T12:00:01.000Z",
+      updatedAt: "2026-07-25T12:00:01.000Z",
+    };
+    expect(parseDevInstanceState(starting)).toEqual(starting);
+    expect(parseDevInstanceState({
+      ...starting,
+      pid: null,
+      processStartedAt: "impossible-without-pid",
+    })).toBeNull();
   });
 });

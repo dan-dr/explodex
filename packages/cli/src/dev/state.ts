@@ -140,6 +140,90 @@ function parseLastError(value: unknown): DevInstanceError | undefined {
 }
 
 /**
+ * The original schema-1 writer predated the full browser/context/frozen-host
+ * identity fields while retaining the same schemaVersion. Recognize only that
+ * exact older shape. A live-looking record is downgraded to failed authority so
+ * recovery can proceed only after process and port evidence prove it is dead.
+ */
+function migrateLegacySchema1State(value: unknown): DevInstanceState | null {
+  if (!isRecord(value) || containsForbiddenKey(value) !== null) return null;
+  if (
+    value.schemaVersion !== DEV_STATE_SCHEMA_VERSION ||
+    !isNonEmptyString(value.instanceId) ||
+    value.role !== "development" ||
+    !isNonEmptyString(value.rootPath) ||
+    !isNonEmptyString(value.appPath) ||
+    !isNonEmptyString(value.executablePath) ||
+    !isNullableInteger(value.pid) ||
+    !isNullableString(value.processStartedAt) ||
+    typeof value.launchMarker !== "string" ||
+    !isNonEmptyString(value.electronUserDataPath) ||
+    !isNonEmptyString(value.codexHomePath) ||
+    !isNonEmptyString(value.explodexStatePath) ||
+    !isNonEmptyString(value.logsPath) ||
+    value.cdpHost !== DEV_CDP_HOST ||
+    value.cdpPort !== DEV_CDP_PORT ||
+    !isNullableString(value.targetId) ||
+    (
+      value.executionContextId !== undefined &&
+      !isNullableInteger(value.executionContextId)
+    ) ||
+    !isNullableString(value.appVersion) ||
+    !isNullableString(value.appBuild) ||
+    !isNullableString(value.startedAt) ||
+    !isNonEmptyString(value.updatedAt)
+  ) {
+    return null;
+  }
+  if (
+    "browserIdentity" in value ||
+    "executionContextUniqueId" in value ||
+    "frameId" in value ||
+    "frozenHost" in value ||
+    "recoveryDiagnostics" in value
+  ) {
+    return null;
+  }
+  if (
+    value.status !== "starting" &&
+    value.status !== "ready" &&
+    value.status !== "stopping" &&
+    value.status !== "stopped" &&
+    value.status !== "stale" &&
+    value.status !== "failed"
+  ) {
+    return null;
+  }
+
+  const stopped = value.status === "stopped";
+  const migrated = {
+    ...value,
+    status: stopped ? "stopped" : "failed",
+    pid: stopped ? null : value.pid,
+    processStartedAt: stopped ? null : value.processStartedAt,
+    targetId: null,
+    browserIdentity: null,
+    executionContextId: null,
+    executionContextUniqueId: null,
+    frameId: null,
+    frozenHost: null,
+    recoveryDiagnostics: [],
+    startedAt: stopped ? null : value.startedAt,
+    ...(stopped
+      ? {}
+      : {
+          lastError: {
+            code: "dev.state-migrated",
+            message:
+              "Older development state requires current process and port verification before reuse.",
+            phase: "state-migration",
+          },
+        }),
+  };
+  return parseDevInstanceState(migrated);
+}
+
+/**
  * Parse development state from unknown. Malformed or secret-bearing records fail closed.
  */
 export function parseDevInstanceState(value: unknown): DevInstanceState | null {
@@ -219,9 +303,16 @@ export function parseDevInstanceState(value: unknown): DevInstanceState | null {
     }
   }
   if (
-    (value.status === "failed" || value.status === "starting" || value.status === "stopping") &&
+    value.status === "stopping" &&
     value.pid !== null &&
     value.processStartedAt === null
+  ) {
+    return null;
+  }
+  if (
+    (value.status === "failed" || value.status === "starting") &&
+    value.pid === null &&
+    value.processStartedAt !== null
   ) {
     return null;
   }
@@ -344,9 +435,11 @@ export async function loadDevInstanceStateResult(options: {
     return { status: "malformed", state: null };
   }
   const state = parseDevInstanceState(parsed);
-  return state === null
+  if (state !== null) return { status: "valid", state };
+  const migrated = migrateLegacySchema1State(parsed);
+  return migrated === null
     ? { status: "malformed", state: null }
-    : { status: "valid", state };
+    : { status: "valid", state: migrated };
 }
 
 /**

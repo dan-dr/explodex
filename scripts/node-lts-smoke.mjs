@@ -5,14 +5,15 @@
  * Node 24 with Bun absent from PATH. A missing required runtime is a failure.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync, realpathSync } from "node:fs";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const cliRoot = join(root, "packages", "cli");
+const sdkRoot = join(root, "packages", "sdk");
 const systemPath = "/usr/bin:/bin:/usr/sbin:/sbin";
 
 function miseNodeBinary(major) {
@@ -57,30 +58,113 @@ const runtimes = [
 const scratch = await mkdtemp(join(tmpdir(), "explodex-node-lts-smoke-"));
 try {
   const packRoot = join(scratch, "pack");
-  const packageRoot = join(scratch, "fixture", "node_modules", "explodex");
+  const fixtureRoot = join(scratch, "fixture");
+  const packageRoot = join(fixtureRoot, "node_modules", "explodex");
   const npmCache = join(scratch, "npm-cache");
   await Promise.all([
     mkdir(packRoot, { recursive: true }),
-    mkdir(packageRoot, { recursive: true }),
+    mkdir(fixtureRoot, { recursive: true }),
     mkdir(npmCache, { recursive: true }),
   ]);
-  const packed = spawnSync("npm", ["pack", "--json", "--pack-destination", packRoot], {
-    cwd: cliRoot,
-    encoding: "utf8",
-    env: { ...process.env, NPM_CONFIG_CACHE: npmCache },
-  });
-  if (packed.status !== 0) throw new Error(`CLI npm pack failed:\n${packed.stderr}`);
-  const packResult = JSON.parse(packed.stdout);
-  const tarball = packResult[0]?.filename;
-  if (typeof tarball !== "string") throw new Error("CLI npm pack returned no tarball filename");
-  const extracted = spawnSync("tar", [
-    "-xzf",
-    join(packRoot, tarball),
-    "-C",
-    packageRoot,
-    "--strip-components=1",
-  ], { encoding: "utf8", env: { PATH: systemPath } });
-  if (extracted.status !== 0) throw new Error(`CLI tar extraction failed:\n${extracted.stderr}`);
+  const pack = (packageRoot, label) => {
+    const packed = spawnSync(
+      "npm",
+      [
+        "pack",
+        "--json",
+        "--pack-destination",
+        packRoot,
+      ],
+      {
+        cwd: packageRoot,
+        encoding: "utf8",
+        env: { ...process.env, NPM_CONFIG_CACHE: npmCache },
+      },
+    );
+    if (packed.status !== 0) {
+      throw new Error(`${label} npm pack failed:\n${packed.stderr}`);
+    }
+    const packResult = JSON.parse(packed.stdout);
+    const tarball = packResult[0]?.filename;
+    if (typeof tarball !== "string") {
+      throw new Error(`${label} npm pack returned no tarball filename`);
+    }
+    return join(packRoot, tarball);
+  };
+  const sdkTarball = pack(sdkRoot, "SDK");
+  const cliTarball = pack(cliRoot, "CLI");
+  const packDependency = async (packageRoot, name) => {
+    const stageRoot = join(packRoot, `${name.replaceAll("/", "-").replaceAll("@", "")}-stage`);
+    const tarball = join(packRoot, `${name.replaceAll("/", "-").replaceAll("@", "")}.tgz`);
+    await mkdir(stageRoot, { recursive: true });
+    await cp(packageRoot, join(stageRoot, "package"), {
+      recursive: true,
+      dereference: true,
+      preserveTimestamps: true,
+    });
+    const archived = spawnSync(
+      "tar",
+      ["-czf", tarball, "-C", stageRoot, "package"],
+      { encoding: "utf8" },
+    );
+    await rm(stageRoot, { recursive: true, force: true });
+    if (archived.status !== 0) {
+      throw new Error(`${name} dependency pack failed:\n${archived.stderr}`);
+    }
+    return tarball;
+  };
+  const acornRoot = realpathSync(join(root, "node_modules", "acorn"));
+  const esbuildRoot = realpathSync(join(root, "node_modules", "esbuild"));
+  const esbuildPlatformName = `@esbuild/${process.platform}-${process.arch}`;
+  const esbuildPlatformRoot = join(
+    dirname(esbuildRoot),
+    "@esbuild",
+    `${process.platform}-${process.arch}`,
+  );
+  const acornTarball = await packDependency(acornRoot, "acorn");
+  const esbuildTarball = await packDependency(esbuildRoot, "esbuild");
+  const esbuildPlatformTarball = await packDependency(
+    esbuildPlatformRoot,
+    esbuildPlatformName,
+  );
+  await writeFile(join(fixtureRoot, "package.json"), `${JSON.stringify({
+    name: "explodex-node-lts-smoke",
+    private: true,
+    type: "module",
+    dependencies: {
+      "@explodex/sdk": `file:${sdkTarball}`,
+      explodex: `file:${cliTarball}`,
+      acorn: `file:${acornTarball}`,
+      esbuild: `file:${esbuildTarball}`,
+      [esbuildPlatformName]: `file:${esbuildPlatformTarball}`,
+    },
+  }, null, 2)}\n`);
+  const installed = spawnSync(
+    "npm",
+    [
+      "install",
+      "--ignore-scripts",
+      "--no-package-lock",
+      "--no-audit",
+      "--no-fund",
+      "--offline",
+    ],
+    {
+      cwd: fixtureRoot,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        HOME: join(scratch, "install-home"),
+        NPM_CONFIG_CACHE: npmCache,
+        npm_config_ignore_scripts: "true",
+        npm_config_offline: "true",
+        npm_config_registry: "http://127.0.0.1:9/",
+      },
+    },
+  );
+  if (installed.status !== 0) {
+    throw new Error(`SDK/CLI scripts-disabled install failed:\n${installed.stderr}`);
+  }
 
   const probe = join(scratch, "fixture", "probe.mjs");
   await writeFile(probe, `
@@ -185,11 +269,53 @@ console.log(JSON.stringify({ runtime: process.version, bunAbsent, nowType: typeo
   const packageJson = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
   if (packageJson.name !== "explodex") throw new Error("Packed CLI package name mismatch");
   for (const runtime of runtimes) {
+    const runtimePath = `${dirname(runtime.binary)}:${systemPath}`;
+    const bin = join(fixtureRoot, "node_modules", ".bin", "explodex");
+    const runCli = (args) => spawnSync(runtime.binary, [bin, ...args], {
+      cwd: fixtureRoot,
+      encoding: "utf8",
+      env: {
+        PATH: runtimePath,
+        HOME: join(scratch, `home-${runtime.label.replace(" ", "-")}`),
+        npm_config_cache: join(scratch, `cache-${runtime.label.replace(" ", "-")}`),
+      },
+    });
+    const help = runCli(["--help"]);
+    if (help.status !== 0 || !help.stdout.includes("/Applications/ChatGPT.app")) {
+      throw new Error(`${runtime.label} packed CLI help failed:\n${help.stderr}\n${help.stdout}`);
+    }
+    for (const args of [
+      ["--json", "--version"],
+      ["--json", "host", "inspect"],
+      ["--json", "compatibility", "report"],
+      ["--json", "definitely-not-a-command"],
+    ]) {
+      const result = runCli(args);
+      const parsed = JSON.parse(result.stdout.trim());
+      if (parsed.schemaVersion !== 1 || typeof parsed.operation !== "string") {
+        throw new Error(`${runtime.label} emitted an invalid CLI envelope`);
+      }
+    }
+    const sdkImport = spawnSync(
+      runtime.binary,
+      ["-e", "import('@explodex/sdk').then((sdk)=>{if(typeof sdk.definePlugin!=='function'||typeof sdk.SDK_VERSION!=='string')process.exit(1)})"],
+      {
+        cwd: fixtureRoot,
+        encoding: "utf8",
+        env: {
+          PATH: runtimePath,
+          HOME: join(scratch, `home-${runtime.label.replace(" ", "-")}`),
+        },
+      },
+    );
+    if (sdkImport.status !== 0) {
+      throw new Error(`${runtime.label} packed SDK import failed:\n${sdkImport.stderr}`);
+    }
     const result = spawnSync(runtime.binary, [probe], {
       cwd: dirname(probe),
       encoding: "utf8",
       env: {
-        PATH: systemPath,
+        PATH: runtimePath,
         HOME: join(scratch, `home-${runtime.label.replace(" ", "-")}`),
         npm_config_cache: join(scratch, `cache-${runtime.label.replace(" ", "-")}`),
       },

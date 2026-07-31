@@ -15,6 +15,7 @@ export async function runPluginCreate(options: {
   env: NodeJS.ProcessEnv;
   rest: readonly string[];
   endOfOptions: readonly string[];
+  signal?: AbortSignal;
 }): Promise<RenderedCliResult> {
   const positionals = [...options.rest, ...options.endOfOptions];
   const unexpected = positionals.filter((token) => token.startsWith("-"));
@@ -51,7 +52,11 @@ export async function runPluginCreate(options: {
 
   const directory = positionals[0]!;
   const cwd = options.env.PWD ?? process.cwd();
-  const result = await createPluginWorkspace({ directory, cwd });
+  const result = await createPluginWorkspace({
+    directory,
+    cwd,
+    signal: options.signal,
+  });
 
   if (!result.ok) {
     const exitCode = exitCodeForError(result.code);

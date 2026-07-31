@@ -16,6 +16,7 @@ const OPERATION = "host.report";
 export async function runHostReport(options: {
   globals: GlobalOptions;
   env: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
 }): Promise<RenderedCliResult> {
   const explodexHome = resolveHome(options.globals, options.env);
   const adapters = await createDefaultHostAdapters();
@@ -27,6 +28,7 @@ export async function runHostReport(options: {
       version: sdkRuntime.version,
       sha256: sdkRuntime.sha256,
     },
+    signal: options.signal,
   });
 
   if (!report.ok || report.host === null) {

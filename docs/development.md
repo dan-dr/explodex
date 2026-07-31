@@ -1,186 +1,204 @@
 # Development Guide
 
-Explodex is a source-first repo. Keep proprietary Codex bundles and extracted reverse-engineering output local and ignored.
+Explodex is a Bun workspace monorepo with three package boundaries:
 
-## Layout
+| Path | Responsibility |
+| --- | --- |
+| `packages/sdk/` | Public `@explodex/sdk` authoring API, types, test helpers, and generated renderer runtime |
+| `packages/cli/` | Public `explodex` CLI for host evidence, plugin artifacts, installation, review, and isolated development |
+| `packages/plugin-registry/` | Private physical collection of seven first-party plugin workspaces and deterministic release-index tooling |
 
-| Path | Purpose |
-|------|---------|
-| `sdk/explodex-sdk.js` | Injected renderer SDK and plugin runtime |
-| `plugins/<id>/plugin.json` | Plugin catalog metadata |
-| `plugins/<id>/index.js` | Plugin runtime entrypoint |
-| `scripts/cdp-inject.ts` | CDP injector (Bun TypeScript; shell entry `cdp-inject.sh`) |
-| `scripts/dev.ts` | Local dev: package + chrome-devtools-mcp + launch |
-| `scripts/package-app.ts` | Build the source-development `dist/Explodex.app` |
-| `lib/launcher-bundle.mjs` | Generate the lightweight npm-installed launcher |
-| `lib/platform/macos.mjs` | Installed-mode macOS launch state adapter |
-| `scripts/launch.sh` | Launch Codex with remote debugging and inject Explodex |
-| `templates/explodex-app/` | Tracked shell launcher template for the wrapper app |
-| `dist/` | Ignored generated output (`dist/Explodex.app`) |
-
-For packaging, install, user-data, and plugin load-path design notes, see [local-development.md](./local-development.md).
+`registry.json` is generated install metadata, not the plugin collection. Host
+inspection output remains local and ignored. `/Applications/ChatGPT.app` is a
+read-only input and is never copied, patched, re-signed, or vendored.
 
 ## Prerequisites
 
-Install [Bun](https://bun.sh). Node 22 is the target runtime (see `.node-version`).
-
-## Local Development
+- macOS
+- Bun 1.3.14 for repository work
+- Node.js 22 or 24 for the published CLI and SDK packages
+- ChatGPT installed at `/Applications/ChatGPT.app` for runtime verification
 
 ```sh
-bun run dev
+bun install --frozen-lockfile
+bun run docs:list
 ```
 
-This packages `dist/Explodex.app`, launches it, waits for debug port `9333`, and starts `chrome-devtools-mcp` for agent inspection (see `.mcp.json`).
-
-The CDP injector applies the SDK/catalog to every matching Codex renderer target it sees during startup. After the first injection it keeps polling (every 250ms) for late-mounting secondary renderers but exits as soon as two consecutive polls find nothing new; `EXPLODEX_TARGET_WATCH_MS` (default `8000`) is only the absolute upper bound, so the common single-window case finishes in ~0.5s instead of waiting out the full window. Inside each renderer, SDK zones can be observed with `Explodex.observeZone(zoneId, callback)` so plugins can remount after React replaces a portal/sidebar node.
-
-Re-inject after editing SDK or plugins:
+## Package builds and validation
 
 ```sh
-bun run inject
-```
-
-The injector publishes the refreshed plugin catalog before evaluating the SDK.
-The SDK initializes from that catalog during startup, so one injection both adds
-new plugins and removes deleted plugin IDs without reloading the renderer.
-
-### Layout snapshot (sidebar / shell landmarks)
-
-After `bun run dev` (or any session with CDP on `9333`), capture a JSON layout
-report for debugging selector drift:
-
-```sh
-bun scripts/cdp-layout-snapshot.ts
-# optional explicit output path:
-EXPLODEX_LAYOUT_SNAPSHOT_OUT=./layout.json bun scripts/cdp-layout-snapshot.ts
-```
-
-Default write path: `~/.explodex/snapshots/layout-<timestamp>.json`. The snapshot
-includes sidebar testids, nav `aria-label`s, profile footer button, zone portal
-presence, `data-app-action-sidebar-*` counts, and a short React fiber chain when
-the DevTools hook is present.
-
-### React layout probe via CDP
-
-Codex ships production React. `cdp-react-devtools.ts` installs the DevTools global
-hook (for reload) and immediately walks `__reactFiber$*` chains on sidebar DOM
-nodes — no reload required for the fiber report:
-
-```sh
-bun run react-devtools
-# optional: also attempt react-devtools-inline backend eval (needs renderer reload for UI)
-EXPLODEX_REACT_DEVTOOLS_BACKEND=1 bun run react-devtools
-```
-
-Pair with `bun run layout:snapshot` when Codex changes layout between releases.
-
-`bun run inject` (`--inject-only`) connects to whatever is listening on the debug port — including an SSH tunnel to a remote Codex. The **Explodex.app launcher** is stricter: it only takes the “inject into existing instance” fast path when **local** Codex owns port `9333` (or the process is otherwise identifiable as `Codex.app/Contents/MacOS/Codex`). If another process (e.g. `ssh -L 9333:…`) holds the port, the launcher reports a port conflict instead of falsely claiming injection into a running local Codex.
-
-## Distribution boundary
-
-Production distribution is through the npm registry and supports global installation with pnpm, Bun, npm, or Yarn. The generated user launcher is documented in [installation.md](./installation.md). `bun run package` and `dist/Explodex.app` remain source-development tools only.
-
-## Validate
-
-```sh
+bun run build:npm
+bun run checkTs
 bun run validate
 ```
 
-Checks shell syntax, Bun/TS syntax, JS entrypoints, JSON manifests, npm injector build, and launcher tests.
+`build:npm` generates the publishable SDK and CLI `dist/` trees. Each package
+uses staged generation and atomic replacement so a failed build preserves the
+prior committed output. `validate` rebuilds package output, checks scripts and
+manifests, and runs the repository test suite.
 
-## Plugin Development
+The plugin-builder skill carries generated SDK documentation and type snapshots.
+Refresh them with `bun scripts/sync-plugin-skill.ts`; validation rejects drift.
 
-For a plugin that needs an unreleased SDK change, name the canonical SDK source
-workspace explicitly:
+## Plugin workspace workflow
+
+Create a standalone package workspace:
 
 ```sh
-explodex --json plugin develop . \
+explodex plugin create ./explodex-plugin-example
+cd explodex-plugin-example
+explodex plugin validate
+explodex plugin build
+explodex plugin package
+```
+
+The generated shape is:
+
+```text
+explodex-plugin-example/
+  README.md
+  explodex.config.ts
+  package.json
+  src/index.ts
+  tsconfig.json
+  dist/                       # generated, committed for first-party packages
+```
+
+Author source imports `definePlugin`, `defineConfig`, and public types from
+`@explodex/sdk`. Do not import renderer-private globals or reach into the
+Explodex repository by relative path.
+
+`plugin validate` checks package metadata, configuration, public SDK authority,
+source boundaries, and lifecycle compatibility. `plugin build` produces a
+browser-safe single entry, required source map, manifest, checksums, and a
+generation receipt. `plugin package` accepts only a complete publishable-SDK
+generation and produces an immutable named-root `.tar.gz`. Validate a packaged
+archive independently:
+
+```sh
+explodex plugin artifact validate ./example-1.0.0-<payload-sha256>.tar.gz
+```
+
+Build output is deterministic. Identical source, configuration, package
+metadata, and SDK input must reproduce the same payload digest and generation
+ID. A failed build must leave the previous `dist/` byte-for-byte unchanged.
+
+The CLI reserves an explicit foreground path for a plugin that needs an
+unreleased SDK:
+
+```sh
+explodex plugin develop . \
   --sdk-source /absolute/path/to/explodex/packages/sdk
 ```
 
-The foreground operation completes SDK generation N and plugin generation N
-before it probes or applies the pair. Shared `dist/` publication and renderer
-application are serialized. A newer request can invalidate an older build
-before commit, but an apply that has crossed renderer evaluation settles before
-the next apply starts. Pre-evaluation SDK failures preserve the prior complete
-live pair without restarting. Only classified post-evaluation SDK runtime
-contamination permits one bounded restart using the operation-frozen prior
-compatibility proof. Local SDK paths and authority do not enter JSONL events,
-maps, checksums, archives, plugin metadata, or persisted activation state.
+Local-SDK authority is restricted to the exact owned development renderer. It
+cannot be packaged, recommended, transferred to main, or treated as release
+proof. Graduate by rebuilding against publishable SDK bytes and validating the
+new artifact in development. `plugin develop` is reserved and not available in
+the current release; until it lands, do not claim a local-SDK artifact has
+crossed this graduation boundary.
 
-Local-SDK generations are dev-only. `.explodex-generation.json` is untrusted
-workspace metadata, not publication authority. Packaging independently rebuilds
-the same source against the exact published SDK in disposable storage and
-requires byte-identical output. Main staging requires one immutable receipt
-binding the verified generation, artifact payload, published SDK identity,
-owned development target, and validation operation.
+## Seven-workspace first-party registry
 
-The public V1 workflow is:
+The required workspaces are:
 
-1. Run `explodex --json dev status` with the exact `--home` and optional
-   `--dev-root` context.
-2. Use only the lifecycle operation authorized by that result. Recovery is
-   allowed only when status reports the predicate-specific recovery eligibility.
-3. Run public build, validation, and package operations with `--json`.
-4. Run `explodex --json plugin develop <workspace>`. Stdout is one JSONL stream
-   owned by the foreground command. Dispatch owns `SIGINT`/`SIGTERM`, cleanup
-   settles before exactly one terminal record, and cleanup residue supplements
-   rather than replaces the primary terminal reason.
-5. For management, execute only the exact command rendered by the CLI. Each
-   command carries the selected home/root context and reports success only
-   after installed, enabled, live identity, lifecycle, and boundary facts
-   correlate.
-6. For a hot-safe main transfer, complete the publishable rebuild and exact
-   owned-development revalidation, retain the staged receipt, then run the
-   public staged `main apply` flow. A fresh interactive checkpoint authorizes
-   only the staged artifact for one exact main process, target, context,
-   compatibility key, and SDK identity. The operation renews the real
-   one-operation reconciliation capability without replacing SDK bytes and
-   verifies selected-thread, navigation, SDK, and every live unrelated plugin
-   baseline before and after apply.
+- `command-menu-threads`
+- `effort-shortcuts`
+- `feature-flags-playground`
+- `project-colors`
+- `project-pins`
+- `toggle-autoscroll`
+- `usage-reset-glance`
 
-Do not substitute repository injectors, direct CDP evaluation, a reachable
-debug port, a previous authorization, or generic process signaling for these
-public operations. Interactive authentication is performed manually only in
-the exact already-running isolated development profile named by the blocker.
-Resume with a new `dev status` and a new foreground operation.
-
-Keep plugin state keys namespaced with `explodex-`. When renaming old keys, read legacy keys and write the new key on the next update.
-
-### Use your local `plugins/` checkout
-
-To run the plugins in your working copy instead of the bundled copies, either symlink your checkout into the user plugins directory (user plugins override bundled plugins with the same id):
+Run the registry gates from the repository root:
 
 ```sh
-ln -sf "$(pwd)/plugins" ~/.explodex/plugins
+bun run --cwd packages/plugin-registry test
+bun run --cwd packages/plugin-registry typecheck
 ```
 
-or point the user plugins directory at your repo:
+Build and package each workspace with the same public CLI used by third-party
+authors. Commit each first-party `dist/` generation. The repository root ignores
+new `dist/` paths, so a new workspace's generated files require an explicit
+force-stage after review; never regenerate manifests or checksums by hand.
+
+Generate registry metadata from exactly seven validated archives:
 
 ```sh
-export EXPLODEX_USER_PLUGINS_DIR="$(pwd)/plugins"
+bun run --cwd packages/plugin-registry registry:generate -- \
+  --artifact-dir /absolute/path/to/archives \
+  --release-tag vX.Y.Z \
+  --output /absolute/path/to/registry.json
 ```
 
-Then run `bun run inject` after editing plugin source.
+For release staging, use a new or empty output directory:
 
-## Browser Verification
+```sh
+bun run --cwd packages/plugin-registry registry:stage -- \
+  --artifact-dir /absolute/path/to/archives \
+  --output-dir /absolute/path/to/release-staging \
+  --release-tag vX.Y.Z
+```
 
-`.mcp.json` configures `chrome-devtools-mcp` against `http://127.0.0.1:9333`. `bun run dev` starts that MCP server automatically. Cursor agents should use the chrome-devtools MCP tools after dev is running.
+Staging atomically writes exactly eight files: `registry.json` plus the seven
+validated archives. It rejects extra files, wrong IDs, mutable artifact URLs,
+metadata or digest disagreement, and non-empty replacement targets. The command
+prints the exact SHA-256 of staged `registry.json`. Publication requires that
+same digest as an explicit approval value:
 
-## Public Repo Hygiene
+```sh
+bun run --cwd packages/plugin-registry registry:publish -- \
+  --staging-dir /absolute/path/to/release-staging \
+  --release-tag vX.Y.Z \
+  --approval <registry-json-sha256>
+```
 
-Do not commit:
+That command creates the GitHub Release and uploads only the verified staging
+set. It does not authorize a git tag, git push, or npm publication. See
+[RELEASING.md](./RELEASING.md) for separate mutation approvals.
 
-- Codex app bundles
-- Extracted app assets
-- User data directories
-- Logs
-- Generated `dist/Explodex.app`
+## Protected authoring main
 
-Do commit:
+An authoring main may receive an exact dynamic plugin inject, unload, load, or
+interaction test. It must never be automatically restarted, reloaded,
+navigated, closed, stopped, or selected merely because it is the first reachable
+renderer.
 
-- SDK source
-- plugin source and manifests
-- scripts and templates
-- docs
-- validation gates
+Build and validate before touching a renderer. Restart-required, startup,
+renderer-reload, SDK-runtime, and disruptive compatibility work belongs in the
+separate development instance. If no exact safe target is available, report
+verification pending.
+
+Normal host, install, refresh, review, update, and lifecycle operations exit
+after their bounded action. There is no daemon or supervisor. Only an explicitly
+invoked foreground plugin watch may remain alive.
+
+## Isolated development instance
+
+```sh
+explodex dev ensure
+explodex dev status
+explodex dev inject ./plugin.tar.gz
+explodex dev focus
+explodex dev restart
+explodex dev stop
+```
+
+The persistent isolated root is `~/.explodex/dev/plugin-dev`; the fixed default
+CDP endpoint is `127.0.0.1:9444`. The instance has private application data,
+`CODEX_HOME`, Explodex state, launch marker, and ownership record.
+
+`dev ensure` reuses a healthy instance, recovers only a confirmed-dead record
+with a free port, or launches once. Stop and restart revalidate exact PID,
+kernel process-start identity, launch marker, paths, listener, target, and
+execution context. They use dev-port `Browser.close` or exact-PID termination,
+never app-wide quit, `killall`, or a process-name signal.
+
+From this checkout, `bun run dev:ensure`, `bun run dev:status`,
+`bun run dev:restart`, and `bun run dev:stop` invoke the current CLI source.
+
+## Runtime inspection
+
+Use only the exact target and observations returned by the foreground public
+development operation. Do not substitute direct CDP evaluation or repository
+debug scripts for a missing public result.

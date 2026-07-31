@@ -15,6 +15,7 @@ export type HostReportOptions = {
   sdkRuntime: SdkRuntimeIdentity;
   probe?: ProbeIdentity;
   runningProcess?: RunningProcessIdentity | null;
+  signal?: AbortSignal;
 };
 
 export type HostReport = HostInspectionResult & {
@@ -30,6 +31,7 @@ export type HostReport = HostInspectionResult & {
 export async function reportHost(options: HostReportOptions): Promise<HostReport> {
   const inspection = await inspectHost({
     adapters: options.adapters,
+    signal: options.signal,
   });
 
   if (!inspection.ok || inspection.host === null) {

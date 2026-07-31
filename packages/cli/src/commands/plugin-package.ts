@@ -42,6 +42,7 @@ export async function runPluginPackage(options: {
   env: NodeJS.ProcessEnv;
   rest: readonly string[];
   endOfOptions: readonly string[];
+  signal?: AbortSignal;
 }): Promise<RenderedCliResult> {
   const combined = [...options.rest, ...options.endOfOptions];
   const { value: outputOption, rest: afterOutput } = takeOption(combined, "--output");
@@ -77,6 +78,7 @@ export async function runPluginPackage(options: {
     outputDir,
     timeoutMs: options.globals.timeoutMs,
     env: options.env,
+    signal: options.signal,
   });
 
   if (!result.ok) {

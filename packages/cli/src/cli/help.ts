@@ -87,7 +87,7 @@ function rootHelp(): string {
   lines.push("Global options");
   for (const option of GLOBAL_OPTIONS) {
     lines.push(`  ${formatOption(option)}`);
-    lines.push(`      ${option.description}`);
+    lines.push(`      ${formatOptionDescription(option)}`);
   }
   lines.push("");
   lines.push("Environment");
@@ -169,22 +169,27 @@ function commandHelp(group: GroupDescriptor, command: CommandDescriptor): string
     lines.push("  Status: reserved for a later milestone (not executable in this release).");
   }
   lines.push("");
+  lines.push("Arguments");
   if (command.arguments !== undefined && command.arguments.length > 0) {
-    lines.push("Arguments");
     for (const argument of command.arguments) {
       const req = argument.required ? "required" : "optional";
       lines.push(`  ${argument.name.padEnd(16)}${argument.description} (${req})`);
     }
-    lines.push("");
+  } else {
+    lines.push("  None.");
   }
+  lines.push("");
+  lines.push("Options");
   if (command.options !== undefined && command.options.length > 0) {
-    lines.push("Options");
     for (const option of command.options) {
       lines.push(`  ${formatOption(option)}`);
-      lines.push(`      ${option.description}`);
+      lines.push(`      ${formatOptionDescription(option)}`);
     }
-    lines.push("");
+  } else {
+    lines.push("  No command-local options.");
   }
+  lines.push("  Global options are accepted anywhere before --; see explodex --help.");
+  lines.push("");
   lines.push("Output");
   lines.push("  Human mode writes the primary result to stdout and diagnostics to stderr.");
   lines.push("  --json writes one schemaVersion-1 envelope to stdout.");
@@ -193,8 +198,9 @@ function commandHelp(group: GroupDescriptor, command: CommandDescriptor): string
   lines.push("  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted");
   lines.push("");
   lines.push("Examples");
-  lines.push(`  explodex ${path}`);
-  lines.push(`  explodex --json ${path}`);
+  const synopsis = usageSynopsis(group.name, command).replace(/^explodex /, "");
+  lines.push(`  explodex ${synopsis}`);
+  lines.push(`  explodex --json ${synopsis}`);
   lines.push("");
   if (command.recovery !== undefined) {
     lines.push("Recovery");
@@ -218,15 +224,35 @@ function usageSynopsis(groupName: string, command: CommandDescriptor): string {
     }
   }
   if (command.options !== undefined && command.options.length > 0) {
-    parts.push("[options]");
+    for (const option of command.options) {
+      const spelling = `--${option.long}${option.valueName === undefined ? "" : ` <${option.valueName}>${option.repeatable ? "..." : ""}`}`;
+      parts.push(option.required ? spelling : `[${spelling}]`);
+    }
   }
   return parts.join(" ");
 }
 
 function formatOption(option: OptionDescriptor): string {
   const short = option.short !== undefined ? `-${option.short}, ` : "    ";
-  const value = option.valueName !== undefined ? ` <${option.valueName}>` : "";
+  const value = option.valueName !== undefined
+    ? ` <${option.valueName}>${option.repeatable ? "..." : ""}`
+    : "";
   return `${short}--${option.long}${value}`;
+}
+
+function formatOptionDescription(option: OptionDescriptor): string {
+  const semantics: string[] = [];
+  if (option.required) semantics.push("required");
+  if (option.repeatable) semantics.push("repeatable");
+  if (option.choices !== undefined) {
+    semantics.push(`values: ${option.choices.join("|")}`);
+  }
+  if (option.defaultValue !== undefined) {
+    semantics.push(`default: ${option.defaultValue}`);
+  }
+  return semantics.length === 0
+    ? option.description
+    : `${option.description} (${semantics.join("; ")})`;
 }
 
 function oneLine(text: string): string {

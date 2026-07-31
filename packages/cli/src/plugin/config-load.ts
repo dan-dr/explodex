@@ -4,6 +4,7 @@
  */
 
 import { spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { access } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -49,7 +50,16 @@ export async function loadExplodexConfigOnce(options: {
   timeoutMs: number;
   configRelativePath?: string;
   env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
 }): Promise<ConfigLoadResult> {
+  if (options.signal?.aborted) {
+    return {
+      ok: false,
+      code: "operation.interrupted",
+      message: "Config loading was interrupted.",
+      details: { signal: null },
+    };
+  }
   const configRelative = options.configRelativePath ?? DEFAULT_CONFIG_RELATIVE;
   const workerPath = await resolveWorkerPathExisting();
   const nodeBin = process.execPath;
@@ -76,6 +86,8 @@ export async function loadExplodexConfigOnce(options: {
     let stdout = "";
     let stderr = "";
     let timedOut = false;
+    let interrupted = false;
+    let terminationTimer: ReturnType<typeof setTimeout> | null = null;
 
     const child = spawn(
       nodeBin,
@@ -84,24 +96,32 @@ export async function loadExplodexConfigOnce(options: {
         cwd: options.workspacePath,
         env: childEnv,
         stdio: ["ignore", "pipe", "pipe"],
-        // Windows-irrelevant on darwin; keep detached false so parent reaps.
+        // A dedicated process group lets bounded cleanup include descendants
+        // that inherit the worker's stdout/stderr pipes.
+        detached: true,
       },
     );
 
+    const requestTermination = (): void => {
+      killLoaderProcessTree(child, "SIGTERM");
+      if (terminationTimer !== null) return;
+      terminationTimer = setTimeout(() => {
+        if (!settled) {
+          killLoaderProcessTree(child, "SIGKILL");
+        }
+      }, 1_000);
+      terminationTimer.unref?.();
+    };
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGTERM");
-      // Escalate only after a short grace; still no package scripts involved.
-      setTimeout(() => {
-        if (!settled && !child.killed) {
-          try {
-            child.kill("SIGKILL");
-          } catch {
-            // ignore
-          }
-        }
-      }, 1_000).unref?.();
+      requestTermination();
     }, Math.max(1, options.timeoutMs));
+    const onAbort = (): void => {
+      interrupted = true;
+      requestTermination();
+    };
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+    if (options.signal?.aborted) onAbort();
 
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
@@ -116,6 +136,8 @@ export async function loadExplodexConfigOnce(options: {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (terminationTimer !== null) clearTimeout(terminationTimer);
+      options.signal?.removeEventListener("abort", onAbort);
       resolvePromise(result);
     };
 
@@ -129,6 +151,15 @@ export async function loadExplodexConfigOnce(options: {
     });
 
     child.on("close", (exitCode, signal) => {
+      if (interrupted) {
+        finish({
+          ok: false,
+          code: "operation.interrupted",
+          message: "Config loading was interrupted.",
+          details: { signal },
+        });
+        return;
+      }
       if (timedOut) {
         finish({
           ok: false,
@@ -209,6 +240,25 @@ export async function loadExplodexConfigOnce(options: {
       });
     });
   });
+}
+
+function killLoaderProcessTree(
+  child: ChildProcess,
+  signal: NodeJS.Signals,
+): void {
+  if (child.pid !== undefined && process.platform !== "win32") {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch {
+      // Fall through to direct-child signaling if the group already vanished.
+    }
+  }
+  try {
+    child.kill(signal);
+  } catch {
+    // Child exit remains observable through close/error.
+  }
 }
 
 function firstJsonLine(stdout: string): string | null {

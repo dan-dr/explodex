@@ -34,6 +34,39 @@ describe("CLI parse surface", () => {
     }
   });
 
+  test("collapses identical and normalized-identical scalar globals", () => {
+    const parsed = parseArgv([
+      "--home",
+      "/same",
+      "plugin",
+      "status",
+      "--home=/same",
+      "--timeout",
+      "60s",
+      "--timeout=1m",
+    ]);
+    expect(parsed.kind).toBe("success");
+    if (parsed.kind !== "success") return;
+    expect(parsed.globals.home).toBe("/same");
+    expect(parsed.globals.timeoutMs).toBe(60_000);
+  });
+
+  test("preserves every token after -- as positional data", () => {
+    const parsed = parseArgv([
+      "plugin",
+      "validate",
+      "--",
+      "--json",
+      "--timeout",
+      "1ms",
+    ]);
+    expect(parsed.kind).toBe("success");
+    if (parsed.kind !== "success") return;
+    expect(parsed.globals.json).toBe(false);
+    expect(parsed.globals.timeoutMs).toBe(60_000);
+    expect(parsed.endOfOptions).toEqual(["--json", "--timeout", "1ms"]);
+  });
+
   test("rejects invalid timeout grammar", () => {
     for (const value of ["60", "1.5s", "-1s", "1m30s", "0s"]) {
       const parsed = parseArgv(["--timeout", value, "host", "report"]);

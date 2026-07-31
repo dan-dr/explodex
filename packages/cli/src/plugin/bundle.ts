@@ -36,6 +36,7 @@ export type BundleSuccess = {
   jsBytes: number;
   jsSha256: string;
   mapBytes: number;
+  inputFiles: readonly string[];
   diagnostics: readonly BundleImportDiagnostic[];
 };
 
@@ -270,6 +271,7 @@ export async function bundlePluginIife(options: {
       absWorkingDir: workspacePath,
       entryPoints: [entryAbsolute],
       bundle: true,
+      metafile: true,
       write: true,
       outfile: outJsPath,
       format: "iife",
@@ -534,6 +536,20 @@ export async function bundlePluginIife(options: {
     }
 
     const jsBytes = Buffer.byteLength(jsText, "utf8");
+    const inputFiles = Object.keys(result.metafile.inputs)
+      .filter(
+        (input) =>
+          input !== shimVirtualPath &&
+          !input.startsWith("explodex-sdk-shim:"),
+      )
+      .map((input) => toPosix(relative(workspacePath, resolve(workspacePath, input))))
+      .filter(
+        (input) =>
+          input.length > 0 &&
+          input !== ".." &&
+          !input.startsWith("../"),
+      )
+      .sort();
     return {
       ok: true,
       pluginId: options.pluginId,
@@ -543,6 +559,7 @@ export async function bundlePluginIife(options: {
       jsBytes,
       jsSha256: sha256Hex(jsText),
       mapBytes: Buffer.byteLength(mapText, "utf8"),
+      inputFiles,
       diagnostics,
     };
   } catch (error: unknown) {

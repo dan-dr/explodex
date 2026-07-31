@@ -16,11 +16,12 @@ const OPERATION = "compatibility.status";
 export async function runCompatibilityStatus(options: {
   globals: GlobalOptions;
   env: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
 }): Promise<RenderedCliResult> {
   const explodexHome = resolveHome(options.globals, options.env);
   const adapters = await createDefaultHostAdapters();
   const sdkRuntime = await resolveSdkRuntimeIdentityForCli();
-  const inspection = await inspectHost({ adapters });
+  const inspection = await inspectHost({ adapters, signal: options.signal });
 
   if (!inspection.ok || inspection.host === null) {
     return renderFailure({

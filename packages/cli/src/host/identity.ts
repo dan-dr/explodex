@@ -72,6 +72,7 @@ function fail(
 async function readPlistFields(
   adapters: HostAdapters,
   infoPlistPath: string,
+  signal?: AbortSignal,
 ): Promise<PlistFields> {
   const fields: PlistFields = {
     bundleId: null,
@@ -95,7 +96,7 @@ async function readPlistFields(
       "-o",
       "-",
       infoPlistPath,
-    ]);
+    ], { signal });
     if (result.exitCode === 0) {
       const value = result.stdout.trim();
       fields[key] = value.length > 0 ? value : null;
@@ -108,6 +109,7 @@ async function readPlistFields(
 async function readSigningIdentity(
   adapters: HostAdapters,
   bundlePath: string,
+  signal?: AbortSignal,
 ): Promise<{ valid: boolean; team: string | null }> {
   const verification = await adapters.process.execFile("/usr/bin/codesign", [
     "--verify",
@@ -116,7 +118,7 @@ async function readSigningIdentity(
     "--verbose=2",
     `-R=${CHATGPT_SIGNATURE_REQUIREMENT}`,
     bundlePath,
-  ]);
+  ], { signal });
   if (verification.exitCode !== 0) {
     return { valid: false, team: null };
   }
@@ -125,7 +127,7 @@ async function readSigningIdentity(
     "-dv",
     "--verbose=4",
     bundlePath,
-  ]);
+  ], { signal });
   if (details.exitCode !== 0) {
     return { valid: false, team: null };
   }
@@ -228,7 +230,7 @@ export async function inspectHost(options: InspectHostOptions): Promise<HostInsp
     );
   }
 
-  const plist = await readPlistFields(adapters, infoPlistPath);
+  const plist = await readPlistFields(adapters, infoPlistPath, options.signal);
   if (plist.bundleId !== CANONICAL_BUNDLE_ID) {
     failed.push("cf_bundle_identifier");
   }
@@ -322,7 +324,7 @@ export async function inspectHost(options: InspectHostOptions): Promise<HostInsp
     );
   }
 
-  const signing = await readSigningIdentity(adapters, realBundlePath);
+  const signing = await readSigningIdentity(adapters, realBundlePath, options.signal);
   if (!signing.valid) {
     return fail(
       "host_invalid_signature",

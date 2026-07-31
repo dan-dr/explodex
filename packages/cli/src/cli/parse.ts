@@ -280,16 +280,13 @@ export function parseArgv(argv: readonly string[]): ParseResult {
   if (globals.help) {
     const group = GROUPS.find((g) => g.name === tokens[0]);
     if (group === undefined) {
-      // Unknown first token with --help → still show root help? Contract:
-      // "--help shows help for the longest valid prefix and ignores later operands."
-      // No valid prefix → usage error for unknown command.
       return {
-        kind: "failure",
-        rendered: usageFailure({
-          code: "usage.unknown-command",
-          message: `Unknown command '${tokens[0]}'.`,
-          details: { command: tokens[0] },
-        }),
+        kind: "success",
+        globals,
+        tokens: [],
+        endOfOptions,
+        resolved: null,
+        rootOnly: true,
       };
     }
     const resolved = resolveCommand(tokens);

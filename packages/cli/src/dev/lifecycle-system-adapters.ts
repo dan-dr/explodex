@@ -2,12 +2,7 @@ import { join } from "node:path";
 import type { CdpAdapter } from "../cdp/adapters.ts";
 import { inspectCompatibleEndpoint } from "../cdp/endpoint.ts";
 import type { HostAdapters } from "../host/adapters.ts";
-import {
-  evaluateCompatibility,
-  loadCompatibilityRecord,
-} from "../host/compatibility-state.ts";
 import { inspectHost } from "../host/identity.ts";
-import { resolveSdkRuntimeIdentityForCli } from "../host/sdk-runtime-identity.ts";
 import {
   roleEndpoint,
   type HostStatusAdapters,
@@ -127,7 +122,6 @@ export function createProductionDevLaunch(options: {
   contract: Phase0LaunchContract;
   frozenHost: Phase0FrozenHost;
   layout: DevLayoutPaths;
-  explodexHome: string;
   logsPath: string;
   timeoutMs: number;
   signal?: AbortSignal;
@@ -265,28 +259,6 @@ export function createProductionDevLaunch(options: {
       ) {
         throw new Error(
           "Canonical host identity drifted during development launch; abort without reconnect.",
-        );
-      }
-      const [persisted, sdkRuntime] = await Promise.all([
-        loadCompatibilityRecord({
-          adapters: options.hostAdapters,
-          explodexHome: options.explodexHome,
-        }),
-        resolveSdkRuntimeIdentityForCli(),
-      ]);
-      const compatibility = evaluateCompatibility({
-        host: rechecked.host,
-        sdkRuntime,
-        persisted,
-        runningProcess: {
-          executablePath: process.executablePath,
-          appVersion: options.frozenHost.appVersion,
-          appBuild: options.frozenHost.appBuild,
-        },
-      });
-      if (!compatibility.allowsCompatibilityDependentWork) {
-        throw new Error(
-          `Exact current compatibility proof became unavailable: ${compatibility.reason ?? "unproven"}.`,
         );
       }
       return {

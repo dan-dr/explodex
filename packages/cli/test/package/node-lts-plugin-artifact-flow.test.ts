@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   CLI_PACKAGE_ROOT,
+  REPO_ROOT,
   SDK_PACKAGE_ROOT,
   SYSTEM_PATH,
   buildPackage,
@@ -59,6 +60,7 @@ describe("VAL-SDK-044/045 packed external artifact flow", () => {
         cliTarball: cli.tarballPath,
       });
       try {
+        const typescriptRoot = await realpath(join(REPO_ROOT, "node_modules", "typescript"));
         const bin = join(installed.consumerRoot, "node_modules", ".bin", "explodex");
         for (const major of [22, 24] as const) {
           const nodeBin = miseNodeBinary(major);
@@ -76,11 +78,11 @@ describe("VAL-SDK-044/045 packed external artifact flow", () => {
           const packageJson = JSON.parse(await readFile(packagePath, "utf8")) as Record<string, unknown>;
           packageJson.devDependencies = {
             "@explodex/sdk": `file:${sdk.tarballPath}`,
-            typescript: "5.9.3",
+            typescript: `file:${typescriptRoot}`,
           };
           await writeFile(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
           const npmInstall = Bun.spawn(
-            ["npm", "install", "--ignore-scripts", "--no-package-lock", "--no-audit", "--no-fund"],
+            ["npm", "install", "--ignore-scripts", "--no-package-lock", "--no-audit", "--no-fund", "--offline"],
             {
               cwd: workspace,
               stdin: "ignore",
@@ -91,6 +93,8 @@ describe("VAL-SDK-044/045 packed external artifact flow", () => {
                 HOME: home,
                 npm_config_cache: join(root, "npm-cache"),
                 npm_config_ignore_scripts: "true",
+                npm_config_offline: "true",
+                npm_config_registry: "http://127.0.0.1:9/",
               },
             },
           );

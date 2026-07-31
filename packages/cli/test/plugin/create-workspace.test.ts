@@ -82,6 +82,31 @@ describe("VAL-SDK-011 create emits one safe generated-only workspace", () => {
     }
   });
 
+  test("pre-aborted creation performs no workspace mutation", async () => {
+    const root = await tempDir();
+    try {
+      const target = join(root, "explodex-plugin-aborted");
+      const controller = new AbortController();
+      controller.abort();
+      const result = await createPluginWorkspace({
+        directory: target,
+        cwd: root,
+        signal: controller.signal,
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("expected interruption");
+      expect(result.code).toBe("operation.interrupted");
+      expect(result.details).toEqual({
+        workspacePath: target,
+        partialWorkspace: false,
+        createdPaths: [],
+      });
+      await expect(access(target)).rejects.toBeDefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("public CLI plugin create succeeds via JSON envelope", async () => {
     const root = await tempDir();
     try {

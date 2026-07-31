@@ -298,6 +298,7 @@ export async function buildPluginWorkspace(options: {
     workspacePath,
     timeoutMs: options.timeoutMs,
     env: options.env,
+    signal: options.signal,
   });
   if (!validated.ok) {
     const after = await fingerprintDistTree(workspacePath);
@@ -494,6 +495,7 @@ export async function buildPluginWorkspace(options: {
       workspacePath,
       report,
       sdkInput,
+      sourceInputs: bundled.inputFiles,
     });
     // Actual staged digests (includes true checksums.json bytes).
     const installable = await listInstallableFiles(stagingDir);

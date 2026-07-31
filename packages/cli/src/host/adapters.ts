@@ -36,7 +36,7 @@ export type HostProcess = {
   execFile(
     file: string,
     args: readonly string[],
-    options?: { cwd?: string },
+    options?: { cwd?: string; signal?: AbortSignal },
   ): Promise<ExecResult>;
 };
 
@@ -131,6 +131,7 @@ export async function createNodeProcess(): Promise<HostProcess> {
           encoding: "utf8",
           cwd: options?.cwd,
           maxBuffer: 8 * 1024 * 1024,
+          signal: options?.signal,
         });
         return {
           stdout: String(result.stdout ?? ""),
@@ -138,6 +139,7 @@ export async function createNodeProcess(): Promise<HostProcess> {
           exitCode: 0,
         };
       } catch (error: unknown) {
+        if (options?.signal?.aborted) throw error;
         const err = error as {
           stdout?: string;
           stderr?: string;

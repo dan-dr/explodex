@@ -8,9 +8,9 @@ import type { SdkRuntimeIdentity } from "./types.ts";
 /**
  * Resolve the generated SDK runtime identity for CLI operations.
  *
- * Preference order:
- * 1. Packed `@explodex/sdk` runtime export when installed alongside the CLI
- * 2. Monorepo `packages/sdk/dist/runtime/explodex-runtime.iife.js` during development
+ * The CLI-facing resolver accepts only the installed `@explodex/sdk` package.
+ * Explicit source-path resolution below remains available to repository build
+ * and test callers, but is never an automatic shipped-runtime fallback.
  */
 export function defaultGeneratedSdkRuntimePath(options?: {
   repositoryRoot?: string;
@@ -78,26 +78,6 @@ export async function resolveSdkRuntimeIdentityForCli(): Promise<
 > {
   const packed = await tryResolvePackedSdkRuntime();
   if (packed !== null) return packed;
-
-  const here = dirname(fileURLToPath(import.meta.url));
-  const monorepoCandidates = [
-    // packages/cli/src/host or packages/cli/dist/host → packages/sdk/dist/...
-    resolve(here, "..", "..", "..", "sdk", "dist", "runtime", "explodex-runtime.iife.js"),
-    resolve(here, "..", "..", "..", "..", "packages", "sdk", "dist", "runtime", "explodex-runtime.iife.js"),
-  ];
-
-  for (const candidate of monorepoCandidates) {
-    try {
-      const identity = await resolveGeneratedSdkRuntimeIdentity({ sourcePath: candidate });
-      return {
-        version: identity.version,
-        sha256: identity.sha256,
-        sourcePath: identity.sourcePath,
-      };
-    } catch {
-      // try next
-    }
-  }
 
   // Fail closed with a stable placeholder only when no runtime bytes exist.
   // Host report still works for structural host identity; compatibility stays unproven.

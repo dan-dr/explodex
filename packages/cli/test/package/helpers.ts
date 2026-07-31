@@ -1,6 +1,7 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { isAbsolute, posix } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
 
@@ -20,8 +21,7 @@ export const FIRST_PARTY_PLUGIN_IDS = [
 
 export const PAYLOAD_SENTINELS = [
   "plugin-registry",
-  "FIRST_PARTY_PLUGIN",
-  "__EXPLODEX_PLUGIN_CATALOG__",
+  "FIRST_PARTY_PLUGIN_PAYLOAD_SENTINEL",
   "explodex-plugin-",
 ] as const;
 
@@ -32,6 +32,10 @@ export type PackListing = {
   filename: string;
   files: Array<{ path: string; size: number }>;
 };
+
+export type AuditedTarEntry =
+  | { path: string; type: "file"; bytes: Buffer }
+  | { path: string; type: "directory"; bytes: Buffer };
 
 export async function buildPackage(packageRoot: string): Promise<void> {
   // Use the package build wrapper so npm-injected PATH shadows of incomplete
@@ -63,6 +67,7 @@ export async function packActual(
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
+    env: { ...process.env, NPM_CONFIG_CACHE: join(destinationDir, ".npm-cache") },
   });
   const exitCode = await proc.exited;
   const stdout = await new Response(proc.stdout).text();
@@ -77,37 +82,121 @@ export async function packActual(
 }
 
 export async function listTarballPaths(tarballPath: string): Promise<string[]> {
+  const audit = await auditTarballEntries(tarballPath);
+  return audit.entries.map((entry) => entry.path);
+}
+
+export async function auditTarballEntries(
+  tarballPath: string,
+): Promise<{ entries: AuditedTarEntry[] }> {
   const gz = await readFile(tarballPath);
   const tar = gunzipSync(gz);
-  const paths: string[] = [];
+  const entries: AuditedTarEntry[] = [];
+  const seen = new Set<string>();
   let offset = 0;
+  let zeroBlocks = 0;
   while (offset + 512 <= tar.byteLength) {
     const header = tar.subarray(offset, offset + 512);
-    if (header.every((byte) => byte === 0)) break;
-    const name = readTarString(header, 0, 100);
-    const sizeOctal = readTarString(header, 124, 12);
-    const size = Number.parseInt(sizeOctal, 8) || 0;
-    const prefix = readTarString(header, 345, 155);
+    if (header.every((byte) => byte === 0)) {
+      zeroBlocks += 1;
+      offset += 512;
+      if (zeroBlocks === 2) break;
+      continue;
+    }
+    if (zeroBlocks !== 0) {
+      throw new Error("Tarball contains a non-zero entry after an end marker.");
+    }
+    const name = readTarStringFatal(header, 0, 100);
+    const sizeOctal = readTarStringFatal(header, 124, 12);
+    const size = parseTarOctal(sizeOctal, "size");
+    const prefix = readTarStringFatal(header, 345, 155);
     const full = prefix.length > 0 ? `${prefix}/${name}` : name;
-    if (full.length > 0) paths.push(full);
+    assertSafePackagePath(full);
+    if (seen.has(full)) throw new Error(`Tarball contains duplicate path: ${full}`);
+    seen.add(full);
+    const typeFlag = header[156] ?? 0;
+    const type = typeFlag === 0 || typeFlag === 0x30
+      ? "file"
+      : typeFlag === 0x35
+        ? "directory"
+        : null;
+    if (type === null) {
+      const linkPath = readTarStringFatal(header, 157, 100);
+      throw new Error(
+        `Tarball contains unsupported link or special entry type ${String.fromCharCode(typeFlag)} at ${full}${linkPath.length === 0 ? "" : ` -> ${linkPath}`}.`,
+      );
+    }
+    if (type === "directory" && size !== 0) {
+      throw new Error(`Tarball directory entry has non-zero size: ${full}`);
+    }
+    const dataStart = offset + 512;
+    const dataEnd = dataStart + size;
+    if (dataEnd > tar.byteLength) {
+      throw new Error(`Tarball entry exceeds archive bytes: ${full}`);
+    }
+    const bytes = Buffer.from(tar.subarray(dataStart, dataEnd));
+    entries.push({ path: full, type, bytes });
     const dataBlocks = Math.ceil(size / 512);
     offset += 512 + dataBlocks * 512;
   }
-  return paths;
+  if (zeroBlocks < 2) throw new Error("Tarball is missing the complete end marker.");
+  return { entries };
 }
 
-function readTarString(header: Uint8Array, start: number, length: number): string {
+function readTarStringFatal(
+  header: Uint8Array,
+  start: number,
+  length: number,
+): string {
   const slice = header.subarray(start, start + length);
   let end = slice.indexOf(0);
   if (end < 0) end = slice.length;
-  return Buffer.from(slice.subarray(0, end)).toString("utf8").trim();
+  return new TextDecoder("utf-8", { fatal: true })
+    .decode(slice.subarray(0, end));
+}
+
+function parseTarOctal(value: string, field: string): number {
+  const trimmed = value.trim();
+  if (!/^[0-7]+$/.test(trimmed)) {
+    throw new Error(`Tarball ${field} is not canonical octal.`);
+  }
+  const parsed = Number.parseInt(trimmed, 8);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new Error(`Tarball ${field} is outside the supported range.`);
+  }
+  return parsed;
+}
+
+function assertSafePackagePath(path: string): void {
+  if (
+    path.length === 0 ||
+    isAbsolute(path) ||
+    path.includes("\\") ||
+    /[\u0000-\u001f\u007f]/.test(path)
+  ) {
+    throw new Error(`Tarball contains unsafe path: ${JSON.stringify(path)}`);
+  }
+  const segments = path.split("/");
+  if (
+    segments.some((segment) => segment.length === 0 || segment === "." || segment === "..") ||
+    segments[0] !== "package" ||
+    posix.normalize(path) !== path
+  ) {
+    throw new Error(`Tarball path escapes the package root: ${path}`);
+  }
 }
 
 export async function installSdkAndCli(options: {
   sdkTarball: string;
   cliTarball: string;
+  dependencyTarballs?: Record<string, string>;
+  home?: string;
+  offline?: boolean;
 }): Promise<{ consumerRoot: string; cleanup: () => Promise<void> }> {
   const consumerRoot = await mkdtemp(join(tmpdir(), "explodex-cli-consumer-"));
+  const dependencyTarballs = options.dependencyTarballs ??
+    await packRuntimeDependencyClosure(join(consumerRoot, ".dependency-packs"));
+  const offline = options.offline ?? true;
   const packageJson = {
     name: "explodex-cli-external-consumer",
     private: true,
@@ -115,11 +204,25 @@ export async function installSdkAndCli(options: {
     dependencies: {
       "@explodex/sdk": `file:${options.sdkTarball}`,
       explodex: `file:${options.cliTarball}`,
+      ...Object.fromEntries(
+        Object.entries(dependencyTarballs).map(([name, path]) => [
+          name,
+          `file:${path}`,
+        ]),
+      ),
     },
   };
   await writeFile(join(consumerRoot, "package.json"), `${JSON.stringify(packageJson, null, 2)}\n`);
   const install = Bun.spawn(
-    ["npm", "install", "--ignore-scripts", "--no-package-lock", "--no-audit", "--no-fund"],
+    [
+      "npm",
+      "install",
+      "--ignore-scripts",
+      "--no-package-lock",
+      "--no-audit",
+      "--no-fund",
+      ...(offline ? ["--offline"] : []),
+    ],
     {
       cwd: consumerRoot,
       stdin: "ignore",
@@ -127,7 +230,15 @@ export async function installSdkAndCli(options: {
       stderr: "pipe",
       env: {
         ...process.env,
+        HOME: options.home ?? process.env.HOME,
+        npm_config_cache: join(consumerRoot, ".npm-cache"),
         npm_config_ignore_scripts: "true",
+        ...(offline
+          ? {
+              npm_config_offline: "true",
+              npm_config_registry: "http://127.0.0.1:9/",
+            }
+          : {}),
       },
     },
   );
@@ -143,6 +254,64 @@ export async function installSdkAndCli(options: {
       await rm(consumerRoot, { recursive: true, force: true });
     },
   };
+}
+
+export async function packRuntimeDependencyClosure(
+  destinationDir: string,
+): Promise<Record<string, string>> {
+  const esbuildPackageRoot = await realpath(join(REPO_ROOT, "node_modules", "esbuild"));
+  const esbuildPlatformPackage = join(
+    dirname(esbuildPackageRoot),
+    "@esbuild",
+    `${process.platform}-${process.arch}`,
+  );
+  const dependencies = [
+    ["acorn", join(REPO_ROOT, "node_modules", "acorn")],
+    ["esbuild", join(REPO_ROOT, "node_modules", "esbuild")],
+    [
+      `@esbuild/${process.platform}-${process.arch}`,
+      esbuildPlatformPackage,
+    ],
+  ] as const;
+  const packed: Record<string, string> = {};
+  for (const [name, packageRoot] of dependencies) {
+    const destination = join(
+      destinationDir,
+      name.replaceAll("/", "__").replaceAll("@", ""),
+    );
+    await mkdir(destination, { recursive: true });
+    const stage = await mkdtemp(join(destination, "stage-"));
+    const packageStage = join(stage, "package");
+    const tarballPath = join(
+      destination,
+      `${name.replaceAll("/", "-").replaceAll("@", "")}.tgz`,
+    );
+    try {
+      await cp(packageRoot, packageStage, {
+        recursive: true,
+        dereference: true,
+        preserveTimestamps: true,
+      });
+      const proc = Bun.spawn(
+        ["tar", "-czf", tarballPath, "-C", stage, "package"],
+        {
+          stdin: "ignore",
+          stdout: "pipe",
+          stderr: "pipe",
+        },
+      );
+      const exitCode = await proc.exited;
+      if (exitCode !== 0) {
+        throw new Error(
+          `tar failed for ${name}: ${await new Response(proc.stderr).text()}`,
+        );
+      }
+      packed[name] = tarballPath;
+    } finally {
+      await rm(stage, { recursive: true, force: true });
+    }
+  }
+  return packed;
 }
 
 export function miseNodeBinary(major: 22 | 24): string {

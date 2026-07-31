@@ -768,7 +768,7 @@ export type DevRecoverFailure = {
   details?: unknown;
 };
 
-function stoppedAfterRecovery(options: {
+export function stoppedAfterRecovery(options: {
   state: DevInstanceState;
   recoveredAt: string;
   disposition: DevRecoveryDiagnostic["disposition"];

@@ -150,9 +150,10 @@ export async function createNodeLaunchSpawnAdapter(): Promise<LaunchSpawnAdapter
         cwd,
         env,
         stdio: ["ignore", stdout, stderr],
-        // Detached false keeps the process under the parent process group by default,
-        // but we never signal by process group; only exact PID.
-        detached: false,
+        // The one-shot lifecycle command must exit while ChatGPT keeps running.
+        // A separate process group is safe because lifecycle termination always
+        // revalidates and signals only the exact recorded PID, never the group.
+        detached: true,
       });
 
       if (typeof stdout === "number") fs.closeSync(stdout);
@@ -175,6 +176,7 @@ export async function createNodeLaunchSpawnAdapter(): Promise<LaunchSpawnAdapter
           });
         },
       );
+      child.unref();
 
       return {
         pid,

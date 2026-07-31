@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { REPO_ROOT } from "../helpers/pack.ts";
 
@@ -9,64 +9,47 @@ const GENERATED_RUNTIME =
   "packages/sdk/dist/runtime/explodex-runtime.iife.js";
 
 describe("M2-F01R legacy root SDK transition boundary", () => {
-  test("root npm package cannot publish the legacy SDK as an active surface", async () => {
+  test("root workspace is private and cannot publish legacy SDK files", async () => {
     const packageJson = JSON.parse(
       await readFile(join(REPO_ROOT, "package.json"), "utf8"),
     ) as {
-      types?: unknown;
+      private?: unknown;
       files?: unknown;
       scripts?: { prepack?: unknown };
     };
 
-    expect(packageJson.types).not.toBe(LEGACY_TYPES);
-    expect(Array.isArray(packageJson.files)).toBe(true);
-    expect(packageJson.files).not.toContain(LEGACY_RUNTIME);
-    expect(packageJson.files).not.toContain(LEGACY_TYPES);
-    expect(packageJson.files).toContain(
-      "packages/sdk/dist/runtime/explodex-runtime.iife.js",
-    );
+    expect(packageJson.private).toBe(true);
+    expect(packageJson.files).toBeUndefined();
     expect(String(packageJson.scripts?.prepack ?? "")).not.toContain("sdk/explodex-sdk");
   });
 
-  test("active build, validation, and runtime resolution use packages/sdk output", async () => {
-    const files = [
+  test("legacy root distribution surfaces are absent", async () => {
+    const legacyPaths = [
+      LEGACY_RUNTIME,
+      LEGACY_TYPES,
+      "bin/explodex.mjs",
       "scripts/package-app.ts",
       "scripts/cdp-inject.ts",
       "scripts/launch.sh",
-      "scripts/validate.sh",
-      "lib/paths.mjs",
-      "packages/cli/src/host/sdk-runtime-identity.ts",
+      "plugins",
     ] as const;
 
-    for (const relativePath of files) {
-      const source = await readFile(join(REPO_ROOT, relativePath), "utf8");
-      expect(source).not.toContain(LEGACY_RUNTIME);
-      expect(source).not.toContain(LEGACY_TYPES);
+    for (const relativePath of legacyPaths) {
+      await expect(access(join(REPO_ROOT, relativePath))).rejects.toThrow();
     }
+  });
 
-    const packageApp = await readFile(
-      join(REPO_ROOT, "scripts/package-app.ts"),
-      "utf8",
-    );
-    const injector = await readFile(
-      join(REPO_ROOT, "scripts/cdp-inject.ts"),
-      "utf8",
-    );
-    const launcher = await readFile(
-      join(REPO_ROOT, "scripts/launch.sh"),
-      "utf8",
-    );
+  test("runtime resolution uses the published SDK package", async () => {
     const runtimeIdentity = await readFile(
       join(REPO_ROOT, "packages/cli/src/host/sdk-runtime-identity.ts"),
       "utf8",
     );
 
-    expect(packageApp).toContain(GENERATED_RUNTIME);
-    expect(injector).toContain(GENERATED_RUNTIME);
-    expect(launcher).toContain(GENERATED_RUNTIME);
+    expect(GENERATED_RUNTIME).toBe("packages/sdk/dist/runtime/explodex-runtime.iife.js");
     expect(runtimeIdentity).toContain(
-      '"sdk", "dist", "runtime", "explodex-runtime.iife.js"',
+      'require.resolve("@explodex/sdk/package.json")',
     );
+    expect(runtimeIdentity).not.toContain("monorepoCandidates");
     expect(runtimeIdentity).not.toContain("Transitional root");
   });
 });

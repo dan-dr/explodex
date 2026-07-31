@@ -337,7 +337,7 @@ async function buildExternalFixture(root: string): Promise<void> {
     .toBeDefined();
 
   const bunTypesLink = join(root, "external-bun-types");
-  await symlink(join(REPOSITORY_ROOT, "node_modules", "bun-types"), bunTypesLink);
+  await symlink(join(REPOSITORY_ROOT, "node_modules", "@types", "bun"), bunTypesLink);
   await writeFile(join(externalRoot, "tsconfig.json"), `${JSON.stringify({
     compilerOptions: {
       target: "ES2023",

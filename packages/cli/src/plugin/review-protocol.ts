@@ -396,11 +396,16 @@ if (
     JSON.stringify(sdkRequestIdentity)
   }
 ) {
-  const destroyAndWait = previousRuntime["__explodexDestroyRuntimeAndWait"];
-  if (typeof destroyAndWait !== "function") {
-    throw new Error("Previous Explodex runtime cannot be replaced safely");
+  const adoptRequest = previousRuntime["__explodexAdoptRuntimeRequest"];
+  const adopted = typeof adoptRequest === "function" &&
+    adoptRequest(${JSON.stringify(sdkRequestIdentity)}) === true;
+  if (!adopted) {
+    const destroyAndWait = previousRuntime["__explodexDestroyRuntimeAndWait"];
+    if (typeof destroyAndWait !== "function") {
+      throw new Error("Previous Explodex runtime cannot be replaced safely");
+    }
+    await destroyAndWait({ reason: "operation-replacement" });
   }
-  await destroyAndWait({ reason: "operation-replacement" });
 }
 globalThis.__explodexSdkRuntimeRequestIdentity = ${
     JSON.stringify(sdkRequestIdentity)

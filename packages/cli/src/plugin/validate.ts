@@ -28,6 +28,7 @@ export async function validatePluginSource(options: {
   workspacePath: string;
   timeoutMs: number;
   env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
 }): Promise<SourceValidationResult> {
   const workspacePath = resolve(options.workspacePath);
 
@@ -103,6 +104,7 @@ export async function validatePluginSource(options: {
     workspacePath,
     timeoutMs: options.timeoutMs,
     env: options.env,
+    signal: options.signal,
   });
   if (!configLoaded.ok) {
     return failUnchanged(distBefore, workspacePath, configLoaded.code, {

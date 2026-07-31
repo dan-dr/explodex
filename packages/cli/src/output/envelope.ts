@@ -191,14 +191,17 @@ export function sanitizeJsonValue(value: unknown): unknown {
   if (value instanceof Date) return value.toISOString();
   if (value instanceof Error) {
     return {
-      name: value.name,
-      message: value.message,
+      name: publicErrorName(value.name),
     };
   }
   if (Array.isArray(value)) {
     return value.map((item) => sanitizeJsonValue(item));
   }
   if (typeof value === "object") {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      return null;
+    }
     const record = value as Record<string, unknown>;
     const out: Record<string, unknown> = {};
     const keys = Object.keys(record).sort((a, b) => a.localeCompare(b));
@@ -211,4 +214,17 @@ export function sanitizeJsonValue(value: unknown): unknown {
     return out;
   }
   return String(value);
+}
+
+function publicErrorName(name: string): string {
+  switch (name) {
+    case "Error":
+    case "TypeError":
+    case "RangeError":
+    case "SyntaxError":
+    case "ReferenceError":
+      return name;
+    default:
+      return "Error";
+  }
 }

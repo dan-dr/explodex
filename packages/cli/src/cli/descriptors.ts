@@ -31,6 +31,9 @@ export type OptionDescriptor = {
   description: string;
   valueName?: string;
   repeatable?: boolean;
+  required?: boolean;
+  choices?: readonly string[];
+  defaultValue?: string;
 };
 
 export type GroupDescriptor = {
@@ -51,13 +54,15 @@ export const GLOBAL_OPTIONS: readonly OptionDescriptor[] = [
   { long: "json", description: "Emit one schemaVersion-1 JSON envelope on stdout." },
   {
     long: "home",
-    description: "Override the Explodex home directory (default: $HOME/.explodex).",
+    description: "Override the Explodex home directory.",
     valueName: "path",
+    defaultValue: "$HOME/.explodex",
   },
   {
     long: "dev-root",
-    description: "Override the isolated development root (default: <home>/dev/plugin-dev).",
+    description: "Override the isolated development root.",
     valueName: "path",
+    defaultValue: "<home>/dev/plugin-dev",
   },
   {
     long: "timeout",
@@ -84,20 +89,13 @@ export const GROUPS: readonly GroupDescriptor[] = [
         operation: "host.extract",
         summary: "Copy only requested allowlisted host evidence to the private inspection cache.",
         availability: "reserved",
-        arguments: [
-          {
-            name: "path",
-            description: "Allowlisted host evidence path (repeatable via --path).",
-            required: true,
-            variadic: true,
-          },
-        ],
         options: [
           {
             long: "path",
             description: "Allowlisted host evidence path.",
             valueName: "path",
             repeatable: true,
+            required: true,
           },
         ],
       },
@@ -218,13 +216,39 @@ export const GROUPS: readonly GroupDescriptor[] = [
         availability: "available",
         aliases: ["add"],
         arguments: [
-          { name: "archive", description: "Prebuilt .tar.gz or .tgz plugin archive.", required: true },
+          {
+            name: "archive",
+            description: "Local prebuilt .tar.gz or .tgz plugin archive.",
+            required: false,
+          },
         ],
         options: [
+          {
+            long: "registry",
+            description: "Install an exact plugin ID from the configured registry.",
+            valueName: "id",
+          },
+          {
+            long: "github-url",
+            description: "Install from one canonical immutable GitHub release URL.",
+            valueName: "url",
+          },
+          {
+            long: "archive-sha256",
+            description: "Expected lowercase SHA-256 of exact archive bytes.",
+            valueName: "hex",
+          },
+          {
+            long: "payload-sha256",
+            description: "Optional expected lowercase canonical payload SHA-256.",
+            valueName: "hex",
+          },
           {
             long: "target",
             description: "Review target role; unavailable targets leave the install disabled and pending.",
             valueName: "role",
+            choices: ["none", "main", "development"],
+            defaultValue: "none",
           },
         ],
       },
@@ -247,6 +271,8 @@ export const GROUPS: readonly GroupDescriptor[] = [
             long: "target",
             description: "Review target role; unavailable targets never force a renderer.",
             valueName: "role",
+            choices: ["main", "development"],
+            defaultValue: "main",
           },
         ],
       },
@@ -273,6 +299,8 @@ export const GROUPS: readonly GroupDescriptor[] = [
             long: "target",
             description: "Review target role (main or development).",
             valueName: "role",
+            choices: ["main", "development"],
+            defaultValue: "main",
           },
         ],
       },
@@ -292,6 +320,8 @@ export const GROUPS: readonly GroupDescriptor[] = [
             long: "target",
             description: "Review/application target role.",
             valueName: "role",
+            choices: ["main", "development"],
+            defaultValue: "main",
           },
         ],
       },
@@ -300,35 +330,92 @@ export const GROUPS: readonly GroupDescriptor[] = [
         operation: "plugin.disable",
         summary: "Disable an installed plugin without removing its bytes.",
         availability: "reserved",
+        arguments: [
+          { name: "id", description: "Exact plugin ID.", required: true },
+        ],
+        options: [
+          {
+            long: "target",
+            description: "Optional live teardown target role.",
+            valueName: "role",
+            choices: ["none", "main", "development"],
+            defaultValue: "none",
+          },
+        ],
       },
       {
         path: ["remove"],
         operation: "plugin.remove",
         summary: "Remove an installed plugin identity.",
         availability: "reserved",
+        arguments: [
+          { name: "id", description: "Exact plugin ID.", required: true },
+        ],
+        options: [
+          {
+            long: "artifact-version",
+            description: "Exact opaque artifact version when multiple identities exist.",
+            valueName: "opaque-version",
+          },
+          {
+            long: "payload-sha256",
+            description: "Exact lowercase payload SHA-256.",
+            valueName: "hex",
+          },
+          {
+            long: "target",
+            description: "Optional live teardown target role.",
+            valueName: "role",
+            choices: ["none", "main", "development"],
+            defaultValue: "none",
+          },
+        ],
       },
       {
         path: ["onboard"],
         operation: "plugin.onboard",
         summary: "First-run registry onboarding for disabled installation choices.",
         availability: "reserved",
+        options: [
+          {
+            long: "target",
+            description: "Review target role.",
+            valueName: "role",
+            choices: ["main", "development"],
+            defaultValue: "main",
+          },
+        ],
       },
       {
         path: ["develop"],
         operation: "plugin.develop",
         summary: "Foreground plugin build/watch against the exact owned development instance.",
         availability: "reserved",
+        arguments: [
+          {
+            name: "workspace",
+            description: "Plugin workspace path (default: cwd).",
+            required: false,
+          },
+        ],
+        options: [
+          {
+            long: "sdk-source",
+            description: "Explicit canonical local SDK source workspace.",
+            valueName: "path",
+          },
+        ],
       },
     ],
   },
   {
     name: "dev",
-    description: "Exact owned isolated development instance on 9444.",
+    description: "One persistent isolated development instance on 127.0.0.1:9444.",
     commands: [
-      { path: ["status"], operation: "dev.status", summary: "Read-only development ownership status.", availability: "reserved" },
-      { path: ["start"], operation: "dev.start", summary: "Start the exact owned development instance.", availability: "reserved" },
-      { path: ["ensure"], operation: "dev.ensure", summary: "Ensure the exact owned development instance is ready.", availability: "reserved" },
-      { path: ["recover"], operation: "dev.recover", summary: "Recover from uncertain development ownership.", availability: "reserved" },
+      { path: ["status"], operation: "dev.status", summary: "Check health, ownership, crash state, and the next safe action.", availability: "available" },
+      { path: ["start"], operation: "dev.start", summary: "Start the stopped development instance once.", availability: "available" },
+      { path: ["ensure"], operation: "dev.ensure", summary: "Reuse, safely recover if confirmed dead, or start the development instance once.", availability: "available" },
+      { path: ["recover"], operation: "dev.recover", summary: "Explicitly recover a failed or interrupted development record.", availability: "available" },
       {
         path: ["inject"],
         operation: "dev.inject",
@@ -338,8 +425,8 @@ export const GROUPS: readonly GroupDescriptor[] = [
           { name: "artifact", description: "Path to a validated plugin artifact.", required: true },
         ],
       },
-      { path: ["restart"], operation: "dev.restart", summary: "Restart only the exact owned development process.", availability: "reserved" },
-      { path: ["stop"], operation: "dev.stop", summary: "Stop only the exact owned development process.", availability: "reserved" },
+      { path: ["restart"], operation: "dev.restart", summary: "Restart only the exact owned development process once.", availability: "available" },
+      { path: ["stop"], operation: "dev.stop", summary: "Stop only the exact owned development process.", availability: "available" },
       { path: ["focus"], operation: "dev.focus", summary: "Focus the owned development instance when exact process-specific activation is supported.", availability: "available" },
     ],
   },
@@ -348,15 +435,57 @@ export const GROUPS: readonly GroupDescriptor[] = [
     description: "Legacy doctor and exact itemized cleanup.",
     commands: [
       { path: ["doctor"], operation: "legacy.doctor", summary: "Report legacy install state.", availability: "reserved" },
-      { path: ["cleanup"], operation: "legacy.cleanup", summary: "Remove exact itemized legacy items.", availability: "reserved" },
+      {
+        path: ["cleanup"],
+        operation: "legacy.cleanup",
+        summary: "Remove exact itemized legacy items.",
+        availability: "reserved",
+        options: [
+          {
+            long: "item",
+            description: "Exact legacy item ID selected for cleanup.",
+            valueName: "item-id",
+            repeatable: true,
+            required: true,
+          },
+          {
+            long: "yes",
+            description: "Confirm the exact submitted item list.",
+          },
+        ],
+      },
     ],
   },
   {
     name: "skill",
     description: "Install or update the matching plugin-builder skill.",
     commands: [
-      { path: ["install"], operation: "skill.install", summary: "Install the matching plugin-builder skill.", availability: "reserved" },
-      { path: ["update"], operation: "skill.update", summary: "Update the installed plugin-builder skill.", availability: "reserved" },
+      {
+        path: ["install"],
+        operation: "skill.install",
+        summary: "Install the matching plugin-builder skill.",
+        availability: "reserved",
+        options: [
+          {
+            long: "skill-home",
+            description: "Explicit skill installation root.",
+            valueName: "path",
+          },
+        ],
+      },
+      {
+        path: ["update"],
+        operation: "skill.update",
+        summary: "Update the installed plugin-builder skill.",
+        availability: "reserved",
+        options: [
+          {
+            long: "skill-home",
+            description: "Explicit skill installation root.",
+            valueName: "path",
+          },
+        ],
+      },
     ],
   },
   {
@@ -364,10 +493,48 @@ export const GROUPS: readonly GroupDescriptor[] = [
     description: "Release candidate, rehearsal, publication, and verification.",
     commands: [
       { path: ["candidate"], operation: "release.candidate", summary: "Create a release candidate.", availability: "reserved" },
-      { path: ["rehearse"], operation: "release.rehearse", summary: "Rehearse publication without public mutation.", availability: "reserved" },
-      { path: ["publish"], operation: "release.publish", summary: "Publish an exact authorized candidate.", availability: "reserved" },
-      { path: ["verify"], operation: "release.verify", summary: "Verify a published candidate.", availability: "reserved" },
-      { path: ["status"], operation: "release.status", summary: "Show candidate-ready versus release-complete status.", availability: "reserved" },
+      {
+        path: ["rehearse"],
+        operation: "release.rehearse",
+        summary: "Rehearse publication without public mutation.",
+        availability: "reserved",
+        arguments: [
+          { name: "candidate", description: "Exact release candidate path.", required: true },
+        ],
+      },
+      {
+        path: ["publish"],
+        operation: "release.publish",
+        summary: "Publish an exact authorized candidate.",
+        availability: "reserved",
+        arguments: [
+          { name: "candidate", description: "Exact release candidate path.", required: true },
+        ],
+        options: [
+          {
+            long: "yes",
+            description: "Confirm publication of this exact candidate.",
+          },
+        ],
+      },
+      {
+        path: ["verify"],
+        operation: "release.verify",
+        summary: "Verify a published candidate.",
+        availability: "reserved",
+        arguments: [
+          { name: "candidate", description: "Exact release candidate path.", required: true },
+        ],
+      },
+      {
+        path: ["status"],
+        operation: "release.status",
+        summary: "Show candidate-ready versus release-complete status.",
+        availability: "reserved",
+        arguments: [
+          { name: "candidate", description: "Exact release candidate path.", required: true },
+        ],
+      },
     ],
   },
 ];

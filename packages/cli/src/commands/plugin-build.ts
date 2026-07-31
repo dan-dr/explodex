@@ -16,6 +16,7 @@ export async function runPluginBuild(options: {
   env: NodeJS.ProcessEnv;
   rest: readonly string[];
   endOfOptions: readonly string[];
+  signal?: AbortSignal;
 }): Promise<RenderedCliResult> {
   const positionals = [...options.rest, ...options.endOfOptions];
   const unexpected = positionals.filter((token) => token.startsWith("-"));
@@ -48,6 +49,7 @@ export async function runPluginBuild(options: {
     workspacePath: workspace,
     timeoutMs: options.globals.timeoutMs,
     env: options.env,
+    signal: options.signal,
   });
 
   if (!result.ok) {

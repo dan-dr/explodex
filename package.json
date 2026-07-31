@@ -1,36 +1,14 @@
 {
-  "name": "explodex",
+  "name": "explodex-monorepo",
   "version": "0.2.2",
-  "description": "A plugin SDK for extending the Codex desktop app.",
-  "bin": {
-    "explodex": "bin/explodex.mjs"
-  },
+  "private": true,
+  "description": "Explodex SDK, CLI, and first-party plugin registry workspace.",
   "packageManager": "bun@1.3.14",
   "workspaces": [
     "packages/sdk",
     "packages/cli",
     "packages/plugin-registry",
     "packages/plugin-registry/explodex-plugin-*"
-  ],
-  "publishConfig": {
-    "registry": "https://registry.npmjs.org/",
-    "access": "public"
-  },
-  "files": [
-    "bin/",
-    "lib/",
-    "packages/sdk/dist/runtime/explodex-runtime.iife.js",
-    "packages/sdk/dist/runtime/explodex-runtime.iife.js.map",
-    "plugins/",
-    "assets/icon/Explodex.icns",
-    "scripts/splash-screen.swift",
-    "templates/splash-app/"
-  ],
-  "engines": {
-    "node": ">=22"
-  },
-  "os": [
-    "darwin"
   ],
   "devDependencies": {
     "@types/bun": "^1.3.14",
@@ -54,26 +32,19 @@
     "macos"
   ],
   "scripts": {
-    "dev": "bun ./scripts/dev.ts",
+    "dev": "bun ./packages/cli/src/bin/explodex.ts dev ensure",
+    "dev:ensure": "bun ./packages/cli/src/bin/explodex.ts --json dev ensure",
+    "dev:status": "bun ./packages/cli/src/bin/explodex.ts --json dev status",
+    "dev:restart": "bun ./packages/cli/src/bin/explodex.ts --json dev restart",
+    "dev:stop": "bun ./packages/cli/src/bin/explodex.ts --json dev stop",
     "docs:list": "find docs -maxdepth 2 -type f -name '*.md' | sort",
-    "inject": "./scripts/launch.sh --inject-only",
-    "launch": "./scripts/launch.sh",
-    "package": "bun ./scripts/package-app.ts",
-    "build:icon": "zsh scripts/build-icon.sh",
-    "clean": "zsh scripts/clean.sh",
-    "sync": "bun ./scripts/package-app.ts",
     "validate": "./scripts/validate.sh",
-    "release:check": "bun ./scripts/release-util.ts check",
-    "release:notes": "bun ./scripts/release-util.ts notes",
-    "layout:snapshot": "bun ./scripts/cdp-layout-snapshot.ts",
-    "react-devtools": "bun ./scripts/cdp-react-devtools.ts",
     "test": "bun test",
     "build:npm": "bash -c 'export PATH=\"${HOME}/.bun/bin:$PATH\"; exec bun ./scripts/build-npm.ts'",
     "checkTs": "bash -c 'export PATH=\"${HOME}/.bun/bin:$PATH\"; exec bun ./node_modules/.bin/tsc -p packages/cli/tsconfig.json && bun ./node_modules/.bin/tsc -p packages/sdk/tsconfig.json'",
-    "prepack": "bash -c 'export PATH=\"${HOME}/.bun/bin:$PATH\"; exec bun ./scripts/build-npm.ts'",
-    "node:lts-smoke": "node ./scripts/node-lts-smoke.mjs"
-  },
-  "dependencies": {
-    "@clack/prompts": "^1.6.0"
+    "node:lts-smoke": "node ./scripts/node-lts-smoke.mjs",
+    "registry:generate": "bun run --cwd packages/plugin-registry registry:generate",
+    "registry:stage": "bun run --cwd packages/plugin-registry registry:stage",
+    "registry:publish": "bun run --cwd packages/plugin-registry registry:publish"
   }
 }

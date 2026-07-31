@@ -2,5 +2,5 @@
 import { runCli } from "../cli/entry.ts";
 
 await runCli();
-// Honor process.exitCode set by runCli.
-process.exit(typeof process.exitCode === "number" ? process.exitCode : 0);
+// runCli sets process.exitCode. Let Node flush stdout/stderr naturally rather
+// than forcing process.exit(), which can truncate a terminal JSON envelope.

@@ -10,13 +10,57 @@ import { successEnvelope, type RenderedCliResult } from "../output/envelope.ts";
 
 const OPERATION = "dev.status";
 
-function humanStatus(snapshot: DevStatusSnapshot): string {
+function statusGuidance(snapshot: DevStatusSnapshot): {
+  health: "ready" | "stopped" | "crashed" | "blocked";
+  crashDetected: boolean;
+  nextAction: string | null;
+} {
+  if (
+    snapshot.state?.status === "ready" &&
+    snapshot.assessment.owned
+  ) {
+    return { health: "ready", crashDetected: false, nextAction: null };
+  }
+  const confirmedDead =
+    snapshot.assessment.recoveryEligibility === "independently-dead" ||
+    snapshot.assessment.recoveryEligibility === "start-mismatched";
+  if (confirmedDead) {
+    return {
+      health: "crashed",
+      crashDetected: true,
+      nextAction: "explodex dev ensure",
+    };
+  }
+  if (
+    snapshot.assessment.observedStatus === "stopped" &&
+    snapshot.assessment.failures.length === 0
+  ) {
+    return {
+      health: "stopped",
+      crashDetected: false,
+      nextAction: "explodex dev ensure",
+    };
+  }
+  return {
+    health: "blocked",
+    crashDetected: false,
+    nextAction:
+      "Inspect the reported ownership failure. Do not kill ChatGPT by app name or retry in a loop.",
+  };
+}
+
+function humanStatus(
+  snapshot: DevStatusSnapshot,
+  guidance: ReturnType<typeof statusGuidance>,
+): string {
   const lines = [
     "Explodex development status",
     `root: ${snapshot.rootPath}`,
+    `health: ${guidance.health}`,
     `recordedStatus: ${snapshot.assessment.recordedStatus}`,
     `observedStatus: ${snapshot.assessment.observedStatus}`,
     `owned: ${snapshot.assessment.owned}`,
+    `crashDetected: ${guidance.crashDetected}`,
     `compatibilityProven: ${snapshot.assessment.compatibilityProven}`,
     `readOnly: ${snapshot.readOnly}`,
   ];
@@ -33,6 +77,7 @@ function humanStatus(snapshot: DevStatusSnapshot): string {
   for (const failure of snapshot.assessment.failures) {
     lines.push(`failure: ${failure.code}: ${failure.message}`);
   }
+  lines.push(`nextAction: ${guidance.nextAction ?? "none"}`);
   return `${lines.join("\n")}\n`;
 }
 
@@ -89,10 +134,14 @@ export async function runDevStatus(options: {
         },
       });
     }
+    const guidance = statusGuidance(snapshot);
     return {
-      envelope: successEnvelope(OPERATION, snapshot),
+      envelope: successEnvelope(OPERATION, {
+        ...snapshot,
+        ...guidance,
+      }),
       exitCode: 0,
-      humanStdout: humanStatus(snapshot),
+      humanStdout: humanStatus(snapshot, guidance),
       humanStderr: "",
     };
   } catch (error: unknown) {

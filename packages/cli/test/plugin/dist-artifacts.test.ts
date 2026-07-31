@@ -335,6 +335,64 @@ export default definePlugin({ setup() { void missing; } });
 });
 
 describe("VAL-SDK-025 packaging binds dist to intended source generation", () => {
+  test("tracks imported workspace modules and rejects stale helper changes", async () => {
+    const { workspace, cleanup } = await createValidWorkspace({
+      name: "explodex-plugin-generation-helper",
+    });
+    try {
+      await writeWorkspaceFile(
+        workspace,
+        "src/settings.ts",
+        'export const settingValue = "before";\n',
+      );
+      await writeWorkspaceFile(
+        workspace,
+        "src/index.ts",
+        `import { definePlugin } from "@explodex/sdk";
+import { settingValue } from "./settings";
+export default definePlugin({
+  setup() {
+    void settingValue;
+  },
+});
+`,
+      );
+      const built = await buildPluginWorkspace({
+        workspacePath: workspace,
+        timeoutMs: 60_000,
+      });
+      expect(built.ok).toBe(true);
+      const generation = JSON.parse(
+        await readFile(
+          join(workspace, "dist", ".explodex-generation.json"),
+          "utf8",
+        ),
+      ) as { inputDigests: Record<string, string> };
+      expect(generation.inputDigests["src/settings.ts"]).toMatch(
+        /^[a-f0-9]{64}$/,
+      );
+
+      await writeWorkspaceFile(
+        workspace,
+        "src/settings.ts",
+        'export const settingValue = "after";\n',
+      );
+      const outputDir = join(workspace, "..", "out-stale-helper");
+      await mkdir(outputDir, { recursive: true });
+      const packaged = await packagePluginWorkspace({
+        workspacePath: workspace,
+        outputDir,
+        timeoutMs: 60_000,
+      });
+      expect(packaged.ok).toBe(false);
+      if (packaged.ok) throw new Error("expected stale helper rejection");
+      expect(packaged.code).toBe("plugin.package.stale");
+      expect(await readdir(outputDir)).toEqual([]);
+    } finally {
+      await cleanup();
+    }
+  }, 180_000);
+
   test("package succeeds for current generation and refuses stale or edited dist", async () => {
     const { workspace, cleanup } = await createValidWorkspace({
       name: "explodex-plugin-generation",

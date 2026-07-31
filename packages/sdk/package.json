@@ -1,11 +1,19 @@
 {
   "name": "@explodex/sdk",
   "version": "1.2.0",
-  "private": true,
   "description": "Explodex plugin authoring SDK and generated ChatGPT renderer runtime.",
   "type": "module",
   "engines": {
     "node": ">=22"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dan-dr/explodex.git",
+    "directory": "packages/sdk"
   },
   "exports": {
     ".": {

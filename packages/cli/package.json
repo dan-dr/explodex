@@ -1,7 +1,6 @@
 {
   "name": "explodex",
   "version": "0.2.2",
-  "private": true,
   "description": "Explodex CLI for ChatGPT.app plugin management (Node 22/24).",
   "type": "module",
   "engines": {
@@ -10,6 +9,15 @@
   "os": [
     "darwin"
   ],
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dan-dr/explodex.git",
+    "directory": "packages/cli"
+  },
   "bin": {
     "explodex": "./dist/bin/explodex.js"
   },
