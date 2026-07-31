@@ -1,13 +1,17 @@
 {
   "name": "@explodex/plugin-registry",
   "version": "0.0.0",
+  "type": "module",
   "private": true,
   "workspaces": [
     "explodex-plugin-*"
   ],
   "scripts": {
     "test": "bun test test explodex-plugin-*/test",
-    "typecheck": "bun ./../../node_modules/.bin/tsc -b explodex-plugin-*/tsconfig.json"
+    "typecheck": "bun ./../../node_modules/.bin/tsc -p tsconfig.json && bun ./../../node_modules/.bin/tsc -b explodex-plugin-*/tsconfig.json",
+    "registry:generate": "bun scripts/generate-registry.ts",
+    "registry:stage": "bun scripts/stage-release.ts",
+    "registry:publish": "bun scripts/publish-release.ts"
   },
   "devDependencies": {
     "@explodex/sdk": "1.2.0"
