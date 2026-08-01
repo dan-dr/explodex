@@ -74,7 +74,7 @@ export type DevelopmentLifecycleMutation =
 
 /** Public next action when Phase 0 isolation/marker evidence is incomplete. */
 export const PUBLIC_PHASE0_PROOF_HINT =
-  "Complete the authorized isolated development Phase 0 launch-isolation proof on 127.0.0.1:9444 before development lifecycle mutation or compatibility probing.";
+  "Run 'explodex --timeout 10m dev prove' with the same --dev-root, if any, to complete the isolated launch proof on 127.0.0.1:9444 before development lifecycle mutation or compatibility probing.";
 
 /**
  * Approved bounded non-mutating renderer evaluation expression for Phase 0 readiness.

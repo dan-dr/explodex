@@ -1603,6 +1603,7 @@ Description
 
 Commands
   status                Check health, ownership, crash state, and the next safe action.
+  prove                 Prove current-host launch isolation before lifecycle mutation.
   start                 Start the stopped development instance once.
   ensure                Reuse, safely recover if confirmed dead, or start the development instance once.
   recover               Explicitly recover a failed or interrupted development record.
@@ -1632,6 +1633,7 @@ Description
 
 Commands
   status                Check health, ownership, crash state, and the next safe action.
+  prove                 Prove current-host launch isolation before lifecycle mutation.
   start                 Start the stopped development instance once.
   ensure                Reuse, safely recover if confirmed dead, or start the development instance once.
   recover               Explicitly recover a failed or interrupted development record.
@@ -1708,10 +1710,10 @@ Examples
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 57`] = `
 "Usage
-  explodex dev start
+  explodex dev prove
 
 Summary
-  Start the stopped development instance once.
+  Prove current-host launch isolation before lifecycle mutation.
 
 Arguments
   None.
@@ -1728,13 +1730,40 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex dev start
-  explodex --json dev start
+  explodex dev prove
+  explodex --json dev prove
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 58`] = `
 "Usage
+  explodex dev prove
+
+Summary
+  Prove current-host launch isolation before lifecycle mutation.
+
+Arguments
+  None.
+
+Options
+  No command-local options.
+  Global options are accepted anywhere before --; see explodex --help.
+
+Output
+  Human mode writes the primary result to stdout and diagnostics to stderr.
+  --json writes one schemaVersion-1 envelope to stdout.
+
+Exit status
+  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
+
+Examples
+  explodex dev prove
+  explodex --json dev prove
+"
+`;
+
+exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 59`] = `
+"Usage
   explodex dev start
 
 Summary
@@ -1760,39 +1789,12 @@ Examples
 "
 `;
 
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 59`] = `
-"Usage
-  explodex dev ensure
-
-Summary
-  Reuse, safely recover if confirmed dead, or start the development instance once.
-
-Arguments
-  None.
-
-Options
-  No command-local options.
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
-
-Examples
-  explodex dev ensure
-  explodex --json dev ensure
-"
-`;
-
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 60`] = `
 "Usage
-  explodex dev ensure
+  explodex dev start
 
 Summary
-  Reuse, safely recover if confirmed dead, or start the development instance once.
+  Start the stopped development instance once.
 
 Arguments
   None.
@@ -1809,17 +1811,17 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex dev ensure
-  explodex --json dev ensure
+  explodex dev start
+  explodex --json dev start
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 61`] = `
 "Usage
-  explodex dev recover
+  explodex dev ensure
 
 Summary
-  Explicitly recover a failed or interrupted development record.
+  Reuse, safely recover if confirmed dead, or start the development instance once.
 
 Arguments
   None.
@@ -1836,13 +1838,40 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex dev recover
-  explodex --json dev recover
+  explodex dev ensure
+  explodex --json dev ensure
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 62`] = `
 "Usage
+  explodex dev ensure
+
+Summary
+  Reuse, safely recover if confirmed dead, or start the development instance once.
+
+Arguments
+  None.
+
+Options
+  No command-local options.
+  Global options are accepted anywhere before --; see explodex --help.
+
+Output
+  Human mode writes the primary result to stdout and diagnostics to stderr.
+  --json writes one schemaVersion-1 envelope to stdout.
+
+Exit status
+  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
+
+Examples
+  explodex dev ensure
+  explodex --json dev ensure
+"
+`;
+
+exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 63`] = `
+"Usage
   explodex dev recover
 
 Summary
@@ -1868,42 +1897,15 @@ Examples
 "
 `;
 
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 63`] = `
-"Usage
-  explodex dev inject <artifact>
-
-Summary
-  Inject an artifact into the owned development instance.
-
-Arguments
-  artifact        Path to a validated plugin artifact. (required)
-
-Options
-  No command-local options.
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
-
-Examples
-  explodex dev inject <artifact>
-  explodex --json dev inject <artifact>
-"
-`;
-
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 64`] = `
 "Usage
-  explodex dev inject <artifact>
+  explodex dev recover
 
 Summary
-  Inject an artifact into the owned development instance.
+  Explicitly recover a failed or interrupted development record.
 
 Arguments
-  artifact        Path to a validated plugin artifact. (required)
+  None.
 
 Options
   No command-local options.
@@ -1917,20 +1919,20 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex dev inject <artifact>
-  explodex --json dev inject <artifact>
+  explodex dev recover
+  explodex --json dev recover
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 65`] = `
 "Usage
-  explodex dev restart
+  explodex dev inject <artifact>
 
 Summary
-  Restart only the exact owned development process once.
+  Inject an artifact into the owned development instance.
 
 Arguments
-  None.
+  artifact        Path to a validated plugin artifact. (required)
 
 Options
   No command-local options.
@@ -1944,13 +1946,40 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex dev restart
-  explodex --json dev restart
+  explodex dev inject <artifact>
+  explodex --json dev inject <artifact>
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 66`] = `
 "Usage
+  explodex dev inject <artifact>
+
+Summary
+  Inject an artifact into the owned development instance.
+
+Arguments
+  artifact        Path to a validated plugin artifact. (required)
+
+Options
+  No command-local options.
+  Global options are accepted anywhere before --; see explodex --help.
+
+Output
+  Human mode writes the primary result to stdout and diagnostics to stderr.
+  --json writes one schemaVersion-1 envelope to stdout.
+
+Exit status
+  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
+
+Examples
+  explodex dev inject <artifact>
+  explodex --json dev inject <artifact>
+"
+`;
+
+exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 67`] = `
+"Usage
   explodex dev restart
 
 Summary
@@ -1976,39 +2005,12 @@ Examples
 "
 `;
 
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 67`] = `
-"Usage
-  explodex dev stop
-
-Summary
-  Stop only the exact owned development process.
-
-Arguments
-  None.
-
-Options
-  No command-local options.
-  Global options are accepted anywhere before --; see explodex --help.
-
-Output
-  Human mode writes the primary result to stdout and diagnostics to stderr.
-  --json writes one schemaVersion-1 envelope to stdout.
-
-Exit status
-  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
-
-Examples
-  explodex dev stop
-  explodex --json dev stop
-"
-`;
-
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 68`] = `
 "Usage
-  explodex dev stop
+  explodex dev restart
 
 Summary
-  Stop only the exact owned development process.
+  Restart only the exact owned development process once.
 
 Arguments
   None.
@@ -2025,12 +2027,66 @@ Exit status
   0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
 
 Examples
-  explodex dev stop
-  explodex --json dev stop
+  explodex dev restart
+  explodex --json dev restart
 "
 `;
 
 exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 69`] = `
+"Usage
+  explodex dev stop
+
+Summary
+  Stop only the exact owned development process.
+
+Arguments
+  None.
+
+Options
+  No command-local options.
+  Global options are accepted anywhere before --; see explodex --help.
+
+Output
+  Human mode writes the primary result to stdout and diagnostics to stderr.
+  --json writes one schemaVersion-1 envelope to stdout.
+
+Exit status
+  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
+
+Examples
+  explodex dev stop
+  explodex --json dev stop
+"
+`;
+
+exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 70`] = `
+"Usage
+  explodex dev stop
+
+Summary
+  Stop only the exact owned development process.
+
+Arguments
+  None.
+
+Options
+  No command-local options.
+  Global options are accepted anywhere before --; see explodex --help.
+
+Output
+  Human mode writes the primary result to stdout and diagnostics to stderr.
+  --json writes one schemaVersion-1 envelope to stdout.
+
+Exit status
+  0 success, 1 operational failure, 2 usage error, 3 blocked, 4 busy, 5 timeout, 130 interrupted
+
+Examples
+  explodex dev stop
+  explodex --json dev stop
+"
+`;
+
+exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 71`] = `
 "Usage
   explodex dev focus
 
@@ -2057,7 +2113,7 @@ Examples
 "
 `;
 
-exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 70`] = `
+exports[`frozen CLI descriptor and help graph snapshots root, every group, and every command help form 72`] = `
 "Usage
   explodex dev focus
 

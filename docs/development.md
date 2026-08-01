@@ -46,6 +46,7 @@ Start or reuse the owned development instance, then run diagnostics against its
 exact renderer:
 
 ```sh
+explodex --timeout 10m dev prove
 explodex --json dev ensure
 bun scripts/cdp-layout-snapshot.ts
 bun scripts/cdp-react-devtools.ts
@@ -213,7 +214,7 @@ kernel process-start identity, launch marker, paths, listener, target, and
 execution context. They use dev-port `Browser.close` or exact-PID termination,
 never app-wide quit, `killall`, or a process-name signal.
 
-From this checkout, `bun run dev:ensure`, `bun run dev:status`,
+From this checkout, `bun run dev:prove`, `bun run dev:ensure`, `bun run dev:status`,
 `bun run dev:restart`, and `bun run dev:stop` invoke the current CLI source.
 
 ## Runtime inspection

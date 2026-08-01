@@ -35,6 +35,7 @@
   "scripts": {
     "dev": "bun ./packages/cli/src/bin/explodex.ts dev ensure",
     "dev:ensure": "bun ./packages/cli/src/bin/explodex.ts --json dev ensure",
+    "dev:prove": "bun ./packages/cli/src/bin/explodex.ts --timeout 10m --json dev prove",
     "dev:status": "bun ./packages/cli/src/bin/explodex.ts --json dev status",
     "dev:restart": "bun ./packages/cli/src/bin/explodex.ts --json dev restart",
     "dev:stop": "bun ./packages/cli/src/bin/explodex.ts --json dev stop",

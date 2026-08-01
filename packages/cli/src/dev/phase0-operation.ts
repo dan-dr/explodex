@@ -1670,6 +1670,10 @@ async function runOneExperimentLaunch(options: {
           pollMs: options.pollMs,
           expectedTargetId: collectedProcess?.targetId ?? null,
           expectedContextUniqueId: collectedProcess?.executionContextUniqueId ?? null,
+          // Comparative instances are disposable and exactly identity-bound.
+          // Skip Electron Browser.close, which may hang across host updates;
+          // endpoint revalidation still precedes the exact-PID signal fallback.
+          browserClose: async () => false,
           privateRoots: [
             options.privateRoot,
             layout.electronUserDataPath,
@@ -2502,6 +2506,8 @@ async function runPhase0LockedBody(input: {
             pollMs,
             expectedTargetId: acceptanceProcess.targetId,
             expectedContextUniqueId: acceptanceProcess.executionContextUniqueId,
+            // Stopped acceptance is disposable and exactly identity-bound.
+            browserClose: async () => false,
             privateRoots: [
               layout.rootPath,
               layout.electronUserDataPath,

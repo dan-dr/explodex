@@ -365,6 +365,7 @@ export const GROUPS: readonly GroupDescriptor[] = [
     description: "One persistent isolated development instance on 127.0.0.1:9444.",
     commands: [
       { path: ["status"], operation: "dev.status", summary: "Check health, ownership, crash state, and the next safe action.", availability: "available" },
+      { path: ["prove"], operation: "dev.prove", summary: "Prove current-host launch isolation before lifecycle mutation.", availability: "available" },
       { path: ["start"], operation: "dev.start", summary: "Start the stopped development instance once.", availability: "available" },
       { path: ["ensure"], operation: "dev.ensure", summary: "Reuse, safely recover if confirmed dead, or start the development instance once.", availability: "available" },
       { path: ["recover"], operation: "dev.recover", summary: "Explicitly recover a failed or interrupted development record.", availability: "available" },

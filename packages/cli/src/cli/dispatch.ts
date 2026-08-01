@@ -22,6 +22,7 @@ import { runPluginDisable } from "../commands/plugin-disable.ts";
 import { runPluginRemove } from "../commands/plugin-remove.ts";
 import { runPluginDevelop } from "../commands/plugin-develop.ts";
 import { runDevStatus } from "../commands/dev-status.ts";
+import { runDevProve } from "../commands/dev-prove.ts";
 import { runDevRecover } from "../commands/dev-recover.ts";
 import { runDevLifecycle } from "../commands/dev-lifecycle.ts";
 import { runDevInject } from "../commands/dev-inject.ts";
@@ -238,6 +239,12 @@ export async function dispatch(options: {
       });
     case "dev.status":
       return runDevStatus({
+        globals: parsed.globals,
+        env,
+        signal,
+      });
+    case "dev.prove":
+      return runDevProve({
         globals: parsed.globals,
         env,
         signal,

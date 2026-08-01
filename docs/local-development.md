@@ -21,6 +21,7 @@ be proven, the operation reports pending or blocked instead of guessing.
 Use one persistent development instance for disruptive testing:
 
 ```sh
+explodex --timeout 10m dev prove
 explodex dev ensure
 explodex dev status
 explodex dev inject ./plugin.tar.gz
@@ -32,6 +33,7 @@ explodex dev stop
 From the repository checkout:
 
 ```sh
+bun run dev:prove
 bun run dev:ensure
 bun run dev:status
 bun run dev:restart
@@ -51,6 +53,13 @@ The defaults are:
 `dev ensure` reuses a healthy instance. It repairs only a confirmed-dead record
 when port `9444` is free, then launches at most once. It does not poll forever,
 supervise, or auto-restart.
+
+Run `dev prove` once before the first lifecycle mutation and again whenever the
+installed ChatGPT host identity changes. It executes a bounded comparative
+launch-isolation proof against private roots and port `9444`, stops its
+acceptance process, verifies that any authoring main survived, and persists
+authority only after cleanup succeeds. Then `dev ensure` starts the persistent
+development instance.
 
 Every disruptive operation revalidates the recorded PID, kernel process-start
 identity, launch marker, private paths, listener, target, and execution context.

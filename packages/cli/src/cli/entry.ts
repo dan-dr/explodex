@@ -9,6 +9,17 @@ import { EXIT_FAILURE, EXIT_INTERRUPTED } from "./exit-codes.ts";
 import { renderFailure } from "./errors.ts";
 
 const INTERNAL_PUBLIC_MESSAGE = "An unexpected internal error occurred.";
+const DEFAULT_DEV_PROVE_TIMEOUT_MS = 10 * 60 * 1_000;
+
+export function resolveOperationBoundMs(options: {
+  operation: string;
+  timeoutMs: number;
+  timeoutRaw: string | null;
+}): number {
+  return options.operation === "dev.prove" && options.timeoutRaw === null
+    ? DEFAULT_DEV_PROVE_TIMEOUT_MS
+    : options.timeoutMs;
+}
 
 export type RunCliOptions = {
   argv?: readonly string[];
@@ -56,7 +67,20 @@ export async function runCli(options: RunCliOptions = {}): Promise<RenderedCliRe
 
     json = parsed.globals.json;
     activeOperation = operationForParsed(parsed);
-    operationBoundMs = parsed.globals.timeoutMs;
+    operationBoundMs = resolveOperationBoundMs({
+      operation: activeOperation,
+      timeoutMs: parsed.globals.timeoutMs,
+      timeoutRaw: parsed.globals.timeoutRaw,
+    });
+    const effectiveParsed = operationBoundMs === parsed.globals.timeoutMs
+      ? parsed
+      : {
+          ...parsed,
+          globals: {
+            ...parsed.globals,
+            timeoutMs: operationBoundMs,
+          },
+        };
 
     if (terminalCause === "interrupted") {
       const rendered = interruptedResult(activeOperation);
@@ -65,17 +89,17 @@ export async function runCli(options: RunCliOptions = {}): Promise<RenderedCliRe
       return rendered;
     }
 
-    if (shouldApplyOperationDeadline(parsed)) {
+    if (shouldApplyOperationDeadline(effectiveParsed)) {
       timeoutHandle = setTimeout(() => {
         if (terminalCause !== null) return;
         terminalCause = "timeout";
         operationAbort.abort();
-      }, parsed.globals.timeoutMs);
+      }, operationBoundMs);
       timeoutHandle.unref?.();
     }
 
     const dispatched = await dispatch({
-      parsed,
+      parsed: effectiveParsed,
       env,
       io,
       signal: operationAbort.signal,
@@ -84,7 +108,7 @@ export async function runCli(options: RunCliOptions = {}): Promise<RenderedCliRe
       rendered: dispatched,
       terminalCause,
       operation: activeOperation,
-      boundMs: parsed.globals.timeoutMs,
+      boundMs: operationBoundMs,
     });
 
     writeCliResult(io, rendered, { json });

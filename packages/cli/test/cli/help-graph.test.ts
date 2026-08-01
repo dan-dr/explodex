@@ -52,6 +52,7 @@ const FROZEN_COMMAND_SHAPES: Record<string, FrozenShape> = {
     options: ["sdk-source"],
   },
   "dev status": {},
+  "dev prove": {},
   "dev start": {},
   "dev ensure": {},
   "dev recover": {},
